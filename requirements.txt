@@ -4,4 +4,3 @@ fastapi
 uvicorn[standard]
 jinja2
 httpx
->>>>>>> 632982a (v3.1: daily reset, basic auth, auto liquid picks, improved telegram summary)
