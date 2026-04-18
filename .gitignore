@@ -1,2 +1,9 @@
-# Секреты — никогда не заливать в Git!
+.venv/
+__pycache__/
+*.pyc
 .env
+logs/*
+data/*.json
+!logs/.gitkeep
+!data/.gitkeep
+ 

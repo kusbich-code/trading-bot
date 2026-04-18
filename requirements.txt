@@ -1,10 +1,7 @@
 t-tech-investments
-<<<<<<< HEAD
-python-dotenv
-=======
 python-dotenv
 fastapi
 uvicorn[standard]
 jinja2
 httpx
->>>>>>> f013645 (v3.1: daily reset, basic auth, auto liquid picks, improved telegram summary)
+>>>>>>> 632982a (v3.1: daily reset, basic auth, auto liquid picks, improved telegram summary)
