@@ -1,6 +1,8 @@
 from datetime import datetime, timezone, timedelta
+from decimal import Decimal, ROUND_HALF_UP
 
 from t_tech.invest import CandleInterval
+from t_tech.invest.utils import quotation_to_decimal
 
 INSTRUMENTS = {
     "SBER": {"ticker": "SBER", "figi": "BBG004730N88", "lot": 10},
@@ -56,3 +58,32 @@ def pick_top_liquid(client, candidate_tickers, count=2):
 
     scored.sort(key=lambda x: x[0], reverse=True)
     return [item for _, item in scored[:count]]
+
+
+def get_instrument_meta(client, figi: str):
+    try:
+        resp = client.instruments.get_instrument_by(id_type=1, id=figi)
+        instrument = getattr(resp, "instrument", None)
+        if not instrument:
+            return None
+
+        min_price_increment = getattr(instrument, "min_price_increment", None)
+        mpi = quotation_to_decimal(min_price_increment) if min_price_increment else Decimal("0.01")
+
+        lot = getattr(instrument, "lot", None)
+        return {
+            "figi": figi,
+            "ticker": getattr(instrument, "ticker", ""),
+            "lot": int(lot) if lot else None,
+            "name": getattr(instrument, "name", ""),
+            "min_price_increment": mpi,
+        }
+    except Exception:
+        return None
+
+
+def round_to_price_step(price: Decimal, min_price_increment: Decimal) -> Decimal:
+    if not min_price_increment or min_price_increment <= 0:
+        return price
+    steps = (price / min_price_increment).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    return (steps * min_price_increment).quantize(min_price_increment)

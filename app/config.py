@@ -10,7 +10,7 @@ class Settings:
     TINVEST_ACCOUNT_ID = os.getenv("TINVEST_ACCOUNT_ID", "").strip()
     TINVEST_USE_SANDBOX = os.getenv("TINVEST_USE_SANDBOX", "true").lower() == "true"
 
-    BOT_NAME = os.getenv("BOT_NAME", "ScalperV31")
+    BOT_NAME = os.getenv("BOT_NAME", "ScalperV32")
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
     CHECK_INTERVAL_SEC = int(os.getenv("CHECK_INTERVAL_SEC", "5"))
@@ -20,6 +20,7 @@ class Settings:
 
     STOP_LOSS_PCT = Decimal(os.getenv("STOP_LOSS_PCT", "0.0025"))
     TAKE_PROFIT_PCT = Decimal(os.getenv("TAKE_PROFIT_PCT", "0.005"))
+    ESTIMATED_COMMISSION_PCT = Decimal(os.getenv("ESTIMATED_COMMISSION_PCT", "0.0004"))
 
     TELEGRAM_ENABLED = os.getenv("TELEGRAM_ENABLED", "false").lower() == "true"
     TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()

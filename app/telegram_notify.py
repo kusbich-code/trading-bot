@@ -21,10 +21,7 @@ class TelegramNotifier:
             return
 
         url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
-        payload = {
-            "chat_id": self.chat_id,
-            "text": text,
-        }
+        payload = {"chat_id": self.chat_id, "text": text}
 
         try:
             with httpx.Client(timeout=10.0) as client:

@@ -39,6 +39,7 @@ def dashboard():
     trades = state.get("closed_trades", [])
     open_positions = state.get("open_positions", {})
     instrument_states = state.get("instrument_states", {})
+    watchlist = state.get("watchlist", [])
 
     rows = ""
     for t in trades[-20:][::-1]:
@@ -51,6 +52,7 @@ def dashboard():
             <td>{t.get('exit', '')}</td>
             <td>{t.get('qty', '')}</td>
             <td>{t.get('gross_amount', '')}</td>
+            <td>{t.get('commission', '')}</td>
             <td>{t.get('pnl', '')}</td>
             <td>{t.get('reason', '')}</td>
         </tr>
@@ -75,9 +77,15 @@ def dashboard():
             <td>{ticker}</td>
             <td>{item.get('figi', '')}</td>
             <td>{item.get('trading_status', '')}</td>
+            <td>{item.get('min_price_increment', '')}</td>
+            <td>{item.get('status_note', '')}</td>
             <td>{item.get('updated_at', '')}</td>
         </tr>
         """
+
+    watchlist_items = "".join(
+        [f"<li>{x.get('ticker')} ({x.get('figi')})</li>" for x in watchlist]
+    )
 
     html = f"""
     <!doctype html>
@@ -87,48 +95,15 @@ def dashboard():
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>Trading Bot Dashboard</title>
         <style>
-            body {{
-                font-family: Arial, sans-serif;
-                background: #111827;
-                color: #f3f4f6;
-                margin: 0;
-                padding: 16px;
-            }}
-            .wrap {{
-                max-width: 1200px;
-                margin: 0 auto;
-            }}
-            .cards {{
-                display: grid;
-                grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-                gap: 12px;
-                margin-bottom: 16px;
-            }}
-            .card {{
-                background: #1f2937;
-                border-radius: 12px;
-                padding: 16px;
-            }}
-            table {{
-                width: 100%;
-                border-collapse: collapse;
-                margin-top: 12px;
-                background: #1f2937;
-                border-radius: 12px;
-                overflow: hidden;
-            }}
-            th, td {{
-                padding: 10px;
-                border-bottom: 1px solid #374151;
-                text-align: left;
-                font-size: 14px;
-            }}
-            h1, h2 {{
-                margin: 12px 0;
-            }}
-            .muted {{
-                color: #9ca3af;
-            }}
+            body {{ font-family: Arial, sans-serif; background: #111827; color: #f3f4f6; margin: 0; padding: 16px; }}
+            .wrap {{ max-width: 1280px; margin: 0 auto; }}
+            .cards {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-bottom: 16px; }}
+            .card {{ background: #1f2937; border-radius: 12px; padding: 16px; }}
+            table {{ width: 100%; border-collapse: collapse; margin-top: 12px; background: #1f2937; border-radius: 12px; overflow: hidden; }}
+            th, td {{ padding: 10px; border-bottom: 1px solid #374151; text-align: left; font-size: 14px; }}
+            h1, h2 {{ margin: 12px 0; }}
+            .muted {{ color: #9ca3af; }}
+            ul {{ background: #1f2937; padding: 16px 20px; border-radius: 12px; }}
         </style>
     </head>
     <body>
@@ -145,10 +120,13 @@ def dashboard():
                 <div class="card"><strong>Открытых позиций</strong><br>{len(open_positions)}</div>
             </div>
 
+            <h2>Текущий watchlist</h2>
+            <ul>{watchlist_items}</ul>
+
             <h2>Статусы инструментов</h2>
             <table>
                 <thead>
-                    <tr><th>Ticker</th><th>FIGI</th><th>Trading status</th><th>Updated</th></tr>
+                    <tr><th>Ticker</th><th>FIGI</th><th>Trading status</th><th>Min step</th><th>Note</th><th>Updated</th></tr>
                 </thead>
                 <tbody>{instrument_rows}</tbody>
             </table>
@@ -166,7 +144,7 @@ def dashboard():
                 <thead>
                     <tr>
                         <th>Time</th><th>Ticker</th><th>Dir</th><th>Entry</th><th>Exit</th>
-                        <th>Qty</th><th>Gross</th><th>PnL</th><th>Reason</th>
+                        <th>Qty</th><th>Gross</th><th>Commission</th><th>PnL</th><th>Reason</th>
                     </tr>
                 </thead>
                 <tbody>{rows}</tbody>
