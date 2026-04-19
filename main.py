@@ -270,22 +270,66 @@ def place_order_checked(client, ticker: str, figi: str, lots: int, raw_price: De
             order_type=OrderType.ORDER_TYPE_LIMIT,
             order_id=request_order_id,
         )
+        log.info(
+            f"{ticker}: post_order success | "
+            f"request_order_id={request_order_id} | "
+            f"response_order_id={getattr(resp, 'order_id', request_order_id)} | "
+            f"price={rounded_price} | lots={lots}"
+        )
 
-        try:
-            order_state = client.orders.get_order_state(
-                account_id=settings.TINVEST_ACCOUNT_ID,
-                order_id=request_order_id,
-            )
-            execution_report_status = str(getattr(order_state, "execution_report_status", "UNKNOWN"))
-            executed_order_price = getattr(order_state, "executed_order_price", None)
-            avg_price = quotation_to_decimal(executed_order_price) if executed_order_price else rounded_price
-        except Exception as e:
-            execution_report_status = "UNKNOWN"
-            avg_price = rounded_price
-            log.warning(f"{ticker}: не удалось получить get_order_state: {e}")
+        response_order_id = getattr(resp, "order_id", request_order_id)
+
+        log.info(
+            f"{ticker}: post_order success | "
+            f"request_order_id={request_order_id} | "
+            f"response_order_id={response_order_id} | "
+            f"price={rounded_price} | lots={lots}"
+        )
+
+        execution_report_status = "ORDER_STATE_PENDING"
+        avg_price = rounded_price
+
+        for attempt in range(1, 4):
+            try:
+                time.sleep(1)
+                order_state = client.orders.get_order_state(
+                    account_id=settings.TINVEST_ACCOUNT_ID,
+                    order_id=getattr(resp, "order_id", request_order_id),
+                )
+
+                execution_report_status = str(
+                    getattr(order_state, "execution_report_status", "UNKNOWN")
+                )
+
+                executed_order_price = getattr(order_state, "executed_order_price", None)
+                if executed_order_price:
+                    avg_price = quotation_to_decimal(executed_order_price)
+
+                log.info(
+                    f"{ticker}: get_order_state success on attempt {attempt}, "
+                    f"status={execution_report_status}, price={avg_price}"
+                )
+                break
+
+            except Exception as e:
+                msg = str(e)
+
+                if "50005" in msg or "Order not found" in msg:
+                    log.warning(
+                        f"{ticker}: get_order_state пока не найден "
+                        f"(attempt {attempt}/3), order_id={response_order_id}"
+                    )
+                    continue
+
+                log.warning(
+                    f"{ticker}: ошибка get_order_state (attempt {attempt}/3): {e}"
+                )
+                continue
+
+        response_order_id = getattr(resp, "order_id", request_order_id)
 
         return {
-            "response_order_id": getattr(resp, "order_id", request_order_id),
+            "response_order_id": response_order_id,
             "request_order_id": request_order_id,
             "requested_price": rounded_price,
             "executed_price": avg_price,
@@ -294,6 +338,7 @@ def place_order_checked(client, ticker: str, figi: str, lots: int, raw_price: De
 
     except Exception as e:
         msg = str(e)
+
         if "figi" in msg.lower():
             state.instrument_states[ticker] = {
                 "figi": figi,
@@ -463,6 +508,7 @@ def process_instrument(client, item):
             "qty": lot,
             "opened_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "open_order_id": order_result["response_order_id"],
+            "request_order_id": order_result["request_order_id"],
             "execution_status": order_result["execution_status"],
         }
         notifier.send(
@@ -471,7 +517,7 @@ def process_instrument(client, item):
             f"Цена: {order_result['executed_price']}\n"
             f"Количество: {lot}\n"
             f"Сумма сделки: {float(Decimal(str(order_result['executed_price'])) * lot):.2f} ₽\n"
-            f"Статус: {order_result['execution_status']}"
+            f"Статус исполнения: {order_result['execution_status']}"
         )
 
     elif sig == "SELL":
@@ -485,6 +531,7 @@ def process_instrument(client, item):
             "qty": lot,
             "opened_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "open_order_id": order_result["response_order_id"],
+            "request_order_id": order_result["request_order_id"],
             "execution_status": order_result["execution_status"],
         }
         notifier.send(
@@ -493,7 +540,7 @@ def process_instrument(client, item):
             f"Цена: {order_result['executed_price']}\n"
             f"Количество: {lot}\n"
             f"Сумма сделки: {float(Decimal(str(order_result['executed_price'])) * lot):.2f} ₽\n"
-            f"Статус: {order_result['execution_status']}"
+            f"Статус исполнения: {order_result['execution_status']}"
         )
 
 
