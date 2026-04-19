@@ -1,10 +1,10 @@
-import json
 import logging
 import os
 import time
 import uuid
 from datetime import datetime, timezone, timedelta, date
 from decimal import Decimal
+from threading import Thread
 
 from dotenv import load_dotenv
 
@@ -19,13 +19,18 @@ from t_tech.invest.sandbox.client import SandboxClient
 from t_tech.invest.utils import quotation_to_decimal
 
 from app.config import settings
-from app.instruments import (
-    get_watchlist_static,
-    pick_top_liquid,
-    get_instrument_meta,
-    round_to_price_step,
+from app.db import (
+    init_db,
+    set_runtime,
+    get_runtime,
+    get_setting,
+    list_instruments,
+    add_trade,
+    log_event,
 )
+from app.instruments import get_instrument_meta, round_to_price_step
 from app.telegram_notify import TelegramNotifier
+from app.telegram_bot import run_telegram_polling
 
 load_dotenv()
 
@@ -36,75 +41,38 @@ logging.basicConfig(
     level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
-        logging.FileHandler("logs/trading-bot.log", encoding="utf-8"),
+        logging.FileHandler(settings.LOG_FILE, encoding="utf-8"),
         logging.StreamHandler()
     ]
 )
 log = logging.getLogger("trading-bot")
 
+init_db()
+notifier = TelegramNotifier()
+
 
 class BotState:
     def __init__(self):
         self.status = "INIT"
-        self.session_started_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self.session_balance_start = 0.0
         self.session_balance_current = 0.0
         self.daily_pnl = Decimal("0")
         self.trades_today = 0
         self.open_positions = {}
-        self.closed_trades = []
-        self.last_error = ""
-        self.last_update = ""
-        self.instrument_states = {}
-        self.watchlist = []
         self.current_trade_date = str(date.today())
         self.instrument_meta = {}
 
-    def reset_daily(self):
-        self.status = "PRECHECK"
-        self.session_started_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        self.session_balance_start = self.session_balance_current
-        self.daily_pnl = Decimal("0")
-        self.trades_today = 0
-        self.open_positions = {}
-        self.closed_trades = []
-        self.last_error = ""
-        self.instrument_states = {}
-        self.watchlist = []
-        self.current_trade_date = str(date.today())
-        self.instrument_meta = {}
-
-    def to_dict(self):
-        return {
-            "status": self.status,
-            "session_started_at": self.session_started_at,
-            "session_balance_start": self.session_balance_start,
-            "session_balance_current": self.session_balance_current,
-            "daily_pnl": float(self.daily_pnl),
-            "trades_today": self.trades_today,
-            "open_positions": self.open_positions,
-            "closed_trades": self.closed_trades,
-            "last_error": self.last_error,
-            "last_update": self.last_update,
-            "instrument_states": self.instrument_states,
-            "watchlist": self.watchlist,
-            "current_trade_date": self.current_trade_date,
-        }
+    def sync_runtime(self, last_error=""):
+        set_runtime("status", self.status)
+        set_runtime("daily_pnl", str(self.daily_pnl))
+        set_runtime("trades_today", str(self.trades_today))
+        set_runtime("last_error", last_error)
+        set_runtime("session_balance_start", str(self.session_balance_start))
+        set_runtime("session_balance_current", str(self.session_balance_current))
+        set_runtime("current_trade_date", self.current_trade_date)
 
 
 state = BotState()
-notifier = TelegramNotifier()
-
-
-def save_json(path, data):
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-
-
-def save_runtime():
-    state.last_update = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    save_json(settings.RUNTIME_FILE, state.to_dict())
-    save_json(settings.TRADES_FILE, {"trades": state.closed_trades})
 
 
 def quotation_from_decimal(price: Decimal) -> Quotation:
@@ -177,82 +145,43 @@ def get_money_balance(client) -> float:
     return 0.0
 
 
-def build_watchlist(client):
-    base = get_watchlist_static(settings.CORE_INSTRUMENTS)
-    auto = pick_top_liquid(client, settings.LIQUIDITY_CANDIDATES, settings.AUTO_PICK_COUNT)
+def load_enabled_instruments(client):
+    items = list_instruments(enabled_only=True)
+    state.instrument_meta = {}
 
-    merged = []
-    seen = set()
-
-    for item in base + auto:
-        if item["ticker"] not in seen:
-            merged.append(item)
-            seen.add(item["ticker"])
-
-    state.watchlist = merged
-    return merged
-
-
-def load_instrument_meta(client, watchlist):
-    for item in watchlist:
-        ticker = item["ticker"]
-        figi = item["figi"]
-        meta = get_instrument_meta(client, figi)
-
+    for item in items:
+        meta = get_instrument_meta(client, item["figi"])
         if not meta:
-            state.instrument_states[ticker] = {
-                "figi": figi,
-                "trading_status": "UNKNOWN",
-                "min_price_increment": "",
-                "status_note": "INVALID_FIGI_OR_META_ERROR",
-                "updated_at": datetime.now().strftime("%H:%M:%S"),
-            }
+            log_event("INVALID_FIGI", f"Meta not loaded for figi={item['figi']}", ticker=item["ticker"], level="WARNING")
             continue
 
-        state.instrument_meta[ticker] = meta
-        state.instrument_states[ticker] = {
-            "figi": figi,
-            "trading_status": "PRECHECK",
-            "min_price_increment": str(meta["min_price_increment"]),
-            "status_note": "META_LOADED",
-            "updated_at": datetime.now().strftime("%H:%M:%S"),
+        state.instrument_meta[item["ticker"]] = {
+            "figi": item["figi"],
+            "ticker": item["ticker"],
+            "lot": item["lot"],
+            "name": item["name"],
+            "min_price_increment": Decimal(str(item["min_price_increment"])),
+            "lots_override": int(item["lots_override"]),
+            "stop_loss_pct": Decimal(str(item["stop_loss_pct"])),
+            "take_profit_pct": Decimal(str(item["take_profit_pct"])),
         }
 
-
-def send_session_start(client, watchlist):
-    state.session_balance_start = get_money_balance(client)
-    state.session_balance_current = state.session_balance_start
-
-    lines = [
-        f"🚀 {settings.BOT_NAME}: старт сессии",
-        f"Режим: {'SANDBOX' if settings.TINVEST_USE_SANDBOX else 'PROD'}",
-        f"Баланс на старте: {state.session_balance_start:.2f} ₽",
-        "Инструменты: " + ", ".join([x["ticker"] for x in watchlist]),
-    ]
-    notifier.send("\n".join(lines))
+    return list(state.instrument_meta.values())
 
 
-def maybe_reset_daily(client):
+def maybe_reset_daily():
     today = str(date.today())
     if state.current_trade_date != today:
-        notifier.send_session_summary(state.to_dict())
-        state.reset_daily()
-        state.session_balance_current = get_money_balance(client)
-        save_runtime()
-        return True
-    return False
+        state.daily_pnl = Decimal("0")
+        state.trades_today = 0
+        state.current_trade_date = today
+        log_event("DAILY_RESET", "Daily counters reset")
 
 
 def place_order_checked(client, ticker: str, figi: str, lots: int, raw_price: Decimal, direction: OrderDirection):
     meta = state.instrument_meta.get(ticker)
     if not meta:
-        state.instrument_states[ticker] = {
-            "figi": figi,
-            "trading_status": "UNKNOWN",
-            "min_price_increment": "",
-            "status_note": "NO_META_SKIP",
-            "updated_at": datetime.now().strftime("%H:%M:%S"),
-        }
+        log_event("ORDER_ERROR", "NO_META_SKIP", ticker=ticker, level="WARNING")
         return None
 
     step = meta["min_price_increment"]
@@ -270,71 +199,36 @@ def place_order_checked(client, ticker: str, figi: str, lots: int, raw_price: De
             order_type=OrderType.ORDER_TYPE_LIMIT,
             order_id=request_order_id,
         )
-        log.info(
-            f"{ticker}: post_order success | "
-            f"request_order_id={request_order_id} | "
-            f"response_order_id={getattr(resp, 'order_id', request_order_id)} | "
-            f"price={rounded_price} | lots={lots}"
-        )
 
         response_order_id = getattr(resp, "order_id", request_order_id)
-
-        log.info(
-            f"{ticker}: post_order success | "
-            f"request_order_id={request_order_id} | "
-            f"response_order_id={response_order_id} | "
-            f"price={rounded_price} | lots={lots}"
-        )
+        log_event("ORDER_OPEN", f"post_order success request={request_order_id} response={response_order_id}", ticker=ticker)
 
         execution_report_status = "ORDER_STATE_PENDING"
         avg_price = rounded_price
+        lots_executed = lots
 
         for attempt in range(1, 4):
             try:
                 time.sleep(1)
                 order_state = client.orders.get_order_state(
                     account_id=settings.TINVEST_ACCOUNT_ID,
-                    order_id=getattr(resp, "order_id", request_order_id),
+                    order_id=response_order_id,
                 )
-
-                execution_report_status = str(
-                    getattr(order_state, "execution_report_status", "UNKNOWN")
-                )
-
+                execution_report_status = str(getattr(order_state, "execution_report_status", "UNKNOWN"))
                 executed_order_price = getattr(order_state, "executed_order_price", None)
+                lots_executed_raw = getattr(order_state, "lots_executed", None)
 
-                if executed_order_price is not None:
-                    tmp_price = quotation_to_decimal(executed_order_price)
+                if executed_order_price:
+                    avg_price = quotation_to_decimal(executed_order_price)
 
-                    if tmp_price > 0:
-                        avg_price = tmp_price
-                    else:
-                        log.warning(
-                            f"{ticker}: get_order_state returned non-positive executed price "
-                            f"({tmp_price}), fallback to requested price {rounded_price}"
-                        )
-                log.info(
-                    f"{ticker}: get_order_state success on attempt {attempt}, "
-                    f"status={execution_report_status}, price={avg_price}"
-                )
+                if lots_executed_raw is not None:
+                    lots_executed = int(lots_executed_raw)
+
                 break
-
             except Exception as e:
                 msg = str(e)
-
                 if "50005" in msg or "Order not found" in msg:
-                    log.warning(
-                        f"{ticker}: get_order_state пока не найден "
-                        f"(attempt {attempt}/3), order_id={response_order_id}"
-                    )
                     continue
-
-                log.warning(
-                    f"{ticker}: ошибка get_order_state (attempt {attempt}/3): {e}"
-                )
-                continue
-
-        response_order_id = getattr(resp, "order_id", request_order_id)
 
         return {
             "response_order_id": response_order_id,
@@ -342,58 +236,27 @@ def place_order_checked(client, ticker: str, figi: str, lots: int, raw_price: De
             "requested_price": rounded_price,
             "executed_price": avg_price,
             "execution_status": execution_report_status,
+            "lots_executed": lots_executed,
         }
 
     except Exception as e:
         msg = str(e)
-
         if "figi" in msg.lower():
-            state.instrument_states[ticker] = {
-                "figi": figi,
-                "trading_status": "INVALID",
-                "min_price_increment": str(step),
-                "status_note": "INVALID_FIGI_SKIP",
-                "updated_at": datetime.now().strftime("%H:%M:%S"),
-            }
-            log.warning(f"{ticker}: некорректный FIGI, инструмент пропущен: {msg}")
+            log_event("INVALID_FIGI", msg, ticker=ticker, level="WARNING")
             return None
-
-        if "30079" in msg or "minimum price increment" in msg.lower():
-            state.instrument_states[ticker]["status_note"] = "BAD_PRICE_STEP"
-            log.warning(f"{ticker}: ошибка шага цены: {msg}")
-            return None
-
+        log_event("ORDER_ERROR", msg, ticker=ticker, level="ERROR")
         raise
 
 
 def process_instrument(client, item):
     ticker = item["ticker"]
     figi = item["figi"]
-
-    if ticker not in state.instrument_meta:
-        state.instrument_states[ticker] = {
-            "figi": figi,
-            "trading_status": "UNKNOWN",
-            "min_price_increment": "",
-            "status_note": "META_NOT_FOUND_SKIP",
-            "updated_at": datetime.now().strftime("%H:%M:%S"),
-        }
-        return
-
-    meta = state.instrument_meta[ticker]
-    lot = meta["lot"] if meta.get("lot") else item["lot"]
+    lot = item["lots_override"]
+    stop_loss_pct = item["stop_loss_pct"]
+    take_profit_pct = item["take_profit_pct"]
 
     trading_status = get_trading_status(client, figi)
-    state.instrument_states[ticker] = {
-        "figi": figi,
-        "trading_status": str(trading_status),
-        "min_price_increment": str(meta["min_price_increment"]),
-        "status_note": "OK",
-        "updated_at": datetime.now().strftime("%H:%M:%S"),
-    }
-
     if not is_tradable(trading_status):
-        log.info(f"{ticker}: статус {trading_status}, торговля пропущена")
         return
 
     try:
@@ -402,13 +265,11 @@ def process_instrument(client, item):
     except Exception as e:
         msg = str(e)
         if "figi" in msg.lower():
-            state.instrument_states[ticker]["status_note"] = "INVALID_FIGI_SKIP"
-            log.warning(f"{ticker}: ошибка по FIGI при market data: {msg}")
+            log_event("INVALID_FIGI", msg, ticker=ticker, level="WARNING")
             return
         raise
 
     if len(candles) < 5:
-        log.info(f"{ticker}: мало свечей")
         return
 
     support, resistance = calc_support_resistance(candles)
@@ -420,11 +281,11 @@ def process_instrument(client, item):
         qty = int(pos["qty"])
 
         if direction == "BUY":
-            sl_price = entry_price * (Decimal("1") - settings.STOP_LOSS_PCT)
-            tp_price = entry_price * (Decimal("1") + settings.TAKE_PROFIT_PCT)
+            sl_price = entry_price * (Decimal("1") - stop_loss_pct)
+            tp_price = entry_price * (Decimal("1") + take_profit_pct)
         else:
-            sl_price = entry_price * (Decimal("1") + settings.STOP_LOSS_PCT)
-            tp_price = entry_price * (Decimal("1") - settings.TAKE_PROFIT_PCT)
+            sl_price = entry_price * (Decimal("1") + stop_loss_pct)
+            tp_price = entry_price * (Decimal("1") - take_profit_pct)
 
         close_signal = False
         close_reason = ""
@@ -445,24 +306,20 @@ def process_instrument(client, item):
                 close_reason = "TAKE_PROFIT"
 
         if close_signal:
-            close_dir = (
-                OrderDirection.ORDER_DIRECTION_SELL
-                if direction == "BUY"
-                else OrderDirection.ORDER_DIRECTION_BUY
-            )
-
+            close_dir = OrderDirection.ORDER_DIRECTION_SELL if direction == "BUY" else OrderDirection.ORDER_DIRECTION_BUY
             order_result = place_order_checked(client, ticker, figi, qty, price, close_dir)
             if not order_result:
                 return
 
             exit_price = Decimal(str(order_result["executed_price"]))
-            gross_amount = exit_price * qty
-            commission = (entry_price * qty + exit_price * qty) * settings.ESTIMATED_COMMISSION_PCT
+            exec_qty = int(order_result["lots_executed"] or qty)
+            gross_amount = exit_price * exec_qty
+            commission = (entry_price * exec_qty + exit_price * exec_qty) * settings.ESTIMATED_COMMISSION_PCT
 
             if direction == "BUY":
-                pnl = (exit_price - entry_price) * qty - commission
+                pnl = (exit_price - entry_price) * exec_qty - commission
             else:
-                pnl = (entry_price - exit_price) * qty - commission
+                pnl = (entry_price - exit_price) * exec_qty - commission
 
             state.daily_pnl += pnl
             state.trades_today += 1
@@ -474,7 +331,7 @@ def process_instrument(client, item):
                 "direction": direction,
                 "entry": float(entry_price),
                 "exit": float(exit_price),
-                "qty": qty,
+                "qty": exec_qty,
                 "gross_amount": float(gross_amount),
                 "commission": float(commission),
                 "pnl": float(pnl),
@@ -482,7 +339,8 @@ def process_instrument(client, item):
                 "close_order_id": order_result["response_order_id"],
                 "execution_status": order_result["execution_status"],
             }
-            state.closed_trades.append(trade)
+            add_trade(trade)
+            log_event("ORDER_CLOSE", f"{ticker} pnl={float(pnl):.2f} reason={close_reason}", ticker=ticker)
             del state.open_positions[ticker]
 
             notifier.send(
@@ -490,20 +348,19 @@ def process_instrument(client, item):
                 f"{ticker} | {direction}\n"
                 f"Вход: {entry_price}\n"
                 f"Выход: {exit_price}\n"
-                f"Объём: {float(gross_amount):.2f} ₽\n"
-                f"Комиссия: {float(commission):.2f} ₽\n"
                 f"PnL: {float(pnl):.2f} ₽\n"
-                f"Причина: {close_reason}\n"
-                f"Статус: {order_result['execution_status']}"
+                f"Причина: {close_reason}"
             )
         return
 
-    if len(state.open_positions) >= settings.MAX_OPEN_POSITIONS:
+    if len(state.open_positions) >= int(get_setting("max_open_positions", "2")):
         return
 
     sig = get_signal(price, support, resistance)
     if not sig:
         return
+
+    log_event("SIGNAL", f"{sig} on {ticker}", ticker=ticker)
 
     if sig == "BUY":
         order_result = place_order_checked(client, ticker, figi, lot, price, OrderDirection.ORDER_DIRECTION_BUY)
@@ -513,20 +370,12 @@ def process_instrument(client, item):
             "figi": figi,
             "direction": "BUY",
             "entry_price": float(order_result["executed_price"]),
-            "qty": lot,
+            "qty": int(order_result["lots_executed"] or lot),
             "opened_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "open_order_id": order_result["response_order_id"],
-            "request_order_id": order_result["request_order_id"],
             "execution_status": order_result["execution_status"],
         }
-        notifier.send(
-            f"🟢 Открытие позиции\n"
-            f"{ticker} | BUY\n"
-            f"Цена: {order_result['executed_price']}\n"
-            f"Количество: {lot}\n"
-            f"Сумма сделки: {float(Decimal(str(order_result['executed_price'])) * lot):.2f} ₽\n"
-            f"Статус исполнения: {order_result['execution_status']}"
-        )
+        notifier.send(f"🟢 Открытие позиции\n{ticker} | BUY\nЦена: {order_result['executed_price']}")
 
     elif sig == "SELL":
         order_result = place_order_checked(client, ticker, figi, lot, price, OrderDirection.ORDER_DIRECTION_SELL)
@@ -536,77 +385,76 @@ def process_instrument(client, item):
             "figi": figi,
             "direction": "SELL",
             "entry_price": float(order_result["executed_price"]),
-            "qty": lot,
+            "qty": int(order_result["lots_executed"] or lot),
             "opened_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "open_order_id": order_result["response_order_id"],
-            "request_order_id": order_result["request_order_id"],
             "execution_status": order_result["execution_status"],
         }
-        notifier.send(
-            f"🔴 Открытие позиции\n"
-            f"{ticker} | SELL\n"
-            f"Цена: {order_result['executed_price']}\n"
-            f"Количество: {lot}\n"
-            f"Сумма сделки: {float(Decimal(str(order_result['executed_price'])) * lot):.2f} ₽\n"
-            f"Статус исполнения: {order_result['execution_status']}"
-        )
+        notifier.send(f"🔴 Открытие позиции\n{ticker} | SELL\nЦена: {order_result['executed_price']}")
 
 
 def main():
-    log.info("=== Bot v3.2 started ===")
+    log.info("=== Bot v3.3 started ===")
+    log_event("BOT_START", "Bot started")
+
+    if settings.TELEGRAM_ENABLED and settings.TELEGRAM_POLLING_ENABLED:
+        Thread(target=run_telegram_polling, daemon=True).start()
+
     state.status = "PRECHECK"
-    save_runtime()
+    state.sync_runtime()
 
     client_cls = SandboxClient if settings.TINVEST_USE_SANDBOX else Client
 
     with client_cls(settings.TINVEST_TOKEN) as client:
-        watchlist = build_watchlist(client)
-        load_instrument_meta(client, watchlist)
-        send_session_start(client, watchlist)
+        state.session_balance_start = get_money_balance(client)
+        state.session_balance_current = state.session_balance_start
         state.status = "SCANNING"
-        save_runtime()
+        state.sync_runtime()
 
         while True:
             try:
-                if maybe_reset_daily(client):
-                    watchlist = build_watchlist(client)
-                    load_instrument_meta(client, watchlist)
-                    send_session_start(client, watchlist)
+                maybe_reset_daily()
 
-                if state.trades_today >= settings.MAX_TRADES_PER_DAY:
-                    state.status = "SESSION_STOPPED_BY_LIMIT"
-                    notifier.send("⛔ Лимит сделок за день достигнут. Бот остановил входы.")
-                    save_runtime()
-                    time.sleep(3600)
+                if get_setting("bot_enabled", "1") != "1":
+                    state.status = "DISABLED"
+                    state.sync_runtime()
+                    time.sleep(5)
                     continue
 
-                if state.daily_pnl <= -settings.MAX_DAILY_LOSS_RUB:
+                if state.trades_today >= int(get_setting("max_trades_per_day", "15")):
                     state.status = "SESSION_STOPPED_BY_LIMIT"
-                    notifier.send(f"⛔ Дневной лимит убытка достигнут: {float(state.daily_pnl):.2f} ₽")
-                    save_runtime()
-                    time.sleep(3600)
+                    state.sync_runtime()
+                    time.sleep(60)
                     continue
+
+                max_loss = Decimal(get_setting("max_daily_loss_rub", "200"))
+                if state.daily_pnl <= -max_loss:
+                    state.status = "SESSION_STOPPED_BY_LIMIT"
+                    state.sync_runtime()
+                    time.sleep(60)
+                    continue
+
+                watchlist = load_enabled_instruments(client)
 
                 for item in watchlist:
                     process_instrument(client, item)
 
                 state.session_balance_current = get_money_balance(client)
                 state.status = "SCANNING"
-                save_runtime()
+                state.sync_runtime()
                 time.sleep(settings.CHECK_INTERVAL_SEC)
 
             except KeyboardInterrupt:
-                state.status = "SESSION_FINISHED"
-                state.session_balance_current = get_money_balance(client)
-                save_runtime()
-                notifier.send_session_summary(state.to_dict())
+                state.status = "STOPPED"
+                state.sync_runtime()
+                log_event("BOT_STOP", "Bot stopped by keyboard interrupt")
                 break
             except Exception as e:
                 state.status = "ERROR"
-                state.last_error = str(e)
+                state.sync_runtime(last_error=str(e))
                 log.exception("Ошибка основного цикла")
+                log_event("BOT_ERROR", str(e), level="ERROR")
                 notifier.send(f"⚠️ Ошибка бота: {e}")
-                save_runtime()
                 time.sleep(10)
 
 

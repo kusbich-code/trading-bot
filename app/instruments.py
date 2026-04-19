@@ -4,31 +4,6 @@ from decimal import Decimal, ROUND_HALF_UP
 from t_tech.invest import CandleInterval
 from t_tech.invest.utils import quotation_to_decimal
 
-INSTRUMENTS = {
-    "SBER": {"ticker": "SBER", "figi": "BBG004730N88", "lot": 10},
-    "SMLT": {"ticker": "SMLT", "figi": "BBG012N7X2Z0", "lot": 1},
-    "GAZP": {"ticker": "GAZP", "figi": "BBG004730RP0", "lot": 10},
-    "LKOH": {"ticker": "LKOH", "figi": "BBG004731032", "lot": 1},
-    "ROSN": {"ticker": "ROSN", "figi": "BBG004731354", "lot": 1},
-    "TATN": {"ticker": "TATN", "figi": "BBG004RVFFC0", "lot": 1},
-    "VTBR": {"ticker": "VTBR", "figi": "BBG004730ZJ9", "lot": 10000},
-    "NVTK": {"ticker": "NVTK", "figi": "BBG00475KKY8", "lot": 1},
-    "MOEX": {"ticker": "MOEX", "figi": "BBG004730JJ5", "lot": 10},
-}
-
-
-def get_by_ticker(ticker):
-    return INSTRUMENTS.get(ticker.upper())
-
-
-def get_watchlist_static(tickers):
-    result = []
-    for t in tickers:
-        item = get_by_ticker(t)
-        if item:
-            result.append(item)
-    return result
-
 
 def estimate_liquidity_score(client, figi: str, minutes=30):
     now = datetime.now(timezone.utc)
@@ -42,22 +17,6 @@ def estimate_liquidity_score(client, figi: str, minutes=30):
     if not candles:
         return 0
     return sum(getattr(c, "volume", 0) or 0 for c in candles)
-
-
-def pick_top_liquid(client, candidate_tickers, count=2):
-    scored = []
-    for ticker in candidate_tickers:
-        item = get_by_ticker(ticker)
-        if not item:
-            continue
-        try:
-            score = estimate_liquidity_score(client, item["figi"], minutes=30)
-            scored.append((score, item))
-        except Exception:
-            continue
-
-    scored.sort(key=lambda x: x[0], reverse=True)
-    return [item for _, item in scored[:count]]
 
 
 def get_instrument_meta(client, figi: str):
@@ -74,7 +33,7 @@ def get_instrument_meta(client, figi: str):
         return {
             "figi": figi,
             "ticker": getattr(instrument, "ticker", ""),
-            "lot": int(lot) if lot else None,
+            "lot": int(lot) if lot else 1,
             "name": getattr(instrument, "name", ""),
             "min_price_increment": mpi,
         }
@@ -87,3 +46,21 @@ def round_to_price_step(price: Decimal, min_price_increment: Decimal) -> Decimal
         return price
     steps = (price / min_price_increment).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
     return (steps * min_price_increment).quantize(min_price_increment)
+
+
+def find_instruments(client, query: str):
+    try:
+        resp = client.instruments.find_instrument(query=query)
+        items = []
+        for x in getattr(resp, "instruments", []):
+            mpi = getattr(x, "min_price_increment", None)
+            items.append({
+                "ticker": getattr(x, "ticker", ""),
+                "figi": getattr(x, "figi", ""),
+                "name": getattr(x, "name", ""),
+                "lot": getattr(x, "lot", 1),
+                "min_price_increment": str(quotation_to_decimal(mpi)) if mpi else "0.01",
+            })
+        return items
+    except Exception:
+        return []
