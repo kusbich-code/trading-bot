@@ -231,26 +231,38 @@ def maybe_reset_daily(client):
 
 
 def process_instrument(client, item):
+    
     ticker = item["ticker"]
     figi = item["figi"]
     lot = item["lot"]
+    
+    try:
+        trading_status = get_trading_status(client, figi)
+        state.instrument_states[ticker] = {
+            "figi": figi,
+            "trading_status": str(trading_status),
+            "updated_at": datetime.now().strftime("%H:%M:%S"),
+         }
 
-    trading_status = get_trading_status(client, figi)
-    state.instrument_states[ticker] = {
-        "figi": figi,
-        "trading_status": str(trading_status),
-        "updated_at": datetime.now().strftime("%H:%M:%S"),
-    }
+        if not is_tradable(trading_status):
+            log.info(f"{ticker}: статус {trading_status}, торговля пропущена")
+            return
 
-    if not is_tradable(trading_status):
-        log.info(f"{ticker}: статус {trading_status}, торговля пропущена")
-        return
+        price = get_last_price(client, figi)
+        candles = get_candles(client, figi, n=20)
 
-    price = get_last_price(client, figi)
-    candles = get_candles(client, figi, n=20)
-
-    if len(candles) < 5:
-        log.info(f"{ticker}: мало свечей")
+        if len(candles) < 5:
+            log.info(f"{ticker}: мало свечей")
+            return
+        
+    except Exception as e:
+        log.error(f"{ticker}: ошибка обработки инструмента {figi}: {e}", exc_info=True)
+        state.instrument_states[ticker] = {
+            "figi": figi,
+            "trading_status": "ERROR",
+            "updated_at": datetime.now().strftime("%H:%M:%S"),
+            "error": str(e),
+        }
         return
 
     support, resistance = calc_support_resistance(candles)
