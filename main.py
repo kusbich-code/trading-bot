@@ -302,9 +302,17 @@ def place_order_checked(client, ticker: str, figi: str, lots: int, raw_price: De
                 )
 
                 executed_order_price = getattr(order_state, "executed_order_price", None)
-                if executed_order_price:
-                    avg_price = quotation_to_decimal(executed_order_price)
 
+                if executed_order_price is not None:
+                    tmp_price = quotation_to_decimal(executed_order_price)
+
+                    if tmp_price > 0:
+                        avg_price = tmp_price
+                    else:
+                        log.warning(
+                            f"{ticker}: get_order_state returned non-positive executed price "
+                            f"({tmp_price}), fallback to requested price {rounded_price}"
+                        )
                 log.info(
                     f"{ticker}: get_order_state success on attempt {attempt}, "
                     f"status={execution_report_status}, price={avg_price}"
