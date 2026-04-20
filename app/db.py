@@ -34,6 +34,13 @@ def seed_setting(cur, key, value):
     if not row:
         cur.execute("INSERT INTO bot_settings(key, value) VALUES (?, ?)", (key, str(value)))
 
+def seed_strategy_values(cur, strategy_name, values: dict):
+    for key, value in values.items():
+        cur.execute("""
+        INSERT INTO strategy_profile_values(strategy_name, setting_key, setting_value)
+        VALUES (?, ?, ?)
+        ON CONFLICT(strategy_name, setting_key) DO NOTHING
+        """, (strategy_name, key, str(value)))
 
 def init_db():
     with db_cursor() as cur:
@@ -143,6 +150,35 @@ def init_db():
             UNIQUE(profile_name, setting_key)
         )
         """)
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS strategy_profiles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            strategy_name TEXT NOT NULL UNIQUE,
+            is_active INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+        """)
+
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS strategy_profile_values (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            strategy_name TEXT NOT NULL,
+            setting_key TEXT NOT NULL,
+            setting_value TEXT NOT NULL,
+            UNIQUE(strategy_name, setting_key)
+        )
+        """)
+
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS instrument_market_state (
+            figi TEXT PRIMARY KEY,
+            ticker TEXT NOT NULL,
+            last_price TEXT DEFAULT '0',
+            price_time TEXT DEFAULT '',
+            volume_1m INTEGER DEFAULT 0,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+        """)
         ensure_instruments_columns(cur)
 
 
@@ -188,6 +224,7 @@ def ensure_instruments_columns(cur):
         seed_setting(cur, "telegram_errors_only", "0")
         seed_setting(cur, "auto_reload_settings", "1")
         seed_setting(cur, "active_profile_name", "Основной")
+        seed_setting(cur, "active_strategy_name", "Сбалансированный")
 
         cur.execute("SELECT id FROM settings_profiles WHERE profile_name = ?", ("Основной",))
         if not cur.fetchone():
@@ -195,6 +232,60 @@ def ensure_instruments_columns(cur):
             INSERT INTO settings_profiles(profile_name, is_active)
             VALUES (?, ?)
             """, ("Основной", 1))
+
+        cur.execute("SELECT id FROM strategy_profiles WHERE strategy_name = ?", ("Агрессивный",))
+        if not cur.fetchone():
+            cur.execute("INSERT INTO strategy_profiles(strategy_name, is_active) VALUES (?, 0)", ("Агрессивный",))
+
+        cur.execute("SELECT id FROM strategy_profiles WHERE strategy_name = ?", ("Спокойный",))
+        if not cur.fetchone():
+            cur.execute("INSERT INTO strategy_profiles(strategy_name, is_active) VALUES (?, 0)", ("Спокойный",))
+
+        cur.execute("SELECT id FROM strategy_profiles WHERE strategy_name = ?", ("Сбалансированный",))
+        if not cur.fetchone():
+            cur.execute("INSERT INTO strategy_profiles(strategy_name, is_active) VALUES (?, 1)", ("Сбалансированный",))
+
+        seed_strategy_values(cur, "Агрессивный", {
+            "max_trades_per_day": "40",
+            "max_daily_loss_rub": "600",
+            "max_open_positions": "5",
+            "check_interval_sec": "3",
+            "default_stop_loss_pct": "0.0040",
+            "default_take_profit_pct": "0.0080",
+            "estimated_commission_pct": "0.0004",
+            "allow_long_global": "1",
+            "allow_short_global": "1",
+            "trade_only_session": "1",
+            "pause_after_error_sec": "5",
+        })
+
+        seed_strategy_values(cur, "Спокойный", {
+            "max_trades_per_day": "8",
+            "max_daily_loss_rub": "150",
+            "max_open_positions": "1",
+            "check_interval_sec": "10",
+            "default_stop_loss_pct": "0.0020",
+            "default_take_profit_pct": "0.0035",
+            "estimated_commission_pct": "0.0004",
+            "allow_long_global": "1",
+            "allow_short_global": "0",
+            "trade_only_session": "1",
+            "pause_after_error_sec": "15",
+        })
+
+        seed_strategy_values(cur, "Сбалансированный", {
+            "max_trades_per_day": "15",
+            "max_daily_loss_rub": "250",
+            "max_open_positions": "2",
+            "check_interval_sec": "5",
+            "default_stop_loss_pct": "0.0025",
+            "default_take_profit_pct": "0.0050",
+            "estimated_commission_pct": "0.0004",
+            "allow_long_global": "1",
+            "allow_short_global": "1",
+            "trade_only_session": "1",
+            "pause_after_error_sec": "10",
+        })            
 
 
 def get_setting(key, default=None):
@@ -640,3 +731,97 @@ def get_trade_stats_today(date_prefix: str | None = None):
             "total_pnl": 0,
             "total_commission": 0,
         }
+    
+def list_strategy_profiles():
+    with db_cursor() as cur:
+        cur.execute("""
+        SELECT * FROM strategy_profiles
+        ORDER BY strategy_name ASC
+        """)
+        return [dict(row) for row in cur.fetchall()]
+
+
+def activate_strategy_profile(strategy_name: str):
+    with db_cursor() as cur:
+        cur.execute("UPDATE strategy_profiles SET is_active = 0")
+        cur.execute("""
+        UPDATE strategy_profiles
+        SET is_active = 1
+        WHERE strategy_name = ?
+        """, (strategy_name,))
+
+        cur.execute("""
+        SELECT setting_key, setting_value
+        FROM strategy_profile_values
+        WHERE strategy_name = ?
+        """, (strategy_name,))
+        rows = cur.fetchall()
+
+        for row in rows:
+            cur.execute("""
+            INSERT INTO bot_settings(key, value)
+            VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """, (row["setting_key"], row["setting_value"]))
+
+        cur.execute("""
+        INSERT INTO bot_settings(key, value)
+        VALUES ('active_strategy_name', ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        """, (strategy_name,))
+
+
+def save_current_settings_to_strategy(strategy_name: str):
+    with db_cursor() as cur:
+        cur.execute("""
+        INSERT OR IGNORE INTO strategy_profiles(strategy_name, is_active)
+        VALUES (?, 0)
+        """, (strategy_name,))
+
+        cur.execute("SELECT key, value FROM bot_settings")
+        rows = cur.fetchall()
+        trade_keys = {
+            "max_trades_per_day",
+            "max_daily_loss_rub",
+            "max_open_positions",
+            "check_interval_sec",
+            "default_stop_loss_pct",
+            "default_take_profit_pct",
+            "estimated_commission_pct",
+            "allow_long_global",
+            "allow_short_global",
+            "trade_only_session",
+            "pause_after_error_sec",
+        }
+
+        for row in rows:
+            if row["key"] not in trade_keys:
+                continue
+            cur.execute("""
+            INSERT INTO strategy_profile_values(strategy_name, setting_key, setting_value)
+            VALUES (?, ?, ?)
+            ON CONFLICT(strategy_name, setting_key) DO UPDATE SET setting_value = excluded.setting_value
+            """, (strategy_name, row["key"], row["value"]))
+
+
+def upsert_instrument_market_state(figi: str, ticker: str, last_price, price_time: str, volume_1m: int = 0):
+    with db_cursor() as cur:
+        cur.execute("""
+        INSERT INTO instrument_market_state(figi, ticker, last_price, price_time, volume_1m, updated_at)
+        VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(figi) DO UPDATE SET
+            ticker = excluded.ticker,
+            last_price = excluded.last_price,
+            price_time = excluded.price_time,
+            volume_1m = excluded.volume_1m,
+            updated_at = CURRENT_TIMESTAMP
+        """, (figi, ticker, str(last_price), price_time, int(volume_1m)))
+
+
+def get_instrument_market_state():
+    with db_cursor() as cur:
+        cur.execute("""
+        SELECT * FROM instrument_market_state
+        ORDER BY ticker ASC
+        """)
+        return [dict(row) for row in cur.fetchall()]

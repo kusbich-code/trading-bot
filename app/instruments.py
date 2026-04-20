@@ -73,3 +73,27 @@ def find_instruments(client, query: str):
         return items
     except Exception:
         return []
+    
+def get_popular_tickers():
+    return [
+        "SBER", "GAZP", "LKOH", "ROSN", "NVTK",
+        "GMKN", "TATN", "VTBR", "SMLT", "MGNT",
+        "YDEX", "MOEX", "CHMF", "PLZL", "ALRS",
+        "SNGS", "PIKK", "AFKS", "RUAL", "IRAO",
+    ]
+
+
+def get_last_prices_for_figis(client, figis: list[str]):
+    if not figis:
+        return {}
+
+    resp = client.market_data.get_last_prices(figi=figis)
+    result = {}
+    for item in getattr(resp, "last_prices", []):
+        price = quotation_to_decimal(item.price)
+        t = getattr(item, "time", None)
+        result[item.figi] = {
+            "last_price": str(price),
+            "price_time": str(t) if t else "",
+        }
+    return result

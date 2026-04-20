@@ -30,6 +30,7 @@ from app.db import (
     upsert_position,
     close_position,
     clear_open_positions,
+    upsert_instrument_market_state,
 )
 from app.instruments import get_instrument_meta, round_to_price_step
 from app.telegram_notify import TelegramNotifier
@@ -402,6 +403,14 @@ def process_instrument(client, item):
         price = get_last_price(client, figi)
         candles = get_candles(client, figi, n=20)
         spread_pct = get_order_book_spread_pct(client, figi)
+        last_volume = get_last_candle_volume(candles)
+        upsert_instrument_market_state(
+            figi=figi,
+            ticker=ticker,
+            last_price=price,
+            price_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            volume_1m=last_volume,
+        )
     except Exception as e:
         msg = str(e)
         if "figi" in msg.lower():
