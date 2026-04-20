@@ -26,6 +26,7 @@ from app.db import (
     create_settings_profile,
     activate_settings_profile,
     save_current_settings_to_profile,
+    get_trade_stats_today,
 )
 from app.instruments import find_instruments
 from app.control import run_control
@@ -302,6 +303,8 @@ def dashboard(tab: str = "главное"):
     instruments = list_instruments()
     trades = get_trades(limit=50)
     open_positions = get_open_positions()
+    today_prefix = __import__("datetime").datetime.now().strftime("%Y-%m-%d")
+    trade_stats_today = get_trade_stats_today(today_prefix)
     logs = get_logs(limit=80)
     system_logs = get_system_logs(limit=80)
     error_logs = get_error_logs(limit=80)
@@ -324,6 +327,8 @@ def dashboard(tab: str = "главное"):
         <div class="карточка"><div class="метка">Баланс на старте</div><div class="значение">{state['session_balance_start']}</div></div>
         <div class="карточка"><div class="метка">Текущий баланс</div><div class="значение">{state['session_balance_current']}</div></div>
         <div class="карточка"><div class="метка">Активный профиль</div><div class="значение">{state['active_profile_name']}</div></div>
+        <div class="карточка"><div class="метка">Сделок по истории за сегодня</div><div class="значение">{trade_stats_today['trades_count']}</div></div>
+        <div class="карточка"><div class="метка">Комиссии за сегодня</div><div class="значение">{trade_stats_today['total_commission']}</div></div>
         <div class="карточка"><div class="метка">Последняя ошибка</div><div class="значение">{state['last_error'] or '-'}</div></div>
     </section>
     """

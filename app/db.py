@@ -569,3 +569,34 @@ def get_system_logs(limit=200, date_from=None, date_to=None):
 
         cur.execute(query, params)
         return [dict(row) for row in cur.fetchall()]
+    
+def clear_open_positions():
+    with db_cursor() as cur:
+        cur.execute("DELETE FROM positions WHERE status = 'OPEN'")
+
+
+def get_trade_stats_today(date_prefix: str | None = None):
+    with db_cursor() as cur:
+        if date_prefix:
+            cur.execute("""
+            SELECT 
+                COUNT(*) as trades_count,
+                COALESCE(SUM(pnl), 0) as total_pnl,
+                COALESCE(SUM(commission), 0) as total_commission
+            FROM trades
+            WHERE time LIKE ?
+            """, (f"{date_prefix}%",))
+        else:
+            cur.execute("""
+            SELECT 
+                COUNT(*) as trades_count,
+                COALESCE(SUM(pnl), 0) as total_pnl,
+                COALESCE(SUM(commission), 0) as total_commission
+            FROM trades
+            """)
+        row = cur.fetchone()
+        return dict(row) if row else {
+            "trades_count": 0,
+            "total_pnl": 0,
+            "total_commission": 0,
+        }

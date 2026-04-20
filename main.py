@@ -29,6 +29,7 @@ from app.db import (
     log_event,
     upsert_position,
     close_position,
+    clear_open_positions,
 )
 from app.instruments import get_instrument_meta, round_to_price_step
 from app.telegram_notify import TelegramNotifier
@@ -88,6 +89,104 @@ def get_last_price(client, figi: str) -> Decimal:
     resp = client.market_data.get_last_prices(figi=[figi])
     return quotation_to_decimal(resp.last_prices[0].price)
 
+def get_order_book_spread_pct(client, figi: str) -> Decimal:
+    try:
+        book = client.market_data.get_order_book(figi=figi, depth=1)
+        bids = getattr(book, "bids", []) or []
+        asks = getattr(book, "asks", []) or []
+
+        if not bids or not asks:
+            return Decimal("0")
+
+        best_bid = quotation_to_decimal(bids[0].price)
+        best_ask = quotation_to_decimal(asks[0].price)
+
+        if best_bid <= 0 or best_ask <= 0:
+            return Decimal("0")
+
+        mid = (best_bid + best_ask) / Decimal("2")
+        if mid <= 0:
+            return Decimal("0")
+
+        spread_pct = (best_ask - best_bid) / mid
+        return spread_pct
+    except Exception:
+        return Decimal("0")
+
+
+def get_last_candle_volume(candles) -> int:
+    if not candles:
+        return 0
+    last_candle = candles[-1]
+    return int(getattr(last_candle, "volume", 0) or 0)
+
+
+def is_session_allowed(client, figi: str) -> bool:
+    trade_only_session = get_setting("trade_only_session", "0") == "1"
+    if not trade_only_session:
+        return True
+
+    status = get_trading_status(client, figi)
+    status_str = str(status)
+
+    allowed_statuses = {
+        "SECURITY_TRADING_STATUS_NORMAL_TRADING",
+        "SECURITY_TRADING_STATUS_DEALER_NORMAL_TRADING",
+        "SECURITY_TRADING_STATUS_SESSION_OPEN",
+        "SECURITY_TRADING_STATUS_OPENING_PERIOD",
+        "SECURITY_TRADING_STATUS_CLOSING_PERIOD",
+    }
+
+    return status_str in allowed_statuses or "NORMAL_TRADING" in status_str or "SESSION_OPEN" in status_str
+
+
+def notify(message: str, is_error: bool = False):
+    telegram_errors_only = get_setting("telegram_errors_only", "0") == "1"
+    if telegram_errors_only and not is_error:
+        return
+    notify(message)
+
+
+def sync_portfolio_positions(client):
+    try:
+        clear_open_positions()
+
+        portfolio = client.operations.get_portfolio(account_id=settings.TINVEST_ACCOUNT_ID)
+        positions = getattr(portfolio, "positions", []) or []
+
+        for p in positions:
+            figi = getattr(p, "figi", "") or ""
+            qty_obj = getattr(p, "quantity", None)
+            avg_obj = getattr(p, "average_position_price", None)
+            cur_obj = getattr(p, "current_price", None)
+            pnl_obj = getattr(p, "current_nkd", None)
+
+            qty = 0
+            try:
+                qty = int(quotation_to_decimal(qty_obj)) if qty_obj else 0
+            except Exception:
+                qty = 0
+
+            avg_price = float(quotation_to_decimal(avg_obj)) if avg_obj else 0.0
+            current_price = float(quotation_to_decimal(cur_obj)) if cur_obj else 0.0
+
+            unrealized_pnl = 0.0
+            if qty and avg_price and current_price:
+                unrealized_pnl = (current_price - avg_price) * qty
+
+            upsert_position({
+                "ticker": getattr(p, "ticker", "") or figi,
+                "figi": figi,
+                "direction": "LONG",
+                "qty": qty,
+                "entry_price": avg_price,
+                "current_price": current_price,
+                "unrealized_pnl": unrealized_pnl,
+                "opened_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "status": "OPEN",
+            })
+    except Exception as e:
+        log.warning(f"Не удалось синхронизировать позиции портфеля: {e}")
 
 def get_candles(client, figi: str, n=20):
     now = datetime.now(timezone.utc)
@@ -270,6 +369,9 @@ def process_instrument(client, item):
     allow_long_global = get_setting("allow_long_global", "1") == "1"
     allow_short_global = get_setting("allow_short_global", "1") == "1"
 
+    if not is_session_allowed(client, figi):
+        return
+
     trading_status = get_trading_status(client, figi)
     if not is_tradable(trading_status):
         return
@@ -277,6 +379,7 @@ def process_instrument(client, item):
     try:
         price = get_last_price(client, figi)
         candles = get_candles(client, figi, n=20)
+        spread_pct = get_order_book_spread_pct(client, figi)
     except Exception as e:
         msg = str(e)
         if "figi" in msg.lower():
@@ -286,7 +389,15 @@ def process_instrument(client, item):
 
     if len(candles) < 5:
         return
+    
+    last_volume = get_last_candle_volume(candles)
+    min_volume = int(item.get("min_volume", 0))
+    if min_volume > 0 and last_volume < min_volume:
+        return
 
+    max_spread_pct = Decimal(str(item.get("max_spread_pct", "0")))
+    if max_spread_pct > 0 and spread_pct > max_spread_pct:
+        return
     support, resistance = calc_support_resistance(candles)
 
     if ticker in state.open_positions:
@@ -294,6 +405,24 @@ def process_instrument(client, item):
         entry_price = Decimal(str(pos["entry_price"]))
         direction = pos["direction"]
         qty = int(pos["qty"])
+
+        unrealized_pnl = Decimal("0")
+        if direction == "BUY":
+            unrealized_pnl = (price - entry_price) * qty
+        else:
+            unrealized_pnl = (entry_price - price) * qty
+
+        upsert_position({
+            "ticker": ticker,
+            "figi": figi,
+            "direction": direction,
+            "qty": qty,
+            "entry_price": float(entry_price),
+            "current_price": float(price),
+            "unrealized_pnl": float(unrealized_pnl),
+            "opened_at": pos["opened_at"],
+            "status": "OPEN",
+        })
 
         if direction == "BUY":
             sl_price = entry_price * (Decimal("1") - stop_loss_pct)
@@ -329,7 +458,9 @@ def process_instrument(client, item):
             exit_price = Decimal(str(order_result["executed_price"]))
             exec_qty = int(order_result["lots_executed"] or qty)
             gross_amount = exit_price * exec_qty
-            commission = (entry_price * exec_qty + exit_price * exec_qty) * settings.ESTIMATED_COMMISSION_PCT
+           
+            estimated_commission_pct = Decimal(get_setting("estimated_commission_pct", str(settings.ESTIMATED_COMMISSION_PCT)))
+            commission = (entry_price * exec_qty + exit_price * exec_qty) * estimated_commission_pct
 
             if direction == "BUY":
                 pnl = (exit_price - entry_price) * exec_qty - commission
@@ -359,7 +490,7 @@ def process_instrument(client, item):
             log_event("ORDER_CLOSE", f"{ticker} pnl={float(pnl):.2f} reason={close_reason}", ticker=ticker)
             del state.open_positions[ticker]
 
-            notifier.send(
+            notify(
                 f"✅ Закрытие позиции\n"
                 f"{ticker} | {direction}\n"
                 f"Вход: {entry_price}\n"
@@ -407,7 +538,7 @@ def process_instrument(client, item):
             "status": "OPEN",
         })
 
-        notifier.send(f"🟢 Открытие позиции\n{ticker} | BUY\nЦена: {order_result['executed_price']}")
+        notify(f"🟢 Открытие позиции\n{ticker} | BUY\nЦена: {order_result['executed_price']}")
 
     elif sig == "SELL":
         if not allow_short_global or not allow_short:
@@ -438,7 +569,7 @@ def process_instrument(client, item):
             "status": "OPEN",
         })
 
-        notifier.send(f"🔴 Открытие позиции\n{ticker} | SELL\nЦена: {order_result['executed_price']}")
+        notify(f"🔴 Открытие позиции\n{ticker} | SELL\nЦена: {order_result['executed_price']}")
 
 def main():
 
@@ -487,6 +618,8 @@ def main():
                 for item in watchlist:
                     process_instrument(client, item)
 
+                sync_portfolio_positions(client)
+
                 state.session_balance_current = get_money_balance(client)
                 state.status = "SCANNING"
                 state.sync_runtime()
@@ -503,9 +636,10 @@ def main():
                 state.sync_runtime(last_error=str(e))
                 log.exception("Ошибка основного цикла")
                 log_event("BOT_ERROR", str(e), level="ERROR")
-                notifier.send(f"⚠️ Ошибка бота: {e}")
-                time.sleep(10)
+                notify(f"⚠️ Ошибка бота: {e}", is_error=True)
 
+                pause_after_error_sec = int(get_setting("pause_after_error_sec", "10"))
+                time.sleep(pause_after_error_sec)
 
 if __name__ == "__main__":
     main()
