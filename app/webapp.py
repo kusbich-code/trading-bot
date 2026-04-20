@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from fastapi import FastAPI, Query, Request, Form
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
@@ -77,7 +79,16 @@ def api_logs(
     level: str | None = None,
     limit: int = 200
 ):
-    return JSONResponse(get_logs(limit=limit, ticker=ticker, event_type=event_type, date_from=date_from, date_to=date_to, level=level))
+    return JSONResponse(
+        get_logs(
+            limit=limit,
+            ticker=ticker,
+            event_type=event_type,
+            date_from=date_from,
+            date_to=date_to,
+            level=level,
+        )
+    )
 
 
 @app.get("/api/история/торговля")
@@ -116,7 +127,10 @@ def api_instruments():
 
 @app.get("/api/позиции")
 def api_positions():
-    return JSONResponse(get_open_positions())
+    return JSONResponse({
+        "bot": get_open_positions(source="BOT"),
+        "portfolio": get_open_positions(source="PORTFOLIO"),
+    })
 
 
 @app.get("/api/настройки")
@@ -187,7 +201,7 @@ def api_instruments_update(
     allow_long: int = Form(...),
     allow_short: int = Form(...),
     priority: int = Form(...),
-    enabled: int = Form(...)
+    enabled: int = Form(...),
 ):
     update_instrument(figi, {
         "lots_override": lots_override,
@@ -201,14 +215,14 @@ def api_instruments_update(
         "enabled": enabled,
     })
     log_event("CONFIG_CHANGED", f"Обновлён инструмент figi={figi}")
-    return RedirectResponse(url="/dashboard", status_code=303)
+    return RedirectResponse(url="/dashboard#настройки", status_code=303)
 
 
 @app.post("/api/instruments/delete")
 def api_instruments_delete(figi: str = Form(...)):
     delete_instrument(figi)
     log_event("CONFIG_CHANGED", f"Удалён инструмент figi={figi}")
-    return RedirectResponse(url="/dashboard", status_code=303)
+    return RedirectResponse(url="/dashboard#настройки", status_code=303)
 
 
 @app.post("/api/settings/update")
@@ -244,7 +258,7 @@ def api_settings_update(
     set_setting("auto_reload_settings", auto_reload_settings)
 
     log_event("CONFIG_CHANGED", "Обновлены общие настройки")
-    return RedirectResponse(url="/dashboard?tab=настройки", status_code=303)
+    return RedirectResponse(url="/dashboard#настройки", status_code=303)
 
 
 @app.post("/api/профили/создать")
@@ -252,21 +266,21 @@ def api_create_profile(profile_name: str = Form(...)):
     create_settings_profile(profile_name)
     save_current_settings_to_profile(profile_name)
     log_event("CONFIG_CHANGED", f"Создан профиль настроек {profile_name}")
-    return RedirectResponse(url="/dashboard?tab=настройки", status_code=303)
+    return RedirectResponse(url="/dashboard#настройки", status_code=303)
 
 
 @app.post("/api/профили/активировать")
 def api_activate_profile(profile_name: str = Form(...)):
     activate_settings_profile(profile_name)
     log_event("CONFIG_CHANGED", f"Активирован профиль настроек {profile_name}")
-    return RedirectResponse(url="/dashboard?tab=настройки", status_code=303)
+    return RedirectResponse(url="/dashboard#настройки", status_code=303)
 
 
 @app.post("/api/профили/сохранить")
 def api_save_profile(profile_name: str = Form(...)):
     save_current_settings_to_profile(profile_name)
     log_event("CONFIG_CHANGED", f"Сохранены текущие настройки в профиль {profile_name}")
-    return RedirectResponse(url="/dashboard?tab=настройки", status_code=303)
+    return RedirectResponse(url="/dashboard#настройки", status_code=303)
 
 
 @app.post("/api/control/{action}")
@@ -286,7 +300,7 @@ def render_boolean_select(name: str, value) -> str:
 
 
 @app.get("/dashboard", response_class=HTMLResponse)
-def dashboard(tab: str = "главное"):
+def dashboard():
     state = {
         "status": get_runtime("status", "UNKNOWN"),
         "daily_pnl": get_runtime("daily_pnl", "0"),
@@ -302,19 +316,20 @@ def dashboard(tab: str = "главное"):
     runtime_map = get_all_runtime()
     instruments = list_instruments()
     trades = get_trades(limit=50)
-    open_positions = get_open_positions()
-    today_prefix = __import__("datetime").datetime.now().strftime("%Y-%m-%d")
+    open_positions = get_open_positions(source="BOT")
+    portfolio_positions = get_open_positions(source="PORTFOLIO")
+    today_prefix = datetime.now().strftime("%Y-%m-%d")
     trade_stats_today = get_trade_stats_today(today_prefix)
     logs = get_logs(limit=80)
     system_logs = get_system_logs(limit=80)
     error_logs = get_error_logs(limit=80)
     profiles = list_settings_profiles()
 
-    nav = f"""
+    nav = """
     <nav class="вкладки">
-        <a class="вкладка {'активная' if tab == 'главное' else ''}" href="/dashboard?tab=главное">Главное</a>
-        <a class="вкладка {'активная' if tab == 'настройки' else ''}" href="/dashboard?tab=настройки">Настройки</a>
-        <a class="вкладка {'активная' if tab == 'история' else ''}" href="/dashboard?tab=история">История и логи</a>
+        <button type="button" class="вкладка" onclick="показатьВкладку('главное')" id="tabbtn-главное">Главное</button>
+        <button type="button" class="вкладка" onclick="показатьВкладку('настройки')" id="tabbtn-настройки">Настройки</button>
+        <button type="button" class="вкладка" onclick="показатьВкладку('история')" id="tabbtn-история">История и логи</button>
     </nav>
     """
 
@@ -327,8 +342,8 @@ def dashboard(tab: str = "главное"):
         <div class="карточка"><div class="метка">Баланс на старте</div><div class="значение">{state['session_balance_start']}</div></div>
         <div class="карточка"><div class="метка">Текущий баланс</div><div class="значение">{state['session_balance_current']}</div></div>
         <div class="карточка"><div class="метка">Активный профиль</div><div class="значение">{state['active_profile_name']}</div></div>
-        <div class="карточка"><div class="метка">Сделок по истории за сегодня</div><div class="значение">{trade_stats_today['trades_count']}</div></div>
         <div class="карточка"><div class="метка">Комиссии за сегодня</div><div class="значение">{trade_stats_today['total_commission']}</div></div>
+        <div class="карточка"><div class="метка">Сделок по истории за сегодня</div><div class="значение">{trade_stats_today['trades_count']}</div></div>
         <div class="карточка"><div class="метка">Последняя ошибка</div><div class="значение">{state['last_error'] or '-'}</div></div>
     </section>
     """
@@ -340,9 +355,24 @@ def dashboard(tab: str = "главное"):
             <td>{p['ticker']}</td>
             <td>{p['direction']}</td>
             <td>{p['qty']}</td>
-            <td>{p['entry_price']}</td>
-            <td>{p['current_price']}</td>
-            <td>{p['unrealized_pnl']}</td>
+            <td>{round(float(p['entry_price']), 4)}</td>
+            <td>{round(float(p['current_price']), 4)}</td>
+            <td>{round(float(p['unrealized_pnl']), 4)}</td>
+            <td>{p['opened_at']}</td>
+            <td>{p['status']}</td>
+        </tr>
+        """
+
+    портфель_html = ""
+    for p in portfolio_positions:
+        портфель_html += f"""
+        <tr>
+            <td>{p['ticker']}</td>
+            <td>{p['direction']}</td>
+            <td>{p['qty']}</td>
+            <td>{round(float(p['entry_price']), 4)}</td>
+            <td>{round(float(p['current_price']), 4)}</td>
+            <td>{round(float(p['unrealized_pnl']), 4)}</td>
             <td>{p['opened_at']}</td>
             <td>{p['status']}</td>
         </tr>
@@ -364,11 +394,15 @@ def dashboard(tab: str = "главное"):
         </tr>
         """
 
+    default_sl = settings_map.get("default_stop_loss_pct", "0.0025")
+    default_tp = settings_map.get("default_take_profit_pct", "0.005")
+
     инструменты_html = ""
     for i in instruments:
         инструменты_html += f"""
         <form method="post" action="/api/instruments/update" class="карточка карточка-инструмент">
             <input type="hidden" name="figi" value="{i['figi']}">
+
             <div class="заголовок-инструмента">
                 <div>
                     <div class="инструмент-текст">{i['ticker']} — {i['name']}</div>
@@ -496,52 +530,19 @@ def dashboard(tab: str = "главное"):
         </div>
 
         <div class="ряд-кнопок">
-            <form method="post" action="/api/settings/update">
-                <input type="hidden" name="bot_enabled" value="1">
-                <input type="hidden" name="max_trades_per_day" value="{settings_map.get('max_trades_per_day', '15')}">
-                <input type="hidden" name="max_daily_loss_rub" value="{settings_map.get('max_daily_loss_rub', '200')}">
-                <input type="hidden" name="max_open_positions" value="{settings_map.get('max_open_positions', '2')}">
-                <input type="hidden" name="check_interval_sec" value="{settings_map.get('check_interval_sec', '5')}">
-                <input type="hidden" name="default_stop_loss_pct" value="{settings_map.get('default_stop_loss_pct', '0.0025')}">
-                <input type="hidden" name="default_take_profit_pct" value="{settings_map.get('default_take_profit_pct', '0.005')}">
-                <input type="hidden" name="estimated_commission_pct" value="{settings_map.get('estimated_commission_pct', '0.0004')}">
-                <input type="hidden" name="allow_long_global" value="{settings_map.get('allow_long_global', '1')}">
-                <input type="hidden" name="allow_short_global" value="{settings_map.get('allow_short_global', '1')}">
-                <input type="hidden" name="trade_only_session" value="{settings_map.get('trade_only_session', '0')}">
-                <input type="hidden" name="pause_after_error_sec" value="{settings_map.get('pause_after_error_sec', '10')}">
-                <input type="hidden" name="telegram_errors_only" value="{settings_map.get('telegram_errors_only', '0')}">
-                <input type="hidden" name="auto_reload_settings" value="{settings_map.get('auto_reload_settings', '1')}">
-                <button type="submit" class="кнопка основная">Включить торговлю</button>
-            </form>
-
-            <form method="post" action="/api/settings/update">
-                <input type="hidden" name="bot_enabled" value="0">
-                <input type="hidden" name="max_trades_per_day" value="{settings_map.get('max_trades_per_day', '15')}">
-                <input type="hidden" name="max_daily_loss_rub" value="{settings_map.get('max_daily_loss_rub', '200')}">
-                <input type="hidden" name="max_open_positions" value="{settings_map.get('max_open_positions', '2')}">
-                <input type="hidden" name="check_interval_sec" value="{settings_map.get('check_interval_sec', '5')}">
-                <input type="hidden" name="default_stop_loss_pct" value="{settings_map.get('default_stop_loss_pct', '0.0025')}">
-                <input type="hidden" name="default_take_profit_pct" value="{settings_map.get('default_take_profit_pct', '0.005')}">
-                <input type="hidden" name="estimated_commission_pct" value="{settings_map.get('estimated_commission_pct', '0.0004')}">
-                <input type="hidden" name="allow_long_global" value="{settings_map.get('allow_long_global', '1')}">
-                <input type="hidden" name="allow_short_global" value="{settings_map.get('allow_short_global', '1')}">
-                <input type="hidden" name="trade_only_session" value="{settings_map.get('trade_only_session', '0')}">
-                <input type="hidden" name="pause_after_error_sec" value="{settings_map.get('pause_after_error_sec', '10')}">
-                <input type="hidden" name="telegram_errors_only" value="{settings_map.get('telegram_errors_only', '0')}">
-                <input type="hidden" name="auto_reload_settings" value="{settings_map.get('auto_reload_settings', '1')}">
-                <button type="submit" class="кнопка вторичная">Выключить торговлю</button>
-            </form>
-
-            <button class="кнопка вторичная" onclick="управлениеСервисом('start')">Старт сервиса</button>
-            <button class="кнопка вторичная" onclick="управлениеСервисом('stop')">Стоп сервиса</button>
-            <button class="кнопка вторичная" onclick="управлениеСервисом('restart')">Перезапуск сервиса</button>
+            <button class="кнопка основная" onclick="управление('start')">Запустить</button>
+            <button class="кнопка" onclick="управление('stop')">Остановить</button>
+            <button class="кнопка" onclick="управление('restart')">Перезапустить</button>
+            <button class="кнопка" onclick="управление('reload')">Перечитать конфиг</button>
         </div>
+
+        <div id="служебноеСообщение" class="служебное-сообщение" style="display:none;"></div>
     </section>
 
     <section class="блок">
         <div class="блок-заголовок">
-            <h2>Бумаги в наличии / открытые позиции</h2>
-            <div class="подпись">Текущие открытые позиции бота</div>
+            <h2>Открытые позиции бота</h2>
+            <div class="подпись">Здесь показываются только сделки, открытые самим ботом</div>
         </div>
         <div class="таблица-обёртка">
             <table>
@@ -551,30 +552,40 @@ def dashboard(tab: str = "главное"):
                         <th>Текущая цена</th><th>Нереализованный PNL</th><th>Открыта</th><th>Статус</th>
                     </tr>
                 </thead>
-                <tbody>{позиции_html or '<tr><td colspan="8">Открытых позиций нет</td></tr>'}</tbody>
+                <tbody>{позиции_html or '<tr><td colspan="8">Открытых позиций бота нет</td></tr>'}</tbody>
             </table>
         </div>
     </section>
 
     <section class="блок">
         <div class="блок-заголовок">
-            <h2>Инструменты в работе</h2>
-            <div class="подпись">Краткая информация о торгуемых инструментах и настройках</div>
-        </div>
-        <div class="список-инструментов">{инструменты_html or '<div class="карточка">Инструменты пока не добавлены</div>'}</div>
-    </section>
-
-    <section class="блок">
-        <div class="блок-заголовок">
-            <h2>Последние сделки</h2>
-            <div class="подпись">Последние закрытые сделки</div>
+            <h2>Портфель / бумаги на счёте</h2>
+            <div class="подпись">Отдельный блок по данным портфеля брокерского счёта</div>
         </div>
         <div class="таблица-обёртка">
             <table>
                 <thead>
                     <tr>
-                        <th>Время</th><th>Инструмент</th><th>Направление</th><th>Вход</th><th>Выход</th>
-                        <th>Количество</th><th>Комиссия</th><th>PNL</th><th>Причина</th>
+                        <th>Инструмент</th><th>Направление</th><th>Количество</th><th>Средняя цена</th>
+                        <th>Текущая цена</th><th>Нереализованный PNL</th><th>Обновлено</th><th>Статус</th>
+                    </tr>
+                </thead>
+                <tbody>{портфель_html or '<tr><td colspan="8">Данных портфеля нет</td></tr>'}</tbody>
+            </table>
+        </div>
+    </section>
+
+    <section class="блок">
+        <div class="блок-заголовок">
+            <h2>Последние сделки</h2>
+            <div class="подпись">Последние записи из торговой истории</div>
+        </div>
+        <div class="таблица-обёртка">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Время</th><th>Инструмент</th><th>Направление</th><th>Вход</th>
+                        <th>Выход</th><th>Количество</th><th>Комиссия</th><th>PNL</th><th>Причина</th>
                     </tr>
                 </thead>
                 <tbody>{сделки_html or '<tr><td colspan="9">Сделок пока нет</td></tr>'}</tbody>
@@ -587,52 +598,67 @@ def dashboard(tab: str = "главное"):
     <section class="блок">
         <div class="блок-заголовок">
             <h2>Общие настройки</h2>
-            <div class="подпись">Все изменения должны реально влиять на работу бота</div>
+            <div class="подпись">Параметры торгового бота и поведения сервиса</div>
         </div>
 
-        <form method="post" action="/api/settings/update" class="сетка-формы большая-форма">
-            <label>Торговля включена
-                {render_boolean_select("bot_enabled", settings_map.get("bot_enabled", "1"))}
-            </label>
-            <label>Максимум сделок в день
-                <input type="text" name="max_trades_per_day" value="{settings_map.get('max_trades_per_day', '15')}">
-            </label>
-            <label>Максимальный дневной убыток, ₽
-                <input type="text" name="max_daily_loss_rub" value="{settings_map.get('max_daily_loss_rub', '200')}">
-            </label>
-            <label>Максимум открытых позиций
-                <input type="text" name="max_open_positions" value="{settings_map.get('max_open_positions', '2')}">
-            </label>
-            <label>Интервал опроса, сек
-                <input type="text" name="check_interval_sec" value="{settings_map.get('check_interval_sec', '5')}">
-            </label>
-            <label>Стоп-лосс по умолчанию
-                <input type="text" name="default_stop_loss_pct" value="{settings_map.get('default_stop_loss_pct', '0.0025')}">
-            </label>
-            <label>Тейк-профит по умолчанию
-                <input type="text" name="default_take_profit_pct" value="{settings_map.get('default_take_profit_pct', '0.005')}">
-            </label>
-            <label>Оценочная комиссия
-                <input type="text" name="estimated_commission_pct" value="{settings_map.get('estimated_commission_pct', '0.0004')}">
-            </label>
-            <label>Глобально разрешить Long
-                {render_boolean_select("allow_long_global", settings_map.get("allow_long_global", "1"))}
-            </label>
-            <label>Глобально разрешить Short
-                {render_boolean_select("allow_short_global", settings_map.get("allow_short_global", "1"))}
-            </label>
-            <label>Торговать только в сессию
-                {render_boolean_select("trade_only_session", settings_map.get("trade_only_session", "0"))}
-            </label>
-            <label>Пауза после ошибки, сек
-                <input type="text" name="pause_after_error_sec" value="{settings_map.get('pause_after_error_sec', '10')}">
-            </label>
-            <label>Telegram только по ошибкам
-                {render_boolean_select("telegram_errors_only", settings_map.get("telegram_errors_only", "0"))}
-            </label>
-            <label>Автоперечитывание настроек
-                {render_boolean_select("auto_reload_settings", settings_map.get("auto_reload_settings", "1"))}
-            </label>
+        <form method="post" action="/api/settings/update">
+            <div class="сетка-формы">
+                <label>Торговля включена
+                    {render_boolean_select("bot_enabled", settings_map.get("bot_enabled", "1"))}
+                </label>
+
+                <label>Макс. сделок в день
+                    <input type="text" name="max_trades_per_day" value="{settings_map.get('max_trades_per_day', '15')}">
+                </label>
+
+                <label>Макс. дневной убыток, RUB
+                    <input type="text" name="max_daily_loss_rub" value="{settings_map.get('max_daily_loss_rub', '200')}">
+                </label>
+
+                <label>Макс. открытых позиций
+                    <input type="text" name="max_open_positions" value="{settings_map.get('max_open_positions', '2')}">
+                </label>
+
+                <label>Интервал проверки, сек
+                    <input type="text" name="check_interval_sec" value="{settings_map.get('check_interval_sec', '5')}">
+                </label>
+
+                <label>Стоп-лосс по умолчанию
+                    <input type="text" name="default_stop_loss_pct" value="{settings_map.get('default_stop_loss_pct', '0.0025')}">
+                </label>
+
+                <label>Тейк-профит по умолчанию
+                    <input type="text" name="default_take_profit_pct" value="{settings_map.get('default_take_profit_pct', '0.005')}">
+                </label>
+
+                <label>Оценочная комиссия
+                    <input type="text" name="estimated_commission_pct" value="{settings_map.get('estimated_commission_pct', '0.0004')}">
+                </label>
+
+                <label>Разрешить Long глобально
+                    {render_boolean_select("allow_long_global", settings_map.get("allow_long_global", "1"))}
+                </label>
+
+                <label>Разрешить Short глобально
+                    {render_boolean_select("allow_short_global", settings_map.get("allow_short_global", "1"))}
+                </label>
+
+                <label>Торговать только в сессию
+                    {render_boolean_select("trade_only_session", settings_map.get("trade_only_session", "0"))}
+                </label>
+
+                <label>Пауза после ошибки, сек
+                    <input type="text" name="pause_after_error_sec" value="{settings_map.get('pause_after_error_sec', '10')}">
+                </label>
+
+                <label>В Telegram только ошибки
+                    {render_boolean_select("telegram_errors_only", settings_map.get("telegram_errors_only", "0"))}
+                </label>
+
+                <label>Автоперезагрузка настроек
+                    {render_boolean_select("auto_reload_settings", settings_map.get("auto_reload_settings", "1"))}
+                </label>
+            </div>
 
             <div class="ряд-кнопок">
                 <button type="submit" class="кнопка основная">Сохранить общие настройки</button>
@@ -643,71 +669,65 @@ def dashboard(tab: str = "главное"):
     <section class="блок">
         <div class="блок-заголовок">
             <h2>Профили настроек</h2>
-            <div class="подпись">Можно сохранить текущий набор параметров под именем и потом быстро переключать</div>
+            <div class="подпись">Сохранение и переключение профилей параметров</div>
         </div>
 
-        <div class="сетка-2">
-            <form method="post" action="/api/профили/создать" class="карточка">
-                <label>Имя нового профиля
-                    <input type="text" name="profile_name" placeholder="Например: Агрессивный режим">
-                </label>
-                <button type="submit" class="кнопка основная">Создать профиль из текущих настроек</button>
-            </form>
+        <form method="post" action="/api/профили/создать" class="ряд-кнопок">
+            <input type="text" name="profile_name" placeholder="Название профиля" required>
+            <button type="submit" class="кнопка основная">Создать профиль</button>
+        </form>
 
-            <div class="карточка">
-                <div class="подпись">Активный профиль: <strong>{state['active_profile_name']}</strong></div>
-            </div>
-        </div>
-
-        <div class="таблица-обёртка">
+        <div class="таблица-обёртка" style="margin-top:16px;">
             <table>
                 <thead>
                     <tr>
-                        <th>Профиль</th><th>Активный</th><th>Создан</th><th>Активировать</th><th>Пересохранить</th>
+                        <th>Профиль</th><th>Активный</th><th>Создан</th><th>Активировать</th><th>Сохранить текущие</th>
                     </tr>
                 </thead>
-                <tbody>{профили_html}</tbody>
+                <tbody>{профили_html or '<tr><td colspan="5">Профилей пока нет</td></tr>'}</tbody>
             </table>
         </div>
     </section>
 
     <section class="блок">
         <div class="блок-заголовок">
-            <h2>Работа с инструментами</h2>
-            <div class="подпись">Список инструментов с настройками по инструменту, добавление через поиск</div>
+            <h2>Инструменты</h2>
+            <div class="подпись">Управление инструментами для торговли</div>
         </div>
 
         <div class="ряд-кнопок">
-            <button class="кнопка основная" onclick="открытьМодальноеОкно()">Добавить инструмент</button>
+            <button type="button" class="кнопка основная" onclick="открытьМодальноеОкно()">Добавить инструменты</button>
         </div>
 
-        <div class="список-инструментов">{инструменты_html or '<div class="карточка">Инструменты пока не добавлены</div>'}</div>
+        <div style="margin-top:18px;">
+            {инструменты_html or '<div class="карточка">Инструменты пока не добавлены</div>'}
+        </div>
     </section>
     """
 
     история = f"""
     <section class="блок">
         <div class="блок-заголовок">
-            <h2>Торговая история</h2>
-            <div class="подпись">Закрытые сделки</div>
+            <h2>История торгов</h2>
+            <div class="подпись">Сделки с фильтрами по тикеру и датам</div>
         </div>
 
-        <div class="фильтры">
-            <input id="фильтрСделкиТикер" placeholder="Инструмент, например SBER">
-            <input id="фильтрСделкиОт" placeholder="Дата от, например 2026-04-20 00:00:00">
-            <input id="фильтрСделкиДо" placeholder="Дата до, например 2026-04-20 23:59:59">
-            <button class="кнопка малая" onclick="открытьСделкиAPI()">Открыть через API</button>
+        <div class="сетка-фильтров">
+            <input id="фильтрСделкиТикер" type="text" placeholder="Тикер">
+            <input id="фильтрСделкиОт" type="text" placeholder="Дата от, например 2026-04-20">
+            <input id="фильтрСделкиДо" type="text" placeholder="Дата до, например 2026-04-20 23:59:59">
+            <button class="кнопка" onclick="открытьСделкиAPI()">Открыть JSON</button>
         </div>
 
         <div class="таблица-обёртка">
             <table>
                 <thead>
                     <tr>
-                        <th>Время</th><th>Инструмент</th><th>Направление</th><th>Вход</th><th>Выход</th>
-                        <th>Количество</th><th>Комиссия</th><th>PNL</th><th>Причина</th>
+                        <th>Время</th><th>Инструмент</th><th>Направление</th><th>Вход</th>
+                        <th>Выход</th><th>Количество</th><th>Комиссия</th><th>PNL</th><th>Причина</th>
                     </tr>
                 </thead>
-                <tbody>{история_торгов_html or '<tr><td colspan="9">История сделок пока пуста</td></tr>'}</tbody>
+                <tbody>{история_торгов_html or '<tr><td colspan="9">История торгов пуста</td></tr>'}</tbody>
             </table>
         </div>
     </section>
@@ -715,21 +735,23 @@ def dashboard(tab: str = "главное"):
     <section class="блок">
         <div class="блок-заголовок">
             <h2>Системная история</h2>
-            <div class="подпись">Запуски, остановки, изменения конфигурации и служебные события</div>
+            <div class="подпись">Служебные события бота и панели</div>
         </div>
 
-        <div class="фильтры">
-            <input id="фильтрСистемаОт" placeholder="Дата от">
-            <input id="фильтрСистемаДо" placeholder="Дата до">
-            <button class="кнопка малая" onclick="открытьСистемнуюИсториюAPI()">Открыть через API</button>
+        <div class="сетка-фильтров">
+            <input id="фильтрСистемаОт" type="text" placeholder="Дата от">
+            <input id="фильтрСистемаДо" type="text" placeholder="Дата до">
+            <button class="кнопка" onclick="открытьСистемнуюИсториюAPI()">Открыть JSON</button>
         </div>
 
         <div class="таблица-обёртка">
             <table>
                 <thead>
-                    <tr><th>Время</th><th>Тип события</th><th>Инструмент</th><th>Уровень</th><th>Сообщение</th></tr>
+                    <tr>
+                        <th>Время</th><th>Тип</th><th>Тикер</th><th>Уровень</th><th>Сообщение</th>
+                    </tr>
                 </thead>
-                <tbody>{системные_логи_html or '<tr><td colspan="5">Системная история пуста</td></tr>'}</tbody>
+                <tbody>{системные_логи_html or '<tr><td colspan="5">Системных записей нет</td></tr>'}</tbody>
             </table>
         </div>
     </section>
@@ -737,20 +759,22 @@ def dashboard(tab: str = "главное"):
     <section class="блок">
         <div class="блок-заголовок">
             <h2>Ошибки</h2>
-            <div class="подпись">Ошибки и исключения</div>
+            <div class="подпись">Лог ошибок с фильтрацией</div>
         </div>
 
-        <div class="фильтры">
-            <input id="фильтрОшибкаТикер" placeholder="Инструмент, например SBER">
-            <input id="фильтрОшибкаОт" placeholder="Дата от">
-            <input id="фильтрОшибкаДо" placeholder="Дата до">
-            <button class="кнопка малая" onclick="открытьОшибкиAPI()">Открыть через API</button>
+        <div class="сетка-фильтров">
+            <input id="фильтрОшибкаТикер" type="text" placeholder="Тикер">
+            <input id="фильтрОшибкаОт" type="text" placeholder="Дата от">
+            <input id="фильтрОшибкаДо" type="text" placeholder="Дата до">
+            <button class="кнопка" onclick="открытьОшибкиAPI()">Открыть JSON</button>
         </div>
 
         <div class="таблица-обёртка">
             <table>
                 <thead>
-                    <tr><th>Время</th><th>Тип события</th><th>Инструмент</th><th>Уровень</th><th>Сообщение</th></tr>
+                    <tr>
+                        <th>Время</th><th>Тип</th><th>Тикер</th><th>Уровень</th><th>Сообщение</th>
+                    </tr>
                 </thead>
                 <tbody>{ошибки_html or '<tr><td colspan="5">Ошибок пока нет</td></tr>'}</tbody>
             </table>
@@ -758,68 +782,76 @@ def dashboard(tab: str = "главное"):
     </section>
     """
 
-    current_tab_html = главное
-    if tab == "настройки":
-        current_tab_html = настройки
-    elif tab == "история":
-        current_tab_html = история
+    current_tab_html = f"""
+    <div id="вкладка-главное" class="вкладка-контент">{главное}</div>
+    <div id="вкладка-настройки" class="вкладка-контент" style="display:none;">{настройки}</div>
+    <div id="вкладка-история" class="вкладка-контент" style="display:none;">{история}</div>
+    """
 
     html = f"""
-    <!doctype html>
+    <!DOCTYPE html>
     <html lang="ru">
     <head>
         <meta charset="utf-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>Панель управления торговым ботом v3.4</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
         <style>
             :root {{
-                --фон: #0b1220;
-                --панель: #131c2f;
-                --панель-2: #19243b;
-                --текст: #eef4ff;
-                --подпись: #a3b3d9;
-                --граница: #2a3958;
-                --акцент: #5bb3ff;
-                --акцент-2: #2dd4bf;
-                --опасно: #ef4444;
-                --успех: #22c55e;
-                --тень: 0 16px 40px rgba(0,0,0,.25);
-                --радиус: 18px;
+                --фон: #08111f;
+                --фон-2: #0d1a2d;
+                --карточка: rgba(14, 30, 52, 0.88);
+                --карточка-2: rgba(18, 38, 63, 0.9);
+                --граница: rgba(110, 168, 254, 0.28);
+                --текст: #eaf2ff;
+                --подпись: #9ab0d1;
+                --акцент: #58b6ff;
+                --акцент-2: #1f8fff;
+                --успех: #26d07c;
+                --ошибка: #ff5d73;
+                --тень: 0 20px 60px rgba(0,0,0,.35);
             }}
 
-            * {{ box-sizing: border-box; }}
+            * {{
+                box-sizing: border-box;
+            }}
+
             body {{
                 margin: 0;
-                background: linear-gradient(180deg, #08101d 0%, #0b1220 100%);
-                color: var(--текст);
                 font-family: Inter, Arial, sans-serif;
+                background:
+                    radial-gradient(circle at top left, rgba(40,100,200,.18), transparent 28%),
+                    radial-gradient(circle at top right, rgba(0,160,255,.14), transparent 25%),
+                    linear-gradient(180deg, #06101c 0%, #08111f 100%);
+                color: var(--текст);
             }}
-            .обёртка {{
-                max-width: 1520px;
-                margin: 0 auto;
-                padding: 24px;
+
+            .контейнер {{
+                width: min(1400px, calc(100% - 32px));
+                margin: 28px auto 48px;
             }}
+
             .шапка {{
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                gap: 16px;
-                margin-bottom: 18px;
+                margin-bottom: 22px;
             }}
-            .заголовок {{
-                font-size: 32px;
-                font-weight: 800;
+
+            h1 {{
+                margin: 0 0 10px 0;
+                font-size: 28px;
+                line-height: 1.15;
             }}
+
             .подзаголовок {{
                 color: var(--подпись);
-                margin-top: 6px;
+                font-size: 16px;
             }}
+
             .вкладки {{
                 display: flex;
                 gap: 10px;
                 flex-wrap: wrap;
                 margin-bottom: 22px;
             }}
+
             .вкладка {{
                 text-decoration: none;
                 color: var(--текст);
@@ -827,265 +859,279 @@ def dashboard(tab: str = "главное"):
                 border-radius: 999px;
                 background: rgba(255,255,255,.04);
                 border: 1px solid var(--граница);
+                cursor: pointer;
             }}
+
             .вкладка.активная {{
-                background: linear-gradient(90deg, rgba(91,179,255,.25), rgba(45,212,191,.20));
-                border-color: rgba(91,179,255,.5);
+                background: linear-gradient(180deg, rgba(88,182,255,.20), rgba(88,182,255,.10));
+                border-color: rgba(88,182,255,.5);
+                box-shadow: 0 0 0 1px rgba(88,182,255,.08) inset, 0 10px 25px rgba(31,143,255,.18);
             }}
+
+            .вкладка-контент {{
+                display: block;
+            }}
+
             .карточки {{
                 display: grid;
                 grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
                 gap: 14px;
-                margin-bottom: 20px;
+                margin-bottom: 22px;
             }}
+
             .карточка, .блок {{
-                background: linear-gradient(180deg, rgba(255,255,255,.03), rgba(255,255,255,.02));
+                background: linear-gradient(180deg, rgba(16, 33, 55, 0.92), rgba(9, 20, 37, 0.96));
                 border: 1px solid var(--граница);
-                border-radius: var(--радиус);
+                border-radius: 18px;
                 box-shadow: var(--тень);
             }}
+
             .карточка {{
-                padding: 18px;
+                padding: 16px 18px;
             }}
+
             .метка {{
                 color: var(--подпись);
                 font-size: 13px;
                 margin-bottom: 8px;
             }}
+
             .значение {{
                 font-size: 24px;
-                font-weight: 800;
+                font-weight: 700;
                 word-break: break-word;
             }}
+
             .блок {{
                 padding: 18px;
                 margin-bottom: 18px;
             }}
+
             .блок-заголовок {{
-                margin-bottom: 16px;
+                margin-bottom: 14px;
             }}
+
             .блок-заголовок h2 {{
                 margin: 0 0 6px 0;
-                font-size: 22px;
+                font-size: 20px;
             }}
+
             .подпись {{
                 color: var(--подпись);
                 font-size: 14px;
             }}
+
             .ряд-кнопок {{
                 display: flex;
                 gap: 10px;
                 flex-wrap: wrap;
                 align-items: center;
             }}
-            .кнопка, button {{
-                border: 0;
-                cursor: pointer;
-                border-radius: 12px;
-                padding: 11px 16px;
-                font-weight: 700;
-            }}
-            .кнопка.основная, .основная {{
-                background: linear-gradient(90deg, var(--акцент), #6ee7ff);
-                color: #08101d;
-            }}
-            .кнопка.вторичная, .вторичная {{
-                background: #243452;
+
+            .кнопка {{
+                background: rgba(255,255,255,.04);
                 color: var(--текст);
                 border: 1px solid var(--граница);
+                border-radius: 12px;
+                padding: 11px 16px;
+                cursor: pointer;
             }}
-            .кнопка.опасная, .опасная {{
-                background: rgba(239,68,68,.15);
-                color: #ffd2d2;
-                border: 1px solid rgba(239,68,68,.35);
+
+            .кнопка:hover {{
+                background: rgba(255,255,255,.08);
             }}
-            .кнопка.малая, .малая {{
+
+            .кнопка.основная {{
+                background: linear-gradient(180deg, rgba(31,143,255,.95), rgba(16,102,197,.95));
+                border-color: rgba(88,182,255,.55);
+            }}
+
+            .кнопка.опасная {{
+                background: linear-gradient(180deg, rgba(180,40,66,.95), rgba(130,20,40,.95));
+                border-color: rgba(255,93,115,.45);
+            }}
+
+            .кнопка.малая {{
                 padding: 8px 12px;
-                font-size: 13px;
+                border-radius: 10px;
             }}
-            .сетка-2 {{
-                display: grid;
-                grid-template-columns: 1fr 1fr;
-                gap: 16px;
-            }}
+
             .сетка-формы {{
                 display: grid;
                 grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
                 gap: 14px;
             }}
-            .большая-форма label,
-            .сетка-формы label {{
+
+            .сетка-фильтров {{
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+                gap: 12px;
+                margin-bottom: 12px;
+            }}
+
+            label {{
                 display: flex;
                 flex-direction: column;
                 gap: 8px;
                 color: var(--подпись);
                 font-size: 14px;
             }}
+
             input, select {{
-                background: #0e1729;
-                color: var(--текст);
-                border: 1px solid var(--граница);
-                border-radius: 12px;
-                padding: 11px 12px;
                 width: 100%;
+                background: rgba(255,255,255,.04);
+                border: 1px solid rgba(110,168,254,.25);
+                border-radius: 12px;
+                color: var(--текст);
+                padding: 11px 12px;
+                outline: none;
             }}
+
             .таблица-обёртка {{
-                overflow: auto;
-                border: 1px solid var(--граница);
+                overflow-x: auto;
+                border: 1px solid rgba(110,168,254,.16);
                 border-radius: 16px;
             }}
+
             table {{
                 width: 100%;
                 border-collapse: collapse;
-                min-width: 800px;
+                min-width: 900px;
             }}
+
             th, td {{
-                padding: 12px;
-                border-bottom: 1px solid rgba(255,255,255,.06);
+                padding: 12px 14px;
+                border-bottom: 1px solid rgba(110,168,254,.14);
                 text-align: left;
                 vertical-align: top;
                 font-size: 14px;
             }}
+
             th {{
+                color: var(--текст);
                 background: rgba(255,255,255,.03);
-                color: #dce8ff;
-                position: sticky;
-                top: 0;
             }}
-            .список-инструментов {{
-                display: grid;
-                grid-template-columns: 1fr;
-                gap: 14px;
+
+            tr:hover td {{
+                background: rgba(255,255,255,.02);
             }}
+
             .карточка-инструмент {{
-                padding: 16px;
+                margin-bottom: 14px;
             }}
+
+            .карточка-удаление {{
+                margin-top: -4px;
+                margin-bottom: 18px;
+                padding-top: 0;
+                background: transparent;
+                border: 0;
+                box-shadow: none;
+            }}
+
             .заголовок-инструмента {{
                 display: flex;
                 justify-content: space-between;
-                gap: 12px;
+                gap: 16px;
+                align-items: center;
                 margin-bottom: 14px;
-            }}
-            .инструмент-текст {{
-                font-size: 18px;
-                font-weight: 800;
-            }}
-            .карточка-удаление {{
-                padding: 16px;
-                border-color: rgba(239,68,68,.25);
-            }}
-            .фильтры {{
-                display: flex;
-                gap: 10px;
                 flex-wrap: wrap;
-                margin-bottom: 14px;
             }}
 
-            .модалка-фон {{
+            .инструмент-текст {{
+                font-size: 18px;
+                font-weight: 700;
+            }}
+
+            .служебное-сообщение {{
+                margin-top: 14px;
+                padding: 12px 14px;
+                border-radius: 12px;
+                background: rgba(88,182,255,.10);
+                border: 1px solid rgba(88,182,255,.25);
+            }}
+
+            .модальное-окно-фон {{
                 position: fixed;
                 inset: 0;
-                background: rgba(0,0,0,.6);
+                background: rgba(0,0,0,.55);
                 display: none;
                 align-items: center;
                 justify-content: center;
-                z-index: 9999;
-                padding: 16px;
+                padding: 20px;
+                z-index: 1000;
             }}
-            .модалка {{
-                width: min(1100px, 100%);
+
+            .модальное-окно {{
+                width: min(1200px, 100%);
                 max-height: 90vh;
                 overflow: auto;
-                background: #101827;
+                background: linear-gradient(180deg, rgba(16, 33, 55, 0.98), rgba(9, 20, 37, 0.99));
                 border: 1px solid var(--граница);
-                border-radius: 22px;
+                border-radius: 18px;
                 box-shadow: var(--тень);
-                padding: 20px;
+                padding: 18px;
             }}
-            .модалка-шапка {{
+
+            .модальное-окно-шапка {{
                 display: flex;
                 justify-content: space-between;
                 align-items: center;
-                margin-bottom: 14px;
                 gap: 12px;
-            }}
-            .модалка-заголовок {{
-                font-size: 22px;
-                font-weight: 800;
+                margin-bottom: 14px;
             }}
 
-            .результаты-поиска {{
-                margin-top: 16px;
-                border: 1px solid var(--граница);
-                border-radius: 16px;
-                overflow: auto;
-            }}
-            .результаты-поиска table {{
-                min-width: 980px;
+            .модальное-окно-шапка h3 {{
+                margin: 0;
             }}
 
-            .служебная-плашка {{
-                padding: 10px 14px;
-                border-radius: 12px;
-                background: rgba(45,212,191,.12);
-                border: 1px solid rgba(45,212,191,.22);
-                color: #ccfbf1;
-                margin-bottom: 12px;
-                display: none;
-            }}
+            @media (max-width: 768px) {{
+                .контейнер {{
+                    width: min(100% - 16px, 100%);
+                    margin: 16px auto 28px;
+                }}
 
-            @media (max-width: 900px) {{
-                .сетка-2 {{
-                    grid-template-columns: 1fr;
+                h1 {{
+                    font-size: 24px;
                 }}
-                .заголовок-инструмента {{
-                    flex-direction: column;
+
+                .значение {{
+                    font-size: 20px;
                 }}
-                .обёртка {{
-                    padding: 16px;
-                }}
-                .заголовок {{
-                    font-size: 26px;
+
+                .блок, .карточка {{
+                    border-radius: 14px;
                 }}
             }}
         </style>
     </head>
     <body>
-        <div class="обёртка">
+        <div class="контейнер">
             <header class="шапка">
-                <div>
-                    <div class="заголовок">Панель управления торговым ботом v3.4</div>
-                    <div class="подзаголовок">Полностью русский интерфейс, вкладки, профили настроек, история, логи и управление инструментами</div>
+                <h1>Панель управления торговым ботом v3.4</h1>
+                <div class="подзаголовок">
+                    Полностью русский интерфейс, вкладки, профили настроек, история, логи и управление инструментами
                 </div>
             </header>
 
             {nav}
-            <div id="служебноеСообщение" class="служебная-плашка"></div>
-
             {current_tab_html}
         </div>
 
-        <div id="модальноеОкно" class="модалка-фон">
-            <div class="модалка">
-                <div class="модалка-шапка">
-                    <div>
-                        <div class="модалка-заголовок">Добавление инструментов</div>
-                        <div class="подпись">Введите идентификатор, например SBER, SMLT, VTBR</div>
-                    </div>
-                    <button class="кнопка вторичная" onclick="закрытьМодальноеОкно()">Закрыть</button>
+        <div id="модальноеОкноФон" class="модальное-окно-фон">
+            <div class="модальное-окно">
+                <div class="модальное-окно-шапка">
+                    <h3>Добавление инструментов</h3>
+                    <button type="button" class="кнопка" onclick="закрытьМодальноеОкно()">Закрыть</button>
                 </div>
 
-                <div class="сетка-формы">
-                    <label>Идентификатор:
-                        <input id="поисковыйЗапрос" type="text" placeholder="Например: SBER">
-                    </label>
+                <div class="сетка-фильтров">
+                    <input id="поисковыйЗапрос" type="text" placeholder="Введите тикер, FIGI или название">
+                    <button type="button" class="кнопка основная" onclick="поискИнструмента()">Найти</button>
+                    <button type="button" class="кнопка" onclick="принятьИнструменты()">Добавить выбранные</button>
                 </div>
 
-                <div class="ряд-кнопок" style="margin-top: 12px;">
-                    <button class="кнопка основная" onclick="поискИнструмента()">Поиск</button>
-                    <button class="кнопка вторичная" onclick="принятьИнструменты()">Принять</button>
-                </div>
-
-                <div class="результаты-поиска">
+                <div class="таблица-обёртка">
                     <table>
                         <thead>
                             <tr>
@@ -1098,12 +1144,12 @@ def dashboard(tab: str = "главное"):
                                 <th>Лот</th>
                                 <th>Шаг цены</th>
                                 <th>Лотов бота</th>
-                                <th>Стоп-лосс</th>
-                                <th>Тейк-профит</th>
+                                <th>SL</th>
+                                <th>TP</th>
                             </tr>
                         </thead>
                         <tbody id="таблицаПоискаИнструментов">
-                            <tr><td colspan="11">Результаты поиска пока отсутствуют</td></tr>
+                            <tr><td colspan="11">Сначала выполните поиск</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -1113,22 +1159,59 @@ def dashboard(tab: str = "главное"):
         <script>
             let найденныеИнструменты = [];
 
+            function показатьВкладку(имя) {{
+                const tabs = ['главное', 'настройки', 'история'];
+
+                tabs.forEach(function(tab) {{
+                    const content = document.getElementById('вкладка-' + tab);
+                    const btn = document.getElementById('tabbtn-' + tab);
+
+                    if (content) {{
+                        content.style.display = (tab === имя) ? 'block' : 'none';
+                    }}
+
+                    if (btn) {{
+                        if (tab === имя) {{
+                            btn.classList.add('активная');
+                        }} else {{
+                            btn.classList.remove('активная');
+                        }}
+                    }}
+                }});
+
+                window.location.hash = имя;
+            }}
+
             function показатьСообщение(text) {{
                 const el = document.getElementById('служебноеСообщение');
+                if (!el) return;
                 el.style.display = 'block';
                 el.textContent = text;
-                setTimeout(() => {{
+                setTimeout(function() {{
                     el.style.display = 'none';
-                    el.textContent = '';
-                }}, 4000);
+                }}, 3000);
+            }}
+
+            async function управление(action) {{
+                try {{
+                    const resp = await fetch('/api/control/' + action, {{
+                        method: 'POST'
+                    }});
+                    const data = await resp.json();
+                    показатьСообщение(data.message || ('Команда выполнена: ' + action));
+                }} catch (e) {{
+                    alert('Ошибка управления: ' + e);
+                }}
             }}
 
             function открытьМодальноеОкно() {{
-                document.getElementById('модальноеОкно').style.display = 'flex';
+                const el = document.getElementById('модальноеОкноФон');
+                if (el) el.style.display = 'flex';
             }}
 
             function закрытьМодальноеОкно() {{
-                document.getElementById('модальноеОкно').style.display = 'none';
+                const el = document.getElementById('модальноеОкноФон');
+                if (el) el.style.display = 'none';
             }}
 
             async function поискИнструмента() {{
@@ -1138,7 +1221,7 @@ def dashboard(tab: str = "главное"):
                     return;
                 }}
 
-                const resp = await fetch(`/api/instruments/search?q=${{encodeURIComponent(q)}}`);
+                const resp = await fetch('/api/instruments/search?q=' + encodeURIComponent(q));
                 const data = await resp.json();
                 найденныеИнструменты = data || [];
 
@@ -1148,21 +1231,25 @@ def dashboard(tab: str = "главное"):
                     return;
                 }}
 
-                body.innerHTML = найденныеИнструменты.map((x, index) => `
-                    <tr>
-                        <td><input type="checkbox" id="использовать_${{index}}" checked></td>
-                        <td>${{x.ticker || ''}} — ${{x.name || ''}}</td>
-                        <td>${{x.figi || ''}}</td>
-                        <td>${{x.instrument_type || ''}}</td>
-                        <td>${{x.class_code || ''}}</td>
-                        <td>${{x.currency || ''}}</td>
-                        <td>${{x.lot || 1}}</td>
-                        <td>${{x.min_price_increment || '0.01'}}</td>
-                        <td><input type="number" id="lots_${{index}}" value="1" min="1"></td>
-                        <td><input type="text" id="sl_${{index}}" value="${settings_map.get('default_stop_loss_pct', '0.0025')}"></td>
-                        <td><input type="text" id="tp_${{index}}" value="${settings_map.get('default_take_profit_pct', '0.005')}"></td>
-                    </tr>
-                `).join('');
+                let htmlRows = '';
+
+                найденныеИнструменты.forEach(function(x, index) {{
+                    htmlRows += '<tr>';
+                    htmlRows += '<td><input type="checkbox" id="использовать_' + index + '" checked></td>';
+                    htmlRows += '<td>' + (x.ticker || '') + ' — ' + (x.name || '') + '</td>';
+                    htmlRows += '<td>' + (x.figi || '') + '</td>';
+                    htmlRows += '<td>' + (x.instrument_type || '') + '</td>';
+                    htmlRows += '<td>' + (x.class_code || '') + '</td>';
+                    htmlRows += '<td>' + (x.currency || '') + '</td>';
+                    htmlRows += '<td>' + (x.lot || 1) + '</td>';
+                    htmlRows += '<td>' + (x.min_price_increment || '0.01') + '</td>';
+                    htmlRows += '<td><input type="number" id="lots_' + index + '" value="1" min="1"></td>';
+                    htmlRows += '<td><input type="text" id="sl_' + index + '" value="{default_sl}"></td>';
+                    htmlRows += '<td><input type="text" id="tp_' + index + '" value="{default_tp}"></td>';
+                    htmlRows += '</tr>';
+                }});
+
+                body.innerHTML = htmlRows;
             }}
 
             async function принятьИнструменты() {{
@@ -1171,9 +1258,9 @@ def dashboard(tab: str = "главное"):
                     return;
                 }}
 
-                const payload = найденныеИнструменты.map((x, index) => {{
+                const payload = найденныеИнструменты.map(function(x, index) {{
                     return {{
-                        использовать: document.getElementById(`использовать_${{index}}`)?.checked ? true : false,
+                        использовать: document.getElementById('использовать_' + index)?.checked ? true : false,
                         ticker: x.ticker || '',
                         figi: x.figi || '',
                         name: x.name || '',
@@ -1182,9 +1269,9 @@ def dashboard(tab: str = "главное"):
                         currency: x.currency || '',
                         lot: x.lot || 1,
                         min_price_increment: x.min_price_increment || '0.01',
-                        lots_override: parseInt(document.getElementById(`lots_${{index}}`)?.value || '1'),
-                        stop_loss_pct: document.getElementById(`sl_${{index}}`)?.value || '${settings_map.get('default_stop_loss_pct', '0.0025')}',
-                        take_profit_pct: document.getElementById(`tp_${{index}}`)?.value || '${settings_map.get('default_take_profit_pct', '0.005')}'
+                        lots_override: parseInt(document.getElementById('lots_' + index)?.value || '1'),
+                        stop_loss_pct: document.getElementById('sl_' + index)?.value || '{default_sl}',
+                        take_profit_pct: document.getElementById('tp_' + index)?.value || '{default_tp}'
                     }};
                 }});
 
@@ -1196,21 +1283,14 @@ def dashboard(tab: str = "главное"):
 
                 const data = await resp.json();
                 if (data.ok) {{
-                    показатьСообщение(`Инструментов добавлено: ${{data.добавлено}}`);
+                    показатьСообщение('Инструментов добавлено: ' + data.добавлено);
                     закрытьМодальноеОкно();
-                    setTimeout(() => window.location.href = '/dashboard?tab=настройки', 600);
+                    setTimeout(function() {{
+                        показатьВкладку('настройки');
+                        window.location.reload();
+                    }}, 600);
                 }} else {{
                     alert('Не удалось добавить инструменты');
-                }}
-            }}
-
-            async function управлениеСервисом(action) {{
-                const resp = await fetch(`/api/control/${{action}}`, {{ method: 'POST' }});
-                const data = await resp.json();
-                if (data.ok) {{
-                    показатьСообщение(`Команда "${{action}}" выполнена успешно`);
-                }} else {{
-                    alert('Ошибка выполнения команды: ' + (data.message || data.stderr || 'неизвестная ошибка'));
                 }}
             }}
 
@@ -1218,14 +1298,21 @@ def dashboard(tab: str = "главное"):
                 const ticker = document.getElementById('фильтрСделкиТикер').value.trim();
                 const df = document.getElementById('фильтрСделкиОт').value.trim();
                 const dt = document.getElementById('фильтрСделкиДо').value.trim();
-                const url = `/api/история/торговля?ticker=${{encodeURIComponent(ticker)}}&date_from=${{encodeURIComponent(df)}}&date_to=${{encodeURIComponent(dt)}}`;
+
+                const url = '/api/история/торговля?ticker=' + encodeURIComponent(ticker)
+                    + '&date_from=' + encodeURIComponent(df)
+                    + '&date_to=' + encodeURIComponent(dt);
+
                 window.open(url, '_blank');
             }}
 
             function открытьСистемнуюИсториюAPI() {{
                 const df = document.getElementById('фильтрСистемаОт').value.trim();
                 const dt = document.getElementById('фильтрСистемаДо').value.trim();
-                const url = `/api/история/система?date_from=${{encodeURIComponent(df)}}&date_to=${{encodeURIComponent(dt)}}`;
+
+                const url = '/api/история/система?date_from=' + encodeURIComponent(df)
+                    + '&date_to=' + encodeURIComponent(dt);
+
                 window.open(url, '_blank');
             }}
 
@@ -1233,9 +1320,22 @@ def dashboard(tab: str = "главное"):
                 const ticker = document.getElementById('фильтрОшибкаТикер').value.trim();
                 const df = document.getElementById('фильтрОшибкаОт').value.trim();
                 const dt = document.getElementById('фильтрОшибкаДо').value.trim();
-                const url = `/api/история/ошибки?ticker=${{encodeURIComponent(ticker)}}&date_from=${{encodeURIComponent(df)}}&date_to=${{encodeURIComponent(dt)}}`;
+
+                const url = '/api/история/ошибки?ticker=' + encodeURIComponent(ticker)
+                    + '&date_from=' + encodeURIComponent(df)
+                    + '&date_to=' + encodeURIComponent(dt);
+
                 window.open(url, '_blank');
             }}
+
+            (function() {{
+                const hash = (window.location.hash || '#главное').replace('#', '');
+                if (['главное', 'настройки', 'история'].includes(hash)) {{
+                    показатьВкладку(hash);
+                }} else {{
+                    показатьВкладку('главное');
+                }}
+            }})();
         </script>
     </body>
     </html>

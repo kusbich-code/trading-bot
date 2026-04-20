@@ -149,17 +149,28 @@ def notify(message: str, is_error: bool = False):
 
 def sync_portfolio_positions(client):
     try:
-        clear_open_positions()
+        clear_open_positions(source="PORTFOLIO")
 
         portfolio = client.operations.get_portfolio(account_id=settings.TINVEST_ACCOUNT_ID)
         positions = getattr(portfolio, "positions", []) or []
 
         for p in positions:
             figi = getattr(p, "figi", "") or ""
+            instrument_type = str(getattr(p, "instrument_type", "") or "").lower()
+            ticker = getattr(p, "ticker", "") or figi
+
+            if not figi:
+                continue
+
+            if "currency" in instrument_type:
+                continue
+
+            if ticker.upper().startswith("RUB"):
+                continue
+
             qty_obj = getattr(p, "quantity", None)
             avg_obj = getattr(p, "average_position_price", None)
             cur_obj = getattr(p, "current_price", None)
-            pnl_obj = getattr(p, "current_nkd", None)
 
             qty = 0
             try:
@@ -167,23 +178,34 @@ def sync_portfolio_positions(client):
             except Exception:
                 qty = 0
 
+            if qty == 0:
+                continue
+
             avg_price = float(quotation_to_decimal(avg_obj)) if avg_obj else 0.0
             current_price = float(quotation_to_decimal(cur_obj)) if cur_obj else 0.0
 
+            direction = "LONG"
+            if qty < 0:
+                direction = "SHORT"
+
             unrealized_pnl = 0.0
-            if qty and avg_price and current_price:
-                unrealized_pnl = (current_price - avg_price) * qty
+            if avg_price and current_price:
+                if qty > 0:
+                    unrealized_pnl = (current_price - avg_price) * qty
+                else:
+                    unrealized_pnl = (avg_price - current_price) * abs(qty)
 
             upsert_position({
-                "ticker": getattr(p, "ticker", "") or figi,
+                "ticker": ticker,
                 "figi": figi,
-                "direction": "LONG",
-                "qty": qty,
+                "direction": direction,
+                "qty": abs(qty),
                 "entry_price": avg_price,
                 "current_price": current_price,
                 "unrealized_pnl": unrealized_pnl,
                 "opened_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "status": "OPEN",
+                "source": "PORTFOLIO",
             })
     except Exception as e:
         log.warning(f"Не удалось синхронизировать позиции портфеля: {e}")
@@ -422,6 +444,7 @@ def process_instrument(client, item):
             "unrealized_pnl": float(unrealized_pnl),
             "opened_at": pos["opened_at"],
             "status": "OPEN",
+            "source": "BOT",
         })
 
         if direction == "BUY":
@@ -486,7 +509,7 @@ def process_instrument(client, item):
                 "execution_status": order_result["execution_status"],
             }
             add_trade(trade)
-            close_position(figi)
+            close_position(figi, source="BOT")
             log_event("ORDER_CLOSE", f"{ticker} pnl={float(pnl):.2f} reason={close_reason}", ticker=ticker)
             del state.open_positions[ticker]
 
@@ -536,6 +559,7 @@ def process_instrument(client, item):
             "unrealized_pnl": 0,
             "opened_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "status": "OPEN",
+            "source": "BOT",
         })
 
         notify(f"🟢 Открытие позиции\n{ticker} | BUY\nЦена: {order_result['executed_price']}")
@@ -567,6 +591,7 @@ def process_instrument(client, item):
             "unrealized_pnl": 0,
             "opened_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "status": "OPEN",
+            "source": "BOT",
         })
 
         notify(f"🔴 Открытие позиции\n{ticker} | SELL\nЦена: {order_result['executed_price']}")

@@ -116,9 +116,14 @@ def init_db():
             current_price REAL DEFAULT 0,
             unrealized_pnl REAL DEFAULT 0,
             opened_at TEXT NOT NULL,
-            status TEXT DEFAULT 'OPEN'
+            status TEXT DEFAULT 'OPEN',
+            source TEXT DEFAULT 'BOT'
         )
         """)
+        try:
+            cur.execute("ALTER TABLE positions ADD COLUMN source TEXT DEFAULT 'BOT'")
+        except Exception:
+            pass
 
         cur.execute("""
         CREATE TABLE IF NOT EXISTS settings_profiles (
@@ -416,16 +421,18 @@ def delete_instrument(figi):
 
 def upsert_position(position: dict):
     with db_cursor() as cur:
+        source = position.get("source", "BOT")
+
         cur.execute("""
-        SELECT id FROM positions WHERE figi = ? AND status = 'OPEN'
-        """, (position["figi"],))
+        SELECT id FROM positions WHERE figi = ? AND status = 'OPEN' AND source = ?
+        """, (position["figi"], source))
         row = cur.fetchone()
 
         if row:
             cur.execute("""
             UPDATE positions
             SET ticker = ?, direction = ?, qty = ?, entry_price = ?, current_price = ?,
-                unrealized_pnl = ?, opened_at = ?, status = ?
+                unrealized_pnl = ?, opened_at = ?, status = ?, source = ?
             WHERE id = ?
             """, (
                 position["ticker"],
@@ -436,14 +443,15 @@ def upsert_position(position: dict):
                 position.get("unrealized_pnl", 0),
                 position["opened_at"],
                 position.get("status", "OPEN"),
+                source,
                 row["id"],
             ))
         else:
             cur.execute("""
             INSERT INTO positions(
                 ticker, figi, direction, qty, entry_price, current_price,
-                unrealized_pnl, opened_at, status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                unrealized_pnl, opened_at, status, source
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 position["ticker"],
                 position["figi"],
@@ -454,25 +462,33 @@ def upsert_position(position: dict):
                 position.get("unrealized_pnl", 0),
                 position["opened_at"],
                 position.get("status", "OPEN"),
+                source,
             ))
 
 
-def close_position(figi):
+def close_position(figi, source: str = "BOT"):
     with db_cursor() as cur:
         cur.execute("""
         UPDATE positions
         SET status = 'CLOSED'
-        WHERE figi = ? AND status = 'OPEN'
-        """, (figi,))
+        WHERE figi = ? AND status = 'OPEN' AND source = ?
+        """, (figi, source))
 
 
-def get_open_positions():
+def get_open_positions(source: str | None = None):
     with db_cursor() as cur:
-        cur.execute("""
-        SELECT * FROM positions
-        WHERE status = 'OPEN'
-        ORDER BY opened_at DESC
-        """)
+        if source:
+            cur.execute("""
+            SELECT * FROM positions
+            WHERE status = 'OPEN' AND source = ?
+            ORDER BY opened_at DESC
+            """, (source,))
+        else:
+            cur.execute("""
+            SELECT * FROM positions
+            WHERE status = 'OPEN'
+            ORDER BY opened_at DESC
+            """)
         return [dict(row) for row in cur.fetchall()]
 
 
@@ -591,9 +607,12 @@ def get_system_logs(limit=200, date_from=None, date_to=None):
         cur.execute(query, params)
         return [dict(row) for row in cur.fetchall()]
     
-def clear_open_positions():
+def clear_open_positions(source: str | None = None):
     with db_cursor() as cur:
-        cur.execute("DELETE FROM positions WHERE status = 'OPEN'")
+        if source:
+            cur.execute("DELETE FROM positions WHERE status = 'OPEN' AND source = ?", (source,))
+        else:
+            cur.execute("DELETE FROM positions WHERE status = 'OPEN'")
 
 
 def get_trade_stats_today(date_prefix: str | None = None):
