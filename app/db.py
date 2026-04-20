@@ -825,3 +825,24 @@ def get_instrument_market_state():
         ORDER BY ticker ASC
         """)
         return [dict(row) for row in cur.fetchall()]
+    
+def list_enabled_instruments():
+    with db_cursor() as cur:
+        cur.execute("""
+        SELECT *
+        FROM instruments
+        WHERE enabled = 1
+        ORDER BY priority ASC, ticker ASC
+        """)
+        return [dict(row) for row in cur.fetchall()]
+
+
+def get_instrument_market_state_map():
+    with db_cursor() as cur:
+        cur.execute("""
+        SELECT *
+        FROM instrument_market_state
+        ORDER BY ticker ASC
+        """)
+        rows = [dict(row) for row in cur.fetchall()]
+        return {row["figi"]: row for row in rows}

@@ -82,7 +82,6 @@ def get_popular_tickers():
         "SNGS", "PIKK", "AFKS", "RUAL", "IRAO",
     ]
 
-
 def get_last_prices_for_figis(client, figis: list[str]):
     if not figis:
         return {}
@@ -97,3 +96,62 @@ def get_last_prices_for_figis(client, figis: list[str]):
             "price_time": str(t) if t else "",
         }
     return result
+
+def safe_float(v, default=0.0):
+    try:
+        return float(v)
+    except Exception:
+        return default
+
+def get_volume_top20_instruments(client):
+    base_tickers = [
+        "SBER", "GAZP", "LKOH", "ROSN", "NVTK",
+        "GMKN", "TATN", "VTBR", "SMLT", "MGNT",
+        "YDEX", "MOEX", "CHMF", "PLZL", "ALRS",
+        "SNGS", "PIKK", "AFKS", "RUAL", "IRAO",
+        "MAGN", "T", "HEAD", "FLOT", "MTSS",
+        "BANEP", "SBERP", "TRNFP", "AFLT", "PHOR",
+    ]
+
+    candidates = []
+    seen_figi = set()
+
+    for ticker in base_tickers:
+        try:
+            found = find_instruments(client, ticker)
+            if not found:
+                continue
+            item = found[0]
+            figi = item.get("figi", "")
+            if not figi or figi in seen_figi:
+                continue
+            seen_figi.add(figi)
+            candidates.append(item)
+        except Exception:
+            continue
+
+    now = datetime.now(timezone.utc)
+    frm = now - timedelta(hours=6)
+
+    scored = []
+    for item in candidates:
+        figi = item.get("figi", "")
+        volume_sum = 0
+        try:
+            candles = client.market_data.get_candles(
+                figi=figi,
+                from_=frm,
+                to=now,
+                interval=1,
+            )
+            for c in getattr(candles, "candles", []) or []:
+                volume_sum += int(getattr(c, "volume", 0) or 0)
+        except Exception:
+            volume_sum = 0
+
+        item["volume_score"] = volume_sum
+        item["использовать"] = False
+        scored.append(item)
+
+    scored.sort(key=lambda x: x.get("volume_score", 0), reverse=True)
+    return scored[:20]
