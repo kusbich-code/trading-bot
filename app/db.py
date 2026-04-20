@@ -138,6 +138,27 @@ def init_db():
             UNIQUE(profile_name, setting_key)
         )
         """)
+        ensure_instruments_columns(cur)
+
+
+def ensure_instruments_columns(cur):
+    cur.execute("PRAGMA table_info(instruments)")
+    cols = {row[1] for row in cur.fetchall()}
+
+    needed = {
+        "class_code": "TEXT DEFAULT ''",
+        "instrument_type": "TEXT DEFAULT ''",
+        "currency": "TEXT DEFAULT ''",
+        "max_spread_pct": "TEXT DEFAULT '0'",
+        "min_volume": "INTEGER DEFAULT 0",
+        "allow_long": "INTEGER DEFAULT 1",
+        "allow_short": "INTEGER DEFAULT 1",
+        "priority": "INTEGER DEFAULT 100",
+    }
+
+    for col_name, col_def in needed.items():
+        if col_name not in cols:
+            cur.execute(f"ALTER TABLE instruments ADD COLUMN {col_name} {col_def}")
 
         seed_setting(cur, "status", "INIT")
         seed_setting(cur, "daily_pnl", "0")
