@@ -27,6 +27,8 @@ from app.db import (
     list_instruments,
     add_trade,
     log_event,
+    upsert_position,
+    close_position,
 )
 from app.instruments import get_instrument_meta, round_to_price_step
 from app.telegram_notify import TelegramNotifier
@@ -160,10 +162,18 @@ def load_enabled_instruments(client):
             "ticker": item["ticker"],
             "lot": item["lot"],
             "name": item["name"],
+            "class_code": item.get("class_code", ""),
+            "instrument_type": item.get("instrument_type", ""),
+            "currency": item.get("currency", ""),
             "min_price_increment": Decimal(str(item["min_price_increment"])),
             "lots_override": int(item["lots_override"]),
             "stop_loss_pct": Decimal(str(item["stop_loss_pct"])),
             "take_profit_pct": Decimal(str(item["take_profit_pct"])),
+            "max_spread_pct": Decimal(str(item.get("max_spread_pct", "0"))),
+            "min_volume": int(item.get("min_volume", 0)),
+            "allow_long": int(item.get("allow_long", 1)),
+            "allow_short": int(item.get("allow_short", 1)),
+            "priority": int(item.get("priority", 100)),
         }
 
     return list(state.instrument_meta.values())
@@ -254,6 +264,11 @@ def process_instrument(client, item):
     lot = item["lots_override"]
     stop_loss_pct = item["stop_loss_pct"]
     take_profit_pct = item["take_profit_pct"]
+    allow_long = int(item.get("allow_long", 1))
+    allow_short = int(item.get("allow_short", 1))
+
+    allow_long_global = get_setting("allow_long_global", "1") == "1"
+    allow_short_global = get_setting("allow_short_global", "1") == "1"
 
     trading_status = get_trading_status(client, figi)
     if not is_tradable(trading_status):
@@ -340,6 +355,7 @@ def process_instrument(client, item):
                 "execution_status": order_result["execution_status"],
             }
             add_trade(trade)
+            close_position(figi)
             log_event("ORDER_CLOSE", f"{ticker} pnl={float(pnl):.2f} reason={close_reason}", ticker=ticker)
             del state.open_positions[ticker]
 
@@ -363,6 +379,9 @@ def process_instrument(client, item):
     log_event("SIGNAL", f"{sig} on {ticker}", ticker=ticker)
 
     if sig == "BUY":
+        if not allow_long_global or not allow_long:
+            return
+
         order_result = place_order_checked(client, ticker, figi, lot, price, OrderDirection.ORDER_DIRECTION_BUY)
         if not order_result:
             return
@@ -375,9 +394,25 @@ def process_instrument(client, item):
             "open_order_id": order_result["response_order_id"],
             "execution_status": order_result["execution_status"],
         }
+
+        upsert_position({
+            "ticker": ticker,
+            "figi": figi,
+            "direction": "BUY",
+            "qty": int(order_result["lots_executed"] or lot),
+            "entry_price": float(order_result["executed_price"]),
+            "current_price": float(order_result["executed_price"]),
+            "unrealized_pnl": 0,
+            "opened_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "status": "OPEN",
+        })
+
         notifier.send(f"🟢 Открытие позиции\n{ticker} | BUY\nЦена: {order_result['executed_price']}")
 
     elif sig == "SELL":
+        if not allow_short_global or not allow_short:
+            return
+
         order_result = place_order_checked(client, ticker, figi, lot, price, OrderDirection.ORDER_DIRECTION_SELL)
         if not order_result:
             return
@@ -390,10 +425,23 @@ def process_instrument(client, item):
             "open_order_id": order_result["response_order_id"],
             "execution_status": order_result["execution_status"],
         }
+
+        upsert_position({
+            "ticker": ticker,
+            "figi": figi,
+            "direction": "SELL",
+            "qty": int(order_result["lots_executed"] or lot),
+            "entry_price": float(order_result["executed_price"]),
+            "current_price": float(order_result["executed_price"]),
+            "unrealized_pnl": 0,
+            "opened_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "status": "OPEN",
+        })
+
         notifier.send(f"🔴 Открытие позиции\n{ticker} | SELL\nЦена: {order_result['executed_price']}")
 
-
 def main():
+
     log.info("=== Bot v3.3 started ===")
     log_event("BOT_START", "Bot started")
 
@@ -442,7 +490,8 @@ def main():
                 state.session_balance_current = get_money_balance(client)
                 state.status = "SCANNING"
                 state.sync_runtime()
-                time.sleep(settings.CHECK_INTERVAL_SEC)
+                sleep_sec = int(get_setting("check_interval_sec", str(settings.CHECK_INTERVAL_SEC)))
+                time.sleep(sleep_sec)
 
             except KeyboardInterrupt:
                 state.status = "STOPPED"

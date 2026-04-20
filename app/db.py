@@ -1,6 +1,7 @@
 import os
 import sqlite3
 from contextlib import contextmanager
+from datetime import datetime
 from app.config import settings
 
 
@@ -27,6 +28,13 @@ def db_cursor():
         conn.close()
 
 
+def seed_setting(cur, key, value):
+    cur.execute("SELECT key FROM bot_settings WHERE key = ?", (key,))
+    row = cur.fetchone()
+    if not row:
+        cur.execute("INSERT INTO bot_settings(key, value) VALUES (?, ?)", (key, str(value)))
+
+
 def init_db():
     with db_cursor() as cur:
         cur.execute("""
@@ -42,11 +50,19 @@ def init_db():
             ticker TEXT NOT NULL,
             figi TEXT NOT NULL UNIQUE,
             name TEXT DEFAULT '',
+            class_code TEXT DEFAULT '',
+            instrument_type TEXT DEFAULT '',
+            currency TEXT DEFAULT '',
             lot INTEGER DEFAULT 1,
             min_price_increment TEXT DEFAULT '0.01',
             lots_override INTEGER DEFAULT 1,
             stop_loss_pct TEXT DEFAULT '0.0025',
             take_profit_pct TEXT DEFAULT '0.005',
+            max_spread_pct TEXT DEFAULT '0',
+            min_volume INTEGER DEFAULT 0,
+            allow_long INTEGER DEFAULT 1,
+            allow_short INTEGER DEFAULT 1,
+            priority INTEGER DEFAULT 100,
             enabled INTEGER DEFAULT 1,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
@@ -89,6 +105,40 @@ def init_db():
         )
         """)
 
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS positions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticker TEXT NOT NULL,
+            figi TEXT NOT NULL,
+            direction TEXT NOT NULL,
+            qty INTEGER NOT NULL,
+            entry_price REAL NOT NULL,
+            current_price REAL DEFAULT 0,
+            unrealized_pnl REAL DEFAULT 0,
+            opened_at TEXT NOT NULL,
+            status TEXT DEFAULT 'OPEN'
+        )
+        """)
+
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS settings_profiles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            profile_name TEXT NOT NULL UNIQUE,
+            is_active INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+        """)
+
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS settings_profile_values (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            profile_name TEXT NOT NULL,
+            setting_key TEXT NOT NULL,
+            setting_value TEXT NOT NULL,
+            UNIQUE(profile_name, setting_key)
+        )
+        """)
+
         seed_setting(cur, "status", "INIT")
         seed_setting(cur, "daily_pnl", "0")
         seed_setting(cur, "trades_today", "0")
@@ -97,18 +147,28 @@ def init_db():
         seed_setting(cur, "session_balance_current", "0")
         seed_setting(cur, "current_trade_date", "")
         seed_setting(cur, "bot_enabled", "1")
+
         seed_setting(cur, "max_trades_per_day", "15")
         seed_setting(cur, "max_daily_loss_rub", "200")
         seed_setting(cur, "max_open_positions", "2")
+        seed_setting(cur, "check_interval_sec", "5")
         seed_setting(cur, "default_stop_loss_pct", "0.0025")
         seed_setting(cur, "default_take_profit_pct", "0.005")
+        seed_setting(cur, "estimated_commission_pct", "0.0004")
+        seed_setting(cur, "allow_long_global", "1")
+        seed_setting(cur, "allow_short_global", "1")
+        seed_setting(cur, "trade_only_session", "0")
+        seed_setting(cur, "pause_after_error_sec", "10")
+        seed_setting(cur, "telegram_errors_only", "0")
+        seed_setting(cur, "auto_reload_settings", "1")
+        seed_setting(cur, "active_profile_name", "Основной")
 
-
-def seed_setting(cur, key, value):
-    cur.execute("SELECT key FROM bot_settings WHERE key = ?", (key,))
-    row = cur.fetchone()
-    if not row:
-        cur.execute("INSERT INTO bot_settings(key, value) VALUES (?, ?)", (key, value))
+        cur.execute("SELECT id FROM settings_profiles WHERE profile_name = ?", ("Основной",))
+        if not cur.fetchone():
+            cur.execute("""
+            INSERT INTO settings_profiles(profile_name, is_active)
+            VALUES (?, ?)
+            """, ("Основной", 1))
 
 
 def get_setting(key, default=None):
@@ -126,6 +186,12 @@ def set_setting(key, value):
         """, (key, str(value)))
 
 
+def get_all_settings():
+    with db_cursor() as cur:
+        cur.execute("SELECT key, value FROM bot_settings ORDER BY key")
+        return {row["key"]: row["value"] for row in cur.fetchall()}
+
+
 def get_runtime(key, default=None):
     with db_cursor() as cur:
         cur.execute("SELECT value FROM runtime_state WHERE key = ?", (key,))
@@ -141,13 +207,24 @@ def set_runtime(key, value):
         """, (key, str(value)))
 
 
+def get_all_runtime():
+    with db_cursor() as cur:
+        cur.execute("SELECT key, value FROM runtime_state ORDER BY key")
+        return {row["key"]: row["value"] for row in cur.fetchall()}
+
+
 def log_event(event_type, message, ticker="", level="INFO"):
-    from datetime import datetime
     with db_cursor() as cur:
         cur.execute("""
         INSERT INTO event_logs(event_time, event_type, ticker, level, message)
         VALUES (?, ?, ?, ?, ?)
-        """, (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), event_type, ticker, level, message))
+        """, (
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            event_type,
+            ticker,
+            level,
+            message
+        ))
 
 
 def add_trade(trade: dict):
@@ -198,7 +275,7 @@ def get_trades(limit=100, ticker=None, date_from=None, date_to=None):
         return [dict(row) for row in cur.fetchall()]
 
 
-def get_logs(limit=200, ticker=None, event_type=None, date_from=None, date_to=None):
+def get_logs(limit=200, ticker=None, event_type=None, date_from=None, date_to=None, level=None):
     query = "SELECT * FROM event_logs WHERE 1=1"
     params = []
 
@@ -209,6 +286,10 @@ def get_logs(limit=200, ticker=None, event_type=None, date_from=None, date_to=No
     if event_type:
         query += " AND event_type = ?"
         params.append(event_type)
+
+    if level:
+        query += " AND level = ?"
+        params.append(level)
 
     if date_from:
         query += " AND event_time >= ?"
@@ -228,13 +309,12 @@ def get_logs(limit=200, ticker=None, event_type=None, date_from=None, date_to=No
 
 def list_instruments(enabled_only=False):
     query = "SELECT * FROM instruments"
-    params = []
     if enabled_only:
         query += " WHERE enabled = 1"
-    query += " ORDER BY ticker ASC"
+    query += " ORDER BY priority ASC, ticker ASC"
 
     with db_cursor() as cur:
-        cur.execute(query, params)
+        cur.execute(query)
         return [dict(row) for row in cur.fetchall()]
 
 
@@ -242,23 +322,35 @@ def add_instrument(item: dict):
     with db_cursor() as cur:
         cur.execute("""
         INSERT INTO instruments(
-            ticker, figi, name, lot, min_price_increment,
-            lots_override, stop_loss_pct, take_profit_pct, enabled
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ticker, figi, name, class_code, instrument_type, currency,
+            lot, min_price_increment, lots_override, stop_loss_pct, take_profit_pct,
+            max_spread_pct, min_volume, allow_long, allow_short, priority, enabled
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(figi) DO UPDATE SET
             ticker=excluded.ticker,
             name=excluded.name,
+            class_code=excluded.class_code,
+            instrument_type=excluded.instrument_type,
+            currency=excluded.currency,
             lot=excluded.lot,
             min_price_increment=excluded.min_price_increment
         """, (
             item["ticker"],
             item["figi"],
             item.get("name", ""),
+            item.get("class_code", ""),
+            item.get("instrument_type", ""),
+            item.get("currency", ""),
             item.get("lot", 1),
             item.get("min_price_increment", "0.01"),
             item.get("lots_override", 1),
             item.get("stop_loss_pct", "0.0025"),
             item.get("take_profit_pct", "0.005"),
+            item.get("max_spread_pct", "0"),
+            item.get("min_volume", 0),
+            item.get("allow_long", 1),
+            item.get("allow_short", 1),
+            item.get("priority", 100),
             item.get("enabled", 1),
         ))
 
@@ -269,6 +361,11 @@ def update_instrument(figi, fields: dict):
         "stop_loss_pct",
         "take_profit_pct",
         "enabled",
+        "max_spread_pct",
+        "min_volume",
+        "allow_long",
+        "allow_short",
+        "priority",
     }
     parts = []
     params = []
@@ -294,3 +391,181 @@ def update_instrument(figi, fields: dict):
 def delete_instrument(figi):
     with db_cursor() as cur:
         cur.execute("DELETE FROM instruments WHERE figi = ?", (figi,))
+
+
+def upsert_position(position: dict):
+    with db_cursor() as cur:
+        cur.execute("""
+        SELECT id FROM positions WHERE figi = ? AND status = 'OPEN'
+        """, (position["figi"],))
+        row = cur.fetchone()
+
+        if row:
+            cur.execute("""
+            UPDATE positions
+            SET ticker = ?, direction = ?, qty = ?, entry_price = ?, current_price = ?,
+                unrealized_pnl = ?, opened_at = ?, status = ?
+            WHERE id = ?
+            """, (
+                position["ticker"],
+                position["direction"],
+                position["qty"],
+                position["entry_price"],
+                position.get("current_price", 0),
+                position.get("unrealized_pnl", 0),
+                position["opened_at"],
+                position.get("status", "OPEN"),
+                row["id"],
+            ))
+        else:
+            cur.execute("""
+            INSERT INTO positions(
+                ticker, figi, direction, qty, entry_price, current_price,
+                unrealized_pnl, opened_at, status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                position["ticker"],
+                position["figi"],
+                position["direction"],
+                position["qty"],
+                position["entry_price"],
+                position.get("current_price", 0),
+                position.get("unrealized_pnl", 0),
+                position["opened_at"],
+                position.get("status", "OPEN"),
+            ))
+
+
+def close_position(figi):
+    with db_cursor() as cur:
+        cur.execute("""
+        UPDATE positions
+        SET status = 'CLOSED'
+        WHERE figi = ? AND status = 'OPEN'
+        """, (figi,))
+
+
+def get_open_positions():
+    with db_cursor() as cur:
+        cur.execute("""
+        SELECT * FROM positions
+        WHERE status = 'OPEN'
+        ORDER BY opened_at DESC
+        """)
+        return [dict(row) for row in cur.fetchall()]
+
+
+def get_position_history(limit=200):
+    with db_cursor() as cur:
+        cur.execute("""
+        SELECT * FROM positions
+        ORDER BY id DESC
+        LIMIT ?
+        """, (limit,))
+        return [dict(row) for row in cur.fetchall()]
+
+
+def create_settings_profile(profile_name: str):
+    with db_cursor() as cur:
+        cur.execute("""
+        INSERT OR IGNORE INTO settings_profiles(profile_name, is_active)
+        VALUES (?, 0)
+        """, (profile_name,))
+
+        cur.execute("SELECT key, value FROM bot_settings")
+        rows = cur.fetchall()
+        for row in rows:
+            cur.execute("""
+            INSERT INTO settings_profile_values(profile_name, setting_key, setting_value)
+            VALUES (?, ?, ?)
+            ON CONFLICT(profile_name, setting_key) DO UPDATE SET setting_value = excluded.setting_value
+            """, (profile_name, row["key"], row["value"]))
+
+
+def list_settings_profiles():
+    with db_cursor() as cur:
+        cur.execute("""
+        SELECT * FROM settings_profiles
+        ORDER BY profile_name ASC
+        """)
+        return [dict(row) for row in cur.fetchall()]
+
+
+def activate_settings_profile(profile_name: str):
+    with db_cursor() as cur:
+        cur.execute("UPDATE settings_profiles SET is_active = 0")
+        cur.execute("""
+        UPDATE settings_profiles
+        SET is_active = 1
+        WHERE profile_name = ?
+        """, (profile_name,))
+
+        cur.execute("""
+        SELECT setting_key, setting_value
+        FROM settings_profile_values
+        WHERE profile_name = ?
+        """, (profile_name,))
+        rows = cur.fetchall()
+
+        for row in rows:
+            cur.execute("""
+            INSERT INTO bot_settings(key, value)
+            VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """, (row["setting_key"], row["setting_value"]))
+
+        cur.execute("""
+        INSERT INTO bot_settings(key, value)
+        VALUES ('active_profile_name', ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        """, (profile_name,))
+
+
+def save_current_settings_to_profile(profile_name: str):
+    create_settings_profile(profile_name)
+    with db_cursor() as cur:
+        cur.execute("SELECT key, value FROM bot_settings")
+        rows = cur.fetchall()
+        for row in rows:
+            cur.execute("""
+            INSERT INTO settings_profile_values(profile_name, setting_key, setting_value)
+            VALUES (?, ?, ?)
+            ON CONFLICT(profile_name, setting_key) DO UPDATE SET setting_value = excluded.setting_value
+            """, (profile_name, row["key"], row["value"]))
+
+
+def get_error_logs(limit=200, ticker=None, date_from=None, date_to=None):
+    return get_logs(
+        limit=limit,
+        ticker=ticker,
+        event_type=None,
+        date_from=date_from,
+        date_to=date_to,
+        level="ERROR"
+    )
+
+
+def get_system_logs(limit=200, date_from=None, date_to=None):
+    with db_cursor() as cur:
+        query = """
+        SELECT * FROM event_logs
+        WHERE event_type IN (
+            'BOT_START', 'BOT_STOP', 'BOT_ERROR', 'DAILY_RESET',
+            'CONFIG_CHANGED', 'SERVICE_CONTROL'
+        )
+        """
+        params = []
+
+        if date_from:
+            query += " AND event_time >= ?"
+            params.append(date_from)
+
+        if date_to:
+            query += " AND event_time <= ?"
+            params.append(date_to)
+
+        query += " ORDER BY id DESC LIMIT ?"
+        params.append(limit)
+
+        cur.execute(query, params)
+        return [dict(row) for row in cur.fetchall()]

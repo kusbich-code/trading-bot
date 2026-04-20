@@ -1,7 +1,7 @@
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
-from t_tech.invest import CandleInterval
+from t_tech.invest import CandleInterval, InstrumentIdType
 from t_tech.invest.utils import quotation_to_decimal
 
 
@@ -21,7 +21,10 @@ def estimate_liquidity_score(client, figi: str, minutes=30):
 
 def get_instrument_meta(client, figi: str):
     try:
-        resp = client.instruments.get_instrument_by(id_type=1, id=figi)
+        resp = client.instruments.get_instrument_by(
+            id_type=InstrumentIdType.INSTRUMENT_ID_TYPE_FIGI,
+            id=figi
+        )
         instrument = getattr(resp, "instrument", None)
         if not instrument:
             return None
@@ -33,8 +36,11 @@ def get_instrument_meta(client, figi: str):
         return {
             "figi": figi,
             "ticker": getattr(instrument, "ticker", ""),
-            "lot": int(lot) if lot else 1,
             "name": getattr(instrument, "name", ""),
+            "class_code": getattr(instrument, "class_code", ""),
+            "instrument_type": getattr(instrument, "instrument_type", ""),
+            "currency": getattr(instrument, "currency", ""),
+            "lot": int(lot) if lot else 1,
             "min_price_increment": mpi,
         }
     except Exception:
@@ -58,6 +64,9 @@ def find_instruments(client, query: str):
                 "ticker": getattr(x, "ticker", ""),
                 "figi": getattr(x, "figi", ""),
                 "name": getattr(x, "name", ""),
+                "class_code": getattr(x, "class_code", ""),
+                "instrument_type": getattr(x, "instrument_type", ""),
+                "currency": getattr(x, "currency", ""),
                 "lot": getattr(x, "lot", 1),
                 "min_price_increment": str(quotation_to_decimal(mpi)) if mpi else "0.01",
             })
