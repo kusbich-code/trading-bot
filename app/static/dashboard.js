@@ -65,22 +65,38 @@ function getTabFromHash() {
     return normalizeTab(hash.slice(2).split("?")[0].split("/")[0]);
 }
 
+const TAB_TO_VIEW_ID = {
+    "главное": "view-main",
+    "портфель": "view-portfolio",
+    "настройки": "view-settings",
+    "история": "view-history",
+};
+
 function setActiveTabButton(tab) {
+    const normalized = normalizeTab(tab);
+
     document.querySelectorAll("[data-tab-link]").forEach((el) => {
-        el.classList.toggle("active", el.dataset.tabLink === tab);
+        el.classList.toggle("active", normalizeTab(el.dataset.tabLink) === normalized);
     });
 }
 
 function setVisibleView(tab) {
     const normalized = normalizeTab(tab);
 
-    document.querySelectorAll("[data-view]").forEach((el) => {
-        el.classList.add("hidden");
+    Object.values(TAB_TO_VIEW_ID).forEach((id) => {
+        const el = document.getElementById(id);
+        if (el) el.classList.add("hidden");
     });
 
-    const active = document.querySelector(`[data-view="${normalized}"]`);
-    if (active) active.classList.remove("hidden");
+    const activeId = TAB_TO_VIEW_ID[normalized];
+    const active = activeId ? document.getElementById(activeId) : null;
 
+    if (!active) {
+        console.error("Не найден контейнер вкладки:", normalized, activeId);
+        return;
+    }
+
+    active.classList.remove("hidden");
     setActiveTabButton(normalized);
 }
 
@@ -100,7 +116,7 @@ async function applyRoute() {
     }
 }
 
-function bindRouter() {
+async function bindRouter() {
     document.addEventListener("click", async (e) => {
         const link = e.target.closest("[data-tab-link]");
         if (!link) return;
@@ -119,13 +135,19 @@ function bindRouter() {
         window.location.hash = newHash;
     });
 
-    window.addEventListener("hashchange", applyRoute);
+    window.addEventListener("hashchange", () => {
+        applyRoute().catch((e) => {
+            console.error("Ошибка переключения вкладки:", e);
+            showToast(`Ошибка вкладки: ${e.message}`, "error");
+        });
+    });
 
     if (!window.location.hash || !window.location.hash.startsWith("#/")) {
         window.location.hash = "#/главное";
-    } else {
-        applyRoute();
+        return;
     }
+
+    await applyRoute();
 }
 
 function diffTbody(tbody, rowsHtml) {
@@ -1131,7 +1153,7 @@ function startRefreshLoops() {
 }
 
 async function bootstrapDashboard() {
-    bindRouter();
+    await bindRouter();
     await renderSummaryCards();
     await applyRoute();
     startRefreshLoops();
