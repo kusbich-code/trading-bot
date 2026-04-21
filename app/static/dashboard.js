@@ -72,20 +72,35 @@ const TAB_TO_VIEW_ID = {
     "история": "view-history",
 };
 
+const TAB_TO_VIEW_ID = {
+    "главное": "view-main",
+    "портфель": "view-portfolio",
+    "настройки": "view-settings",
+    "история": "view-history",
+};
+
 function setActiveTabButton(tab) {
     const normalized = normalizeTab(tab);
 
     document.querySelectorAll("[data-tab-link]").forEach((el) => {
-        el.classList.toggle("active", normalizeTab(el.dataset.tabLink) === normalized);
+        const linkTab = normalizeTab(el.dataset.tabLink || "");
+        el.classList.toggle("active", linkTab === normalized);
     });
 }
 
 function setVisibleView(tab) {
     const normalized = normalizeTab(tab);
 
-    Object.values(TAB_TO_VIEW_ID).forEach((id) => {
-        const el = document.getElementById(id);
-        if (el) el.classList.add("hidden");
+    const allViews = [
+        document.getElementById("view-main"),
+        document.getElementById("view-portfolio"),
+        document.getElementById("view-settings"),
+        document.getElementById("view-history"),
+    ].filter(Boolean);
+
+    allViews.forEach((el) => {
+        el.style.display = "none";
+        el.classList.add("hidden");
     });
 
     const activeId = TAB_TO_VIEW_ID[normalized];
@@ -97,58 +112,64 @@ function setVisibleView(tab) {
     }
 
     active.classList.remove("hidden");
+    active.style.display = "block";
+
     setActiveTabButton(normalized);
 }
 
 async function applyRoute() {
     const tab = getTabFromHash();
+
     setVisibleView(tab);
 
     if (tab === "главное") {
         await renderMainShell();
         await renderMainData();
-    } else if (tab === "портфель") {
+        return;
+    }
+
+    if (tab === "портфель") {
         await renderPortfolioTab();
-    } else if (tab === "настройки") {
+        return;
+    }
+
+    if (tab === "настройки") {
         await renderSettingsTab();
-    } else if (tab === "история") {
+        return;
+    }
+
+    if (tab === "история") {
         await renderHistoryTab();
+        return;
     }
 }
 
 async function bindRouter() {
-    document.addEventListener("click", async (e) => {
-        const link = e.target.closest("[data-tab-link]");
-        if (!link) return;
+    document.querySelectorAll("[data-tab-link]").forEach((link) => {
+        link.addEventListener("click", async (e) => {
+            e.preventDefault();
 
-        e.preventDefault();
-        e.stopPropagation();
+            const tab = normalizeTab(link.dataset.tabLink || "");
+            const newHash = `#/${tab}`;
 
-        const tab = normalizeTab(link.dataset.tabLink);
-        const newHash = `#/${tab}`;
+            if (window.location.hash !== newHash) {
+                window.location.hash = newHash;
+                return;
+            }
 
-        if (window.location.hash === newHash) {
             await applyRoute();
-            return;
-        }
-
-        window.location.hash = newHash;
+        });
     });
 
     window.addEventListener("hashchange", () => {
         applyRoute().catch((e) => {
             console.error("Ошибка переключения вкладки:", e);
-            showToast(`Ошибка вкладки: ${e.message}`, "error");
         });
     });
 
-    if (!window.location.hash || !window.location.hash.startsWith("#/")) {
-        window.location.hash = "#/главное";
-        return;
-    }
-
     await applyRoute();
 }
+
 
 function diffTbody(tbody, rowsHtml) {
     if (!tbody) return;
