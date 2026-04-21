@@ -1,7 +1,7 @@
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
-from t_tech.invest import CandleInterval, InstrumentIdType
+from t_tech.invest import CandleInterval, InstrumentIdType, InstrumentType
 from t_tech.invest.utils import quotation_to_decimal
 
 
@@ -76,14 +76,29 @@ def find_instruments(client, query: str) -> list:
         items = []
         for x in getattr(resp, "instruments", []):
             figi = getattr(x, "figi", "")
-            if not figi:
+            ticker = getattr(x, "ticker", "")
+
+            if not figi or not ticker:
                 continue
+
+            # Оставляем только акции и фьючерсы
+            kind = getattr(x, "instrument_kind", None)
+            if kind not in (
+                InstrumentType.INSTRUMENT_TYPE_SHARE,
+                InstrumentType.INSTRUMENT_TYPE_FUTURES,
+            ):
+                continue
+
+            # Пропускаем ISIN-подобные тикеры (облигации маскируются под тикер)
+            if len(ticker) > 10 or ticker.startswith("RU0"):
+                continue
+
             items.append({
-                "ticker": getattr(x, "ticker", ""),
+                "ticker": ticker,
                 "figi": figi,
                 "name": getattr(x, "name", ""),
                 "class_code": getattr(x, "class_code", ""),
-                "instrument_type": str(getattr(x, "instrument_type", "")),
+                "instrument_type": str(kind),
                 "currency": getattr(x, "currency", ""),
                 "lot": int(getattr(x, "lot", 1) or 1),
                 "min_price_increment": _mpi_str(x),
@@ -141,6 +156,7 @@ def get_volume_top20_instruments(client) -> list:
             found = find_instruments(client, ticker)
             if not found:
                 continue
+            # Ищем точное совпадение тикера, иначе берём первый результат
             exact = next(
                 (x for x in found if x.get("ticker", "").upper() == ticker.upper()),
                 found[0],
