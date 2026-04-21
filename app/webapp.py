@@ -515,8 +515,14 @@ def api_health():
 
 @app.get("/api/debug/search")
 def api_debug_search(q: str = "SBER"):
+    import traceback
+    from app.config import settings
+    from t_tech.invest import Client
+    from t_tech.invest.sandbox.client import SandboxClient
+
+    client_cls = SandboxClient if settings.TINVEST_USE_SANDBOX else Client
     try:
-        with get_client() as client:
+        with client_cls(settings.TINVEST_TOKEN) as client:
             resp = client.instruments.find_instrument(query=q)
             instruments = getattr(resp, "instruments", [])
             return {
@@ -526,7 +532,6 @@ def api_debug_search(q: str = "SBER"):
                 "first": str(instruments[0]) if instruments else None,
             }
     except Exception as e:
-        import traceback
         return {
             "ok": False,
             "error": str(e),
