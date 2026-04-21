@@ -33,6 +33,20 @@ from app.db import (
     get_instrument_market_state_map,
 )
 
+from app.services.tbank_client import (
+    search_instruments,
+    get_top_shares,
+    get_candles,
+    get_active_stop_orders,
+    cancel_stop_order,
+    post_market_close,
+    post_stop_bundle,
+)
+from app.services.strategy_engine import evaluate_signal
+from app.services.healthcheck import dashboard_health
+from decimal import Decimal
+from app.telegram_health import send_telegram, health_snapshot
+
 app = FastAPI(title="Trading Bot Dashboard v4.0")
 
 if os.path.isdir("app/static"):
@@ -233,6 +247,29 @@ def api_dashboard_portfolio():
         "stop_orders": []
     })
 
+@app.post("/api/stop-orders/create-bundle")
+def api_create_stop_bundle(
+    figi: str = Form(...),
+    qty: int = Form(...),
+    entry_price: str = Form(...),
+    side: str = Form(...),
+    stop_pct: str = Form(...),
+    take_pct: str = Form(...),
+):
+    result = post_stop_bundle(
+        figi=figi,
+        quantity=int(qty),
+        entry_price=Decimal(entry_price),
+        side=side,
+        stop_pct=Decimal(stop_pct),
+        take_pct=Decimal(take_pct),
+    )
+    log_event("STOP_BUNDLE", f"bundle created figi={figi}", ticker=figi)
+    return {"ok": True, **result}
+
+@app.get("/api/dashboard/stop-orders")
+def api_dashboard_stop_orders():
+    return {"items": get_active_stop_orders()}
 
 @app.get("/api/dashboard/settings")
 def api_dashboard_settings():
@@ -258,17 +295,35 @@ def api_dashboard_history():
 
 
 @app.get("/api/dashboard/chart")
-def api_dashboard_chart(figi: str = Query("")):
-    rows = get_instrument_market_state()
-    points = []
-    for idx, r in enumerate(rows[:30]):
-        points.append({"x": idx + 1, "ticker": r.get("ticker", ""), "y": float(safe_decimal(r.get("lastprice", 0)))})
-    return JSONResponse({"figi": figi, "series": points})
+def api_dashboard_chart(figi: str = "", interval: str = "1min"):
+    instruments = list_instruments(enabled_only=False)
+    available = [
+        {"figi": x.get("figi", ""), "ticker": x.get("ticker", ""), "name": x.get("name", "")}
+        for x in instruments
+    ]
+
+    selected_figi = figi or (available[0]["figi"] if available else "")
+    candles = get_candles(selected_figi, interval_name=interval, hours=8) if selected_figi else []
+    mode = get_setting("tradingmode", "trend")
+    signal = evaluate_signal(mode, candles) if candles else {"mode": mode, "action": "HOLD", "score": 0, "reasons": ["Нет свечей"]}
+
+    return {
+        "available_instruments": available,
+        "selected_figi": selected_figi,
+        "interval": interval,
+        "candles": candles,
+        "signal": signal,
+    }
 
 
 @app.post("/api/control/{action}")
 def api_control(action: str):
     return JSONResponse(run_control(action))
+
+
+@app.get("/api/health")
+def api_health():
+    return dashboard_health()
 
 
 @app.post("/api/settings/system")
@@ -291,6 +346,7 @@ def api_settings_strategy(
     allow_long_global: str = Form("1"),
     allow_short_global: str = Form("1"),
     trade_only_session: str = Form("0"),
+    tradingmode: str = Form("trend"),
     pause_after_error_sec: str = Form("10"),
 ):
     set_setting("maxtradesperday", max_trades_per_day)
@@ -304,7 +360,17 @@ def api_settings_strategy(
     set_setting("allowshortglobal", bool01(allow_short_global))
     set_setting("tradeonlysession", bool01(trade_only_session))
     set_setting("pauseaftererrorsec", pause_after_error_sec)
+    set_setting("tradingmode", tradingmode)
     return JSONResponse({"ok": True})
+
+
+@app.post("/api/settings/runtime-mode")
+def api_runtime_mode(mode: str = Form(...)):
+    mode = (mode or "sandbox").strip().lower()
+    use_sandbox = "true" if mode == "sandbox" else "false"
+    set_setting("tinvestusesandbox", use_sandbox)
+    log_event("RUNTIME_MODE", f"mode switched to {mode}")
+    return {"ok": True, "mode": mode, "tinvest_use_sandbox": use_sandbox}
 
 
 @app.post("/api/профили/создать")
@@ -345,6 +411,9 @@ def api_instruments_search(q: str = Query(""), mode: str = Query("")):
         row["volume_score"] = len(rows) - idx
     return JSONResponse([{"ticker": x.get("ticker", ""), "name": x.get("name", ""), "figi": x.get("figi", ""), "instrument_type": x.get("instrumenttype", ""), "currency": x.get("currency", ""), "lot": x.get("lot", 1), "min_price_increment": x.get("minpriceincrement", "0.01"), "last_price_ui": x.get("last_price_ui", "0.00"), "price_time": x.get("price_time", "-"), "volume_score": x.get("volume_score", 0)} for x in rows])
 
+@app.get("/api/instruments/top")
+def api_instruments_top(limit: int = 20):
+    return get_top_shares(limit=limit)
 
 @app.post("/api/instruments/add")
 async def api_instruments_add(request: Request):
@@ -385,6 +454,19 @@ def api_instruments_update(
     return JSONResponse({"ok": True})
 
 
+@app.post("/api/health/telegram-test")
+def api_health_telegram_test():
+    health = dashboard_health()
+    text = health_snapshot(
+        dashboard_ok=(health.get("status") == "ok"),
+        broker_ok=True,
+        target="runtime",
+        extra="manual test"
+    )
+    result = send_telegram(text)
+    return {"ok": True, "telegram": result}
+
+
 @app.post("/api/instruments/delete")
 def api_instruments_delete(figi: str = Form(...)):
     delete_instrument(figi)
@@ -392,9 +474,31 @@ def api_instruments_delete(figi: str = Form(...)):
 
 
 @app.post("/api/позиции/закрыть")
-def api_close_one_position(figi: str = Form(...), qty: str = Form(...), direction: str = Form(...)):
-    return JSONResponse({"ok": True, "message": f"close requested: {figi} {qty} {direction}"})
+def api_close_position(figi: str = Form(...), qty: int = Form(...), direction: str = Form(...)):
+    close_direction = "LONG_CLOSE" if str(direction).upper() == "BUY" else "SHORT_CLOSE"
+    result = post_market_close(figi=figi, quantity=int(qty), direction=close_direction)
+    log_event("POSITION_CLOSE", f"close order posted figi={figi} qty={qty} direction={close_direction}", ticker=figi)
+    return {"ok": True, "message": "close order posted", "order_id": getattr(result, "order_id", "")}
 
+@app.post("/api/stop-orders/create-bundle")
+def api_create_stop_bundle(
+    figi: str = Form(...),
+    qty: int = Form(...),
+    entry_price: str = Form(...),
+    side: str = Form(...),
+    stop_pct: str = Form(...),
+    take_pct: str = Form(...),
+):
+    result = post_stop_bundle(
+        figi=figi,
+        quantity=int(qty),
+        entry_price=Decimal(entry_price),
+        side=side,
+        stop_pct=Decimal(stop_pct),
+        take_pct=Decimal(take_pct),
+    )
+    log_event("STOP_BUNDLE", f"bundle created figi={figi}", ticker=figi)
+    return {"ok": True, **result}
 
 @app.post("/api/позиции/закрыть-все")
 def api_close_all_positions():
@@ -409,3 +513,15 @@ def api_create_stop_orders(figi: str = Form(...), qty: str = Form(...), side: st
 @app.post("/api/стоп-заявки/отменить")
 def api_cancel_stop_order(stop_order_id: str = Form(...)):
     return JSONResponse({"ok": True, "message": f"stop cancel requested: {stop_order_id}"})
+
+@app.get("/api/health")
+def api_health():
+    return dashboard_health()
+
+@app.post("/api/settings/runtime-mode")
+def api_runtime_mode(mode: str = Form(...)):
+    mode = (mode or "sandbox").strip().lower()
+    use_sandbox = "true" if mode == "sandbox" else "false"
+    set_setting("tinvestusesandbox", use_sandbox)
+    log_event("RUNTIME_MODE", f"mode switched to {mode}")
+    return {"ok": True, "mode": mode, "tinvest_use_sandbox": use_sandbox}

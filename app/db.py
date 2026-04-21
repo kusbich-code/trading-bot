@@ -209,7 +209,7 @@ def ensure_instruments_columns(cur):
         seed_setting(cur, "session_balance_current", "0")
         seed_setting(cur, "current_trade_date", "")
         seed_setting(cur, "bot_enabled", "1")
-
+  
         seed_setting(cur, "max_trades_per_day", "15")
         seed_setting(cur, "max_daily_loss_rub", "200")
         seed_setting(cur, "max_open_positions", "2")
@@ -225,7 +225,12 @@ def ensure_instruments_columns(cur):
         seed_setting(cur, "auto_reload_settings", "1")
         seed_setting(cur, "active_profile_name", "Основной")
         seed_setting(cur, "active_strategy_name", "Сбалансированный")
-
+        seed_setting(cur, "tradingmode", "trend")
+        seed_setting(cur, "sandboxmode", "1")
+        seed_setting(cur, "errorseriespausecount", "3")
+        seed_setting(cur, "stopseriespausecount", "3")
+        seed_setting(cur, "healthtelegramenabled", "0")
+        
         cur.execute("SELECT id FROM settings_profiles WHERE profile_name = ?", ("Основной",))
         if not cur.fetchone():
             cur.execute("""

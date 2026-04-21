@@ -158,6 +158,7 @@ function helpCard(title, bullets) {
   `;
 }
 
+
 async function renderMainShell() {
   const host = document.getElementById("view-main");
   if (!host) return;
@@ -293,6 +294,24 @@ async function renderMainData() {
       </tr>
     `).join("")
   );
+
+  try {
+    const health = await apiGet("/api/health");
+    const box = document.getElementById("healthBox");
+    if (box) {
+      box.innerHTML = `
+        <div><strong>Статус:</strong> <span class="health-${health.status === "ok" ? "ok" : "warn"}">${health.status}</span></div>
+        <div style="margin-top:10px;">
+          ${(health.checks || []).map(x => `<div><strong>${x.name}:</strong> ${x.status} — ${x.details}</div>`).join("")}
+        </div>
+      `;
+    }
+  } catch (e) {
+    const box = document.getElementById("healthBox");
+    if (box) {
+      box.innerHTML = `<span class="health-error">Ошибка health-check: ${e.message}</span>`;
+    }
+  }
 }
 
 async function refreshQuotesOnly() {
@@ -375,7 +394,21 @@ async function renderPortfolioTab() {
                 <td>${esc(p.entry_price_ui)}</td>
                 <td>${esc(p.current_price_ui)}</td>
                 <td>${esc(p.unrealized_pnl_ui)}</td>
-                <td><button class="btn btn-danger" data-close-one data-figi="${esc(p.figi)}" data-qty="${esc(p.qty)}" data-direction="${esc(p.direction)}">Закрыть</button></td>
+                <td>
+                  <button class="btn" data-create-stops
+                    data-figi="${esc(p.figi)}"
+                    data-qty="${esc(p.qty)}"
+                    data-entry="${esc(p.entry_price_ui)}"
+                    data-direction="${esc(p.direction)}">
+                    SL/TP
+                  </button>
+                  <button class="btn btn-danger" data-close-one
+                    data-figi="${esc(p.figi)}"
+                    data-qty="${esc(p.qty)}"
+                    data-direction="${esc(p.direction)}">
+                    Закрыть
+                  </button>
+                </td>
               </tr>
             `).join("")}
           </tbody>
@@ -387,6 +420,27 @@ async function renderPortfolioTab() {
   document.getElementById("btnCloseAllPositions")?.addEventListener("click", closeAllPositionsConfirm);
   host.querySelectorAll("[data-close-one]").forEach((btn) => {
     btn.addEventListener("click", () => closeOnePosition(btn.dataset.figi, btn.dataset.qty, btn.dataset.direction));
+  });
+  host.querySelectorAll("[data-create-stops]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      try {
+        const figi = btn.dataset.figi;
+        const qty = btn.dataset.qty;
+        const entry = btn.dataset.entry;
+        const direction = btn.dataset.direction;
+        await apiPostForm("/api/stop-orders/create-bundle", {
+          figi,
+          qty,
+          entry_price: entry,
+          side: direction,
+          stop_pct: "0.0025",
+          take_pct: "0.0050",
+        });
+        showToast("SL/TP bundle создан", "success");
+      } catch (e) {
+        showToast(`Ошибка SL/TP: ${e.message}`, "error");
+      }
+    });
   });
 }
 
@@ -429,6 +483,13 @@ async function renderSettingsTab() {
           </select>
         </label>
 
+        <label>Режим API
+          <select class="field" name="runtime_mode" id="runtimeModeSelect">
+            <option value="sandbox" ${(String(s.tinvestusesandbox || "true") === "true") ? "selected" : ""}>Sandbox</option>
+            <option value="prod" ${(String(s.tinvestusesandbox || "true") === "false") ? "selected" : ""}>Боевой</option>
+          </select>
+        </label>
+
         <div class="row-buttons">
           <button type="button" class="btn btn-primary" id="btnSaveSystemSettings">Сохранить</button>
         </div>
@@ -445,6 +506,13 @@ async function renderSettingsTab() {
         <label>SL %<input class="field" name="default_stop_loss_pct" value="${esc(s.default_stop_loss_pct_ui || 0.25)}"></label>
         <label>TP %<input class="field" name="default_take_profit_pct" value="${esc(s.default_take_profit_pct_ui || 0.50)}"></label>
         <label>Комиссия %<input class="field" name="estimated_commission_pct" value="${esc(s.estimated_commission_pct_ui || 0.04)}"></label>
+        <label>Режим торговли
+          <select class="field" name="tradingmode">
+            <option value="trend" ${(String(s.tradingmode || "trend") === "trend") ? "selected" : ""}>Тренд</option>
+            <option value="mean_reversion" ${(String(s.tradingmode || "trend") === "mean_reversion") ? "selected" : ""}>Возврат к средней</option>
+            <option value="breakout" ${(String(s.tradingmode || "trend") === "breakout") ? "selected" : ""}>Пробой</option>
+          </select>
+        </label>
         <label>Лонг
           <select class="field" name="allow_long_global">
             <option value="1" ${String(s.allow_long_global) === "1" ? "selected" : ""}>Да</option>
@@ -464,6 +532,12 @@ async function renderSettingsTab() {
           </select>
         </label>
         <label>Интервал, сек<input class="field" name="check_interval_sec" value="${esc(s.check_interval_sec || 5)}"></label>
+        <label>Пауза после ошибок
+          <input class="field" name="errorseriespausecount" value="${esc(s.errorseriespausecount || 3)}">
+        </label>
+        <label>Пауза после стопов
+          <input class="field" name="stopseriespausecount" value="${esc(s.stopseriespausecount || 3)}">
+        </label>
         <div class="row-buttons">
           <button type="button" class="btn btn-primary" id="btnSaveStrategySettings">Сохранить стратегию</button>
         </div>
@@ -563,6 +637,15 @@ async function renderSettingsTab() {
   document.getElementById("btnSaveStrategySettings")?.addEventListener("click", saveStrategySettings);
   document.getElementById("btnCreateProfile")?.addEventListener("click", createProfile);
   document.getElementById("btnOpenAddInstrument")?.addEventListener("click", openAddInstrumentModal);
+  document.getElementById("runtimeModeSelect")?.addEventListener("change", async (e) => {
+    try {
+      const mode = e.target.value;
+      await apiPostForm("/api/settings/runtime-mode", { mode });
+      showToast(`Режим API переключён: ${mode}`, "success");
+    } catch (err) {
+      showToast(`Ошибка переключения режима: ${err.message}`, "error");
+    }
+  });
 
   host.querySelectorAll("[data-activate-profile]").forEach((btn) => {
     btn.addEventListener("click", () => activateProfile(btn.dataset.activateProfile));
@@ -687,38 +770,147 @@ async function renderChartTab() {
   const host = document.getElementById("view-chart");
   if (!host) return;
 
-  const data = await apiGet("/api/dashboard/chart");
+  const currentFigi = document.getElementById("chartFigiSelect")?.value || "";
+  const currentInterval = document.getElementById("chartIntervalSelect")?.value || "1min";
+  const data = await apiGet(`/api/dashboard/chart?figi=${encodeURIComponent(currentFigi)}&interval=${encodeURIComponent(currentInterval)}`);
 
   host.innerHTML = `
-    ${helpCard("График", [
-      "Вкладка показывает базовый график по доступным данным dashboard и готовит интерфейс для будущих свечей и индикаторов.",
-      "В будущем сюда можно добавить EMA, VWAP, уровни, метки входа/выхода и score сигнала."
-    ])}
+    <section class="help-card">
+      <h2>Справка: График</h2>
+      <ul>
+        <li>Показывает свечной график по выбранному инструменту из T-Bank API.</li>
+        <li>Можно переключать инструмент и таймфрейм.</li>
+        <li>Показывается score сигнала и причины входа или пропуска сделки.</li>
+      </ul>
+    </section>
+
     <section class="block">
       <div class="row between">
-        <h2>График инструмента</h2>
-        <div class="note">Базовый каркас под свечи и сигналы</div>
+        <h2>Health-check</h2>
+        <div class="note">Состояние dashboard</div>
       </div>
+      <div id="healthBox">Загрузка...</div>
+    </section>
+
+    <section class="block">
+      <div class="row between">
+        <h2>Свечной график</h2>
+        <div class="row">
+          <select class="field" id="chartFigiSelect"></select>
+          <select class="field" id="chartIntervalSelect">
+            <option value="1min">1 минута</option>
+            <option value="5min">5 минут</option>
+            <option value="15min">15 минут</option>
+            <option value="hour">1 час</option>
+          </select>
+          <button class="btn" id="btnReloadChart">Обновить</button>
+        </div>
+      </div>
+
       <div id="chartBox" class="chart-box"></div>
+
+      <div id="signalScoreBox" class="score-box"></div>
     </section>
   `;
 
-  const x = (data.series || []).map((p) => p.ticker || p.x);
-  const y = (data.series || []).map((p) => p.y);
+  const figiSelect = document.getElementById("chartFigiSelect");
+  const intervalSelect = document.getElementById("chartIntervalSelect");
 
-  if (window.Plotly) {
-    Plotly.newPlot(
-      "chartBox",
-      [{ x, y, type: "scatter", mode: "lines+markers", line: { color: "#4c8dff" } }],
-      {
-        paper_bgcolor: "rgba(0,0,0,0)",
-        plot_bgcolor: "rgba(0,0,0,0)",
-        font: { color: "#eef4ff" },
-        margin: { t: 20, r: 20, b: 40, l: 40 },
-      },
-      { displayModeBar: false, responsive: true }
-    );
+  const available = data.available_instruments || [];
+  figiSelect.innerHTML = available.map(x => `<option value="${x.figi}">${x.ticker} — ${x.name}</option>`).join("");
+
+  if (data.selected_figi) {
+    figiSelect.value = data.selected_figi;
   }
+  if (data.interval) {
+    intervalSelect.value = data.interval;
+  }
+
+  renderCandlesAndScore(data);
+
+  document.getElementById("btnReloadChart")?.addEventListener("click", async () => {
+    await renderChartTabWithParams(
+      document.getElementById("chartFigiSelect")?.value || "",
+      document.getElementById("chartIntervalSelect")?.value || "1min"
+    );
+  });
+}
+
+async function renderChartTabWithParams(figi, interval) {
+  const data = await apiGet(`/api/dashboard/chart?figi=${encodeURIComponent(figi)}&interval=${encodeURIComponent(interval)}`);
+
+  const figiSelect = document.getElementById("chartFigiSelect");
+  const intervalSelect = document.getElementById("chartIntervalSelect");
+
+  if (figiSelect && data.available_instruments) {
+    figiSelect.innerHTML = data.available_instruments
+      .map(x => `<option value="${x.figi}">${x.ticker} — ${x.name}</option>`)
+      .join("");
+    figiSelect.value = data.selected_figi || figi;
+  }
+
+  if (intervalSelect) {
+    intervalSelect.value = data.interval || interval;
+  }
+
+  renderCandlesAndScore(data);
+}
+function renderCandlesAndScore(data) {
+  const candles = data.candles || [];
+  const signal = data.signal || { action: "HOLD", score: 0, reasons: ["Нет данных"] };
+
+  const scoreBox = document.getElementById("signalScoreBox");
+  if (scoreBox) {
+    scoreBox.innerHTML = `
+      <div class="score-pill">Action: ${signal.action}</div>
+      <div class="score-pill">Score: ${signal.score}</div>
+      <div class="score-reasons">
+        ${(signal.reasons || []).map(x => `<div>• ${x}</div>`).join("")}
+      </div>
+    `;
+  }
+
+  if (!window.Plotly) return;
+
+  if (!candles.length) {
+    Plotly.newPlot("chartBox", [], {
+      paper_bgcolor: "rgba(0,0,0,0)",
+      plot_bgcolor: "rgba(0,0,0,0)",
+      font: { color: "#eef4ff" },
+      annotations: [{
+        text: "Нет свечей для отображения",
+        xref: "paper",
+        yref: "paper",
+        x: 0.5,
+        y: 0.5,
+        showarrow: false,
+        font: { size: 16, color: "#cfd8f6" }
+      }]
+    }, { displayModeBar: false, responsive: true });
+    return;
+  }
+
+  Plotly.newPlot(
+    "chartBox",
+    [{
+      x: candles.map(c => c.time),
+      open: candles.map(c => c.open),
+      high: candles.map(c => c.high),
+      low: candles.map(c => c.low),
+      close: candles.map(c => c.close),
+      type: "candlestick",
+      increasing: { line: { color: "#2ecc71" } },
+      decreasing: { line: { color: "#ff5c5c" } }
+    }],
+    {
+      paper_bgcolor: "rgba(0,0,0,0)",
+      plot_bgcolor: "rgba(0,0,0,0)",
+      font: { color: "#eef4ff" },
+      margin: { t: 10, r: 20, b: 40, l: 40 },
+      xaxis: { rangeslider: { visible: false } },
+    },
+    { displayModeBar: false, responsive: true }
+  );
 }
 
 function attachTableFilters() {
@@ -793,9 +985,9 @@ async function searchInstruments() {
 
 async function loadTopVolumeInstruments() {
   try {
-    renderInstrumentSearchRows(await apiGet("/api/instruments/search?mode=top-volume"));
+    renderInstrumentSearchRows(await apiGet("/api/instruments/top?limit=20"));
   } catch (e) {
-    showToast(`Ошибка загрузки top: ${e.message}`, "error");
+    showToast(`Ошибка загрузки популярных инструментов: ${e.message}`, "error");
   }
 }
 
