@@ -512,6 +512,27 @@ def api_cancel_stop_order(stop_order_id: str = Form(...)):
 def api_health():
     return dashboard_health()
 
+
+@app.get("/api/debug/search")
+def api_debug_search(q: str = "SBER"):
+    try:
+        with get_client() as client:
+            resp = client.instruments.find_instrument(query=q)
+            instruments = getattr(resp, "instruments", [])
+            return {
+                "ok": True,
+                "count": len(instruments),
+                "raw_type": str(type(resp)),
+                "first": str(instruments[0]) if instruments else None,
+            }
+    except Exception as e:
+        import traceback
+        return {
+            "ok": False,
+            "error": str(e),
+            "traceback": traceback.format_exc(),
+        }
+
 @app.post("/api/settings/runtime-mode")
 def api_runtime_mode(mode: str = Form(...)):
     mode = (mode or "sandbox").strip().lower()
