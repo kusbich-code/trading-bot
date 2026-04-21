@@ -31,7 +31,7 @@ except Exception:
     quotation_to_decimal = None
 
 from app.config import settings
-from app.db import logevent
+from app.db import log_event
 
 
 def _client_cls():
@@ -206,7 +206,7 @@ def post_stop_bundle(figi: str, quantity: int, entry_price: Decimal, side: str, 
         )
         out["stop_loss_id"] = getattr(sl, "stop_order_id", None)
         out["take_profit_id"] = getattr(tp, "stop_order_id", None)
-    logevent("STOP_BUNDLE", f"stop bundle created for {figi}", ticker=figi)
+    log_event("STOP_BUNDLE", f"stop bundle created for {figi}", ticker=figi)
     return out
 
 
