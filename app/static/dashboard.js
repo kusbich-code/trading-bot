@@ -4,6 +4,8 @@ const REFRESH_PORTFOLIO_MS = 10000;
 
 let instrumentSearchData = [];
 let refreshTimersStarted = false;
+let routerBound = false;
+
 const ALLOWED_TABS = new Set(["главное", "портфель", "настройки", "история"]);
 
 function esc(v) {
@@ -65,61 +67,32 @@ function getTabFromHash() {
     return normalizeTab(hash.slice(2).split("?")[0].split("/")[0]);
 }
 
-const TAB_TO_VIEW_ID = {
-    "главное": "view-main",
-    "портфель": "view-portfolio",
-    "настройки": "view-settings",
-    "история": "view-history",
-};
-
-const TAB_TO_VIEW_ID = {
-    "главное": "view-main",
-    "портфель": "view-portfolio",
-    "настройки": "view-settings",
-    "история": "view-history",
-};
-
 function setActiveTabButton(tab) {
     const normalized = normalizeTab(tab);
-
     document.querySelectorAll("[data-tab-link]").forEach((el) => {
-        const linkTab = normalizeTab(el.dataset.tabLink || "");
-        el.classList.toggle("active", linkTab === normalized);
+        el.classList.toggle("active", normalizeTab(el.dataset.tabLink) === normalized);
     });
 }
 
 function setVisibleView(tab) {
     const normalized = normalizeTab(tab);
 
-    const allViews = [
-        document.getElementById("view-main"),
-        document.getElementById("view-portfolio"),
-        document.getElementById("view-settings"),
-        document.getElementById("view-history"),
-    ].filter(Boolean);
-
-    allViews.forEach((el) => {
-        el.style.display = "none";
+    document.querySelectorAll("[data-view]").forEach((el) => {
         el.classList.add("hidden");
     });
 
-    const activeId = TAB_TO_VIEW_ID[normalized];
-    const active = activeId ? document.getElementById(activeId) : null;
-
+    const active = document.querySelector(`[data-view="${normalized}"]`);
     if (!active) {
-        console.error("Не найден контейнер вкладки:", normalized, activeId);
+        console.error("Не найден data-view для вкладки:", normalized);
         return;
     }
 
     active.classList.remove("hidden");
-    active.style.display = "block";
-
     setActiveTabButton(normalized);
 }
 
 async function applyRoute() {
     const tab = getTabFromHash();
-
     setVisibleView(tab);
 
     if (tab === "главное") {
@@ -144,32 +117,44 @@ async function applyRoute() {
     }
 }
 
-async function bindRouter() {
-    document.querySelectorAll("[data-tab-link]").forEach((link) => {
-        link.addEventListener("click", async (e) => {
-            e.preventDefault();
+function bindRouter() {
+    if (routerBound) return;
+    routerBound = true;
 
-            const tab = normalizeTab(link.dataset.tabLink || "");
-            const newHash = `#/${tab}`;
+    document.addEventListener("click", async (e) => {
+        const link = e.target.closest("[data-tab-link]");
+        if (!link) return;
 
-            if (window.location.hash !== newHash) {
-                window.location.hash = newHash;
-                return;
+        e.preventDefault();
+        e.stopPropagation();
+
+        const tab = normalizeTab(link.dataset.tabLink);
+        const newHash = `#/${tab}`;
+
+        if (window.location.hash === newHash) {
+            try {
+                await applyRoute();
+            } catch (err) {
+                console.error("Ошибка applyRoute:", err);
+                showToast(`Ошибка вкладки: ${err.message}`, "error");
             }
+            return;
+        }
 
-            await applyRoute();
-        });
+        window.location.hash = newHash;
     });
 
     window.addEventListener("hashchange", () => {
-        applyRoute().catch((e) => {
-            console.error("Ошибка переключения вкладки:", e);
+        applyRoute().catch((err) => {
+            console.error("Ошибка hashchange/applyRoute:", err);
+            showToast(`Ошибка вкладки: ${err.message}`, "error");
         });
     });
 
-    await applyRoute();
+    if (!window.location.hash || !window.location.hash.startsWith("#/")) {
+        window.location.hash = "#/главное";
+    }
 }
-
 
 function diffTbody(tbody, rowsHtml) {
     if (!tbody) return;
@@ -1174,7 +1159,7 @@ function startRefreshLoops() {
 }
 
 async function bootstrapDashboard() {
-    await bindRouter();
+    bindRouter();
     await renderSummaryCards();
     await applyRoute();
     startRefreshLoops();
