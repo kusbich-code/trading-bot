@@ -4,6 +4,7 @@ const REFRESH_PORTFOLIO_MS = 10000;
 
 let instrumentSearchData = [];
 let refreshTimersStarted = false;
+const ALLOWED_TABS = new Set(["главное", "портфель", "настройки", "история"]);
 
 function esc(v) {
     return String(v ?? "");
@@ -54,87 +55,77 @@ async function apiPostForm(url, data) {
 }
 
 function normalizeTab(raw) {
-    const allowed = ["главное", "портфель", "настройки", "история"];
-    if (!raw) return "главное";
-    const cleaned = String(raw).trim().toLowerCase();
-    return allowed.includes(cleaned) ? cleaned : "главное";
+    const tab = String(raw || "").trim().toLowerCase();
+    return ALLOWED_TABS.has(tab) ? tab : "главное";
 }
 
-function currentTab() {
+function getTabFromHash() {
     const hash = window.location.hash || "";
     if (!hash.startsWith("#/")) return "главное";
-    const tab = hash.slice(2).split("/")[0];
-    return normalizeTab(tab);
+    return normalizeTab(hash.slice(2).split("?")[0].split("/")[0]);
 }
 
-function setHashSilently(tab) {
-    const nextHash = `#/${tab}`;
-    if (window.location.hash !== nextHash) {
-        history.replaceState(null, "", nextHash);
-    }
+function setActiveTabButton(tab) {
+    document.querySelectorAll("[data-tab-link]").forEach((el) => {
+        el.classList.toggle("active", el.dataset.tabLink === tab);
+    });
 }
 
-function navigateToTab(tab) {
-    const normalized = normalizeTab(tab);
-    window.location.hash = `#/${normalized}`;
-    showTab(normalized);
-    renderCurrentTab();
-}
-
-function ensureValidHash() {
-    const hash = window.location.hash || "";
-    if (!hash || !hash.startsWith("#/")) {
-        window.location.hash = "#/главное";
-        return;
-    }
-    const tab = hash.slice(2).split("/")[0];
-    if (normalizeTab(tab) !== tab) {
-        window.location.hash = "#/главное";
-    }
-}
-
-function showTab(tab) {
+function setVisibleView(tab) {
     const normalized = normalizeTab(tab);
 
     document.querySelectorAll("[data-view]").forEach((el) => {
         el.classList.add("hidden");
     });
 
-    const target = document.querySelector(`[data-view="${normalized}"]`);
-    if (target) target.classList.remove("hidden");
+    const active = document.querySelector(`[data-view="${normalized}"]`);
+    if (active) active.classList.remove("hidden");
 
-    document.querySelectorAll("[data-tab-link]").forEach((el) => {
-        el.classList.toggle("active", el.dataset.tabLink === normalized);
-    });
-
-    setHashSilently(normalized);
+    setActiveTabButton(normalized);
 }
 
-function bindTabDelegation() {
-    document.addEventListener("click", (e) => {
+async function applyRoute() {
+    const tab = getTabFromHash();
+    setVisibleView(tab);
+
+    if (tab === "главное") {
+        await renderMainShell();
+        await renderMainData();
+    } else if (tab === "портфель") {
+        await renderPortfolioTab();
+    } else if (tab === "настройки") {
+        await renderSettingsTab();
+    } else if (tab === "история") {
+        await renderHistoryTab();
+    }
+}
+
+function bindRouter() {
+    document.addEventListener("click", async (e) => {
         const link = e.target.closest("[data-tab-link]");
         if (!link) return;
 
         e.preventDefault();
         e.stopPropagation();
 
-        const tab = link.dataset.tabLink || "главное";
-        navigateToTab(tab);
-    });
-}
+        const tab = normalizeTab(link.dataset.tabLink);
+        const newHash = `#/${tab}`;
 
-function startRouter() {
-    ensureValidHash();
-    showTab(currentTab());
+        if (window.location.hash === newHash) {
+            await applyRoute();
+            return;
+        }
 
-    window.addEventListener("hashchange", () => {
-        ensureValidHash();
-        const tab = currentTab();
-        showTab(tab);
-        renderCurrentTab();
+        window.location.hash = newHash;
     });
 
-    bindTabDelegation();
+    window.addEventListener("hashchange", applyRoute);
+
+    if (!window.location.hash || !window.location.hash.startsWith("#/")) {
+        window.location.hash = "#/главное";
+    } else {
+        applyRoute();
+    }
 }
 
 function diffTbody(tbody, rowsHtml) {
@@ -154,10 +145,10 @@ async function renderSummaryCards() {
         <div class="card"><div class="label">Статус</div><div class="value">${esc(s.status)}</div></div>
         <div class="card"><div class="label">Торговля</div><div class="value">${s.bot_enabled === "1" ? "Включена" : "Выключена"}</div></div>
         <div class="card"><div class="label">Сделок сегодня</div><div class="value">${esc(s.trades_today)}</div></div>
-        <div class="card"><div class="label">PNL за день</div><div class="value">${esc(s.daily_pnl)}</div></div>
-        <div class="card"><div class="label">Комиссии за день</div><div class="value">${esc(s.total_commission)}</div></div>
-        <div class="card"><div class="label">Баланс на старте</div><div class="value">${esc(s.session_balance_start)}</div></div>
-        <div class="card"><div class="label">Текущий баланс</div><div class="value">${esc(s.session_balance_current)}</div></div>
+        <div class="card"><div class="label">PNL за день</div><div class="value">${esc(s.daily_pnl_ui ?? s.daily_pnl ?? "0.00")}</div></div>
+        <div class="card"><div class="label">Комиссии за день</div><div class="value">${esc(s.total_commission_ui ?? s.total_commission ?? "0.00")}</div></div>
+        <div class="card"><div class="label">Баланс на старте</div><div class="value">${esc(s.session_balance_start_ui ?? s.session_balance_start ?? "0.00")}</div></div>
+        <div class="card"><div class="label">Текущий баланс</div><div class="value">${esc(s.session_balance_current_ui ?? s.session_balance_current ?? "0.00")}</div></div>
         <div class="card"><div class="label">Профиль настроек</div><div class="value">${esc(s.active_profile_name)}</div></div>
         <div class="card"><div class="label">Стратегия торговли</div><div class="value">${esc(s.active_strategy_name)}</div></div>
         <div class="card"><div class="label">Последняя ошибка</div><div class="value">${esc(s.last_error || "-")}</div></div>
@@ -309,7 +300,7 @@ async function renderMainData() {
 }
 
 async function refreshQuotesOnly() {
-    if (currentTab() !== "главное") return;
+    if (getTabFromHash() !== "главное") return;
 
     const quotes = await apiGet("/api/dashboard/quotes");
     const map = {};
@@ -849,29 +840,13 @@ function attachTableFilters() {
     });
 }
 
-async function renderCurrentTab() {
-    const tab = currentTab();
-    showTab(tab);
-
-    if (tab === "главное") {
-        await renderMainShell();
-        await renderMainData();
-    } else if (tab === "портфель") {
-        await renderPortfolioTab();
-    } else if (tab === "настройки") {
-        await renderSettingsTab();
-    } else if (tab === "история") {
-        await renderHistoryTab();
-    }
-}
-
 async function serviceAction(action) {
     try {
         const r = await fetch(`/api/control/${action}`, { method: "POST", credentials: "same-origin" });
         const data = await r.json();
         showToast(data.ok ? "Команда выполнена" : "Команда вернула ошибку", data.ok ? "success" : "error");
         await renderSummaryCards();
-        await renderCurrentTab();
+        await applyRoute();
     } catch (e) {
         showToast(`Ошибка: ${e.message}`, "error");
     }
@@ -948,7 +923,7 @@ async function acceptSelectedInstruments() {
         showToast(`Добавлено: ${data["добавлено"]}`, "success");
         closeAddInstrumentModal();
 
-        if (currentTab() === "настройки") await renderSettingsTab();
+        if (getTabFromHash() === "настройки") await renderSettingsTab();
         await renderMainShell();
         await renderMainData();
     } catch (e) {
@@ -1148,7 +1123,7 @@ function startRefreshLoops() {
 
     setInterval(async () => {
         try {
-            if (currentTab() === "портфель") {
+            if (getTabFromHash() === "портфель") {
                 await renderPortfolioTab();
             }
         } catch (_) {}
@@ -1156,12 +1131,21 @@ function startRefreshLoops() {
 }
 
 async function bootstrapDashboard() {
-    startRouter();
+    bindRouter();
     await renderSummaryCards();
-    await renderCurrentTab();
+    await applyRoute();
     startRefreshLoops();
 
-    window.dashboardNavigate = navigateToTab;
+    window.dashboardNavigate = async (tab) => {
+        const normalized = normalizeTab(tab);
+        const newHash = `#/${normalized}`;
+        if (window.location.hash === newHash) {
+            await applyRoute();
+        } else {
+            window.location.hash = newHash;
+        }
+    };
+
     window.openAddInstrumentModal = openAddInstrumentModal;
     window.closeAddInstrumentModal = closeAddInstrumentModal;
     window.searchInstruments = searchInstruments;
