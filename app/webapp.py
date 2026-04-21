@@ -575,6 +575,7 @@ def api_cancel_stop_order(stop_order_id: str = Form(...)):
 
 
 @app.get("/dashboard", response_class=HTMLResponse)
+@app.get("/dashboard/", response_class=HTMLResponse)
 def dashboard():
     return HTMLResponse("""
 <!doctype html>
