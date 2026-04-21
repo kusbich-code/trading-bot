@@ -1,18 +1,15 @@
 [Unit]
-Description=Trading Bot Dashboard
+Description=Trading Bot Dashboard v4
 After=network.target
 
 [Service]
-Type=simple
 User=trader
 Group=trader
 WorkingDirectory=/home/trader/apps/trading-bot
-EnvironmentFile=/home/trader/apps/trading-bot/.env
-ExecStart=/home/trader/apps/trading-bot/.venv/bin/uvicorn app.webapp:app --host 127.0.0.1 --port 8080
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/trader/apps/trading-bot/.venv/bin/uvicorn app.webapp:app --host 0.0.0.0 --port 80
 Restart=always
-RestartSec=5
-StandardOutput=append:/home/trader/apps/trading-bot/logs/systemd-dashboard-out.log
-StandardError=append:/home/trader/apps/trading-bot/logs/systemd-dashboard-err.log
+RestartSec=3
 
 [Install]
 WantedBy=multi-user.target
