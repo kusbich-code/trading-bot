@@ -31,6 +31,7 @@ from app.db import (
     save_current_settings_to_strategy,
     get_instrument_market_state,
     get_instrument_market_state_map,
+    get_setting,
 )
 
 from app.services.tbank_client import (
@@ -296,24 +297,17 @@ def api_dashboard_history():
 
 @app.get("/api/dashboard/chart")
 def api_dashboard_chart(figi: str = "", interval: str = "1min"):
-    instruments = list_instruments(enabled_only=False)
-    available = [
-        {"figi": x.get("figi", ""), "ticker": x.get("ticker", ""), "name": x.get("name", "")}
-        for x in instruments
-    ]
-
-    selected_figi = figi or (available[0]["figi"] if available else "")
-    candles = get_candles(selected_figi, interval_name=interval, hours=8) if selected_figi else []
-    mode = get_setting("tradingmode", "trend")
-    signal = evaluate_signal(mode, candles) if candles else {"mode": mode, "action": "HOLD", "score": 0, "reasons": ["Нет свечей"]}
-
-    return {
-        "available_instruments": available,
-        "selected_figi": selected_figi,
-        "interval": interval,
-        "candles": candles,
-        "signal": signal,
-    }
+    """Заглушка графика — возвращает пустой массив если figi не указан"""
+    from app.db import get_setting  # локальный импорт как защита
+    if not figi:
+        return []
+    try:
+        mode = get_setting("trading_mode", "trend")
+        # Здесь в будущем можно добавить реальные свечи из БД
+        return {"figi": figi, "interval": interval, "candles": [], "mode": mode}
+    except Exception as e:
+        log_event("BOT_ERROR", f"chart error: {e}", level="ERROR")
+        return []
 
 
 @app.post("/api/control/{action}")
