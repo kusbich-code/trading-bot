@@ -1,6 +1,6 @@
 from decimal import Decimal
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 try:
     from t_tech.invest import (
@@ -45,6 +45,14 @@ def _account_id() -> str:
 def quotation_to_decimal_safe(q) -> Decimal:
     if quotation_to_decimal:
         return quotation_to_decimal(q)
+    units = getattr(q, "units", 0)
+    nano = getattr(q, "nano", 0)
+    return Decimal(units) + (Decimal(nano) / Decimal("1000000000"))
+
+
+def money_value_to_decimal_safe(q) -> Decimal:
+    if q is None:
+        return Decimal("0")
     units = getattr(q, "units", 0)
     nano = getattr(q, "nano", 0)
     return Decimal(units) + (Decimal(nano) / Decimal("1000000000"))
@@ -236,3 +244,93 @@ def get_active_stop_orders() -> List[Dict[str, Any]]:
 def cancel_stop_order(stop_order_id: str):
     with with_client() as client:
         return client.stop_orders.cancel_stop_order(account_id=_account_id(), stop_order_id=stop_order_id)
+
+
+def _money_value_to_decimal(item) -> Decimal:
+    if item is None:
+        return Decimal("0")
+    units = getattr(item, "units", 0)
+    nano = getattr(item, "nano", 0)
+    return Decimal(units) + (Decimal(nano) / Decimal("1000000000"))
+
+
+def get_portfolio_snapshot() -> Dict[str, Any]:
+    with with_client() as client:
+        portfolio = client.operations.get_portfolio(account_id=_account_id())
+
+        total_amount_portfolio = quotation_to_decimal_safe(
+            getattr(portfolio, "total_amount_portfolio", None)
+        )
+        total_amount_shares = quotation_to_decimal_safe(
+            getattr(portfolio, "total_amount_shares", None)
+        )
+        total_amount_currencies = quotation_to_decimal_safe(
+            getattr(portfolio, "total_amount_currencies", None)
+        )
+        total_amount_futures = quotation_to_decimal_safe(
+            getattr(portfolio, "total_amount_futures", None)
+        )
+        total_amount_options = quotation_to_decimal_safe(
+            getattr(portfolio, "total_amount_options", None)
+        )
+        total_amount_bonds = quotation_to_decimal_safe(
+            getattr(portfolio, "total_amount_bonds", None)
+        )
+        total_amount_etf = quotation_to_decimal_safe(
+            getattr(portfolio, "total_amount_etf", None)
+        )
+
+        blocked = Decimal("0")
+        money = []
+
+        try:
+            withdraw_limits = client.operations.get_withdraw_limits(account_id=_account_id())
+            for item in getattr(withdraw_limits, "money", []):
+                currency = getattr(item, "currency", "") or ""
+                value = _money_value_to_decimal(item)
+                blocked_value = Decimal("0")
+
+                for b in getattr(withdraw_limits, "blocked", []):
+                    if (getattr(b, "currency", "") or "") == currency:
+                        blocked_value = _money_value_to_decimal(b)
+                        break
+
+                money.append({
+                    "currency": currency,
+                    "available": value,
+                    "blocked": blocked_value,
+                    "total": value + blocked_value,
+                })
+                blocked += blocked_value
+        except Exception:
+            pass
+
+        cash_total = sum((x["total"] for x in money), Decimal("0"))
+
+        return {
+            "total_assets": total_amount_portfolio,
+            "positions_value": (
+                total_amount_shares
+                + total_amount_bonds
+                + total_amount_etf
+                + total_amount_futures
+                + total_amount_options
+            ),
+            "cash": total_amount_currencies if total_amount_currencies else cash_total,
+            "blocked": blocked,
+            "shares": total_amount_shares,
+            "bonds": total_amount_bonds,
+            "etf": total_amount_etf,
+            "futures": total_amount_futures,
+            "options": total_amount_options,
+            "money_by_currency": [
+                {
+                    "currency": x["currency"],
+                    "available": str(x["available"]),
+                    "blocked": str(x["blocked"]),
+                    "total": str(x["total"]),
+                }
+                for x in money
+            ],
+            "positions_count": len(getattr(portfolio, "positions", [])),
+        }

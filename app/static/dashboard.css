@@ -108,3 +108,23 @@
   color: #dbe8ff;
   font-size: 12px;
 }
+
+.status-ok {
+  color: #2fa36b;
+}
+
+.status-off {
+  color: #9fb3d8;
+}
+
+.status-problem {
+  color: #ff7b7b;
+}
+
+.card .value {
+  word-break: break-word;
+}
+
+.card .label {
+  letter-spacing: 0.02em;
+}

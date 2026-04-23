@@ -130,22 +130,48 @@ function ensureViewsExist() {
   });
 }
 
+function summaryValueClass(value) {
+  const v = String(value || "").trim().toLowerCase();
+
+  if (["запущен", "ведётся", "ведется", "ok", "активен", "активна"].includes(v)) {
+    return "value status-ok";
+  }
+  if (["остановлен", "остановлена", "выкл", "disabled", "inactive"].includes(v)) {
+    return "value status-off";
+  }
+  if (["проблема", "error", "failed", "warning", "warn"].includes(v)) {
+    return "value status-problem";
+  }
+  return "value";
+}
+
+function summaryCard(label, value, extraClass = "") {
+  return `
+    <div class="card ${extraClass}">
+      <div class="label">${esc(label)}</div>
+      <div class="${summaryValueClass(value)}">${esc(value ?? "—")}</div>
+    </div>
+  `;
+}
+
 async function renderSummaryCards() {
   const s = await apiGet("/api/dashboard/summary");
   const host = document.getElementById("summaryCards");
   if (!host) return;
 
   host.innerHTML = `
-    <div class="card"><div class="label">Статус</div><div class="value">${esc(s.status)}</div></div>
-    <div class="card"><div class="label">Торг.</div><div class="value">${s.bot_enabled === "1" ? "Вкл" : "Выкл"}</div></div>
-    <div class="card"><div class="label">Сделки</div><div class="value">${esc(s.trades_today)}</div></div>
-    <div class="card"><div class="label">ПнЛ день</div><div class="value">${esc(s.daily_pnl_ui)}</div></div>
-    <div class="card"><div class="label">Комиссия</div><div class="value">${esc(s.total_commission_ui)}</div></div>
-    <div class="card"><div class="label">Старт баланс</div><div class="value">${esc(s.session_balance_start_ui)}</div></div>
-    <div class="card"><div class="label">Текущий баланс</div><div class="value">${esc(s.session_balance_current_ui)}</div></div>
-    <div class="card"><div class="label">Профиль</div><div class="value">${esc(s.active_profile_name)}</div></div>
-    <div class="card"><div class="label">Стратегия</div><div class="value">${esc(s.active_strategy_name)}</div></div>
-    <div class="card"><div class="label">Ошибка</div><div class="value">${esc(s.last_error || "—")}</div></div>
+    ${summaryCard("Статус", s.status)}
+    ${summaryCard("Торговля", s.trading_status)}
+    ${summaryCard("Сделки", s.trades_today)}
+    ${summaryCard("ПнЛ день", s.daily_pnl_ui)}
+    ${summaryCard("Комиссия", s.total_commission_ui)}
+    ${summaryCard("Деньги", s.cash_rub_ui)}
+    ${summaryCard("Позиции", s.positions_value_rub_ui)}
+    ${summaryCard("Резерв", s.blocked_rub_ui)}
+    ${summaryCard("Итого", s.total_assets_rub_ui)}
+    ${summaryCard("Профиль", s.active_profile_name || "—")}
+    ${summaryCard("Стратегия", s.active_strategy_name || "—")}
+    ${summaryCard("Ошибка", s.last_error || "—")}
   `;
 }
 

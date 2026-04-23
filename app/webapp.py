@@ -46,6 +46,7 @@ from app.services.tbank_client import (
     cancel_stop_order,
     post_market_close,
     post_stop_bundle,
+    get_portfolio_snapshot,
 )
 from app.services.strategy_engine import evaluate_signal
 from app.services.healthcheck import dashboard_health
@@ -68,6 +69,22 @@ def safe_decimal(value: Any, default: Decimal = Decimal("0")) -> Decimal:
 def fmt_money(value: Any) -> str:
     return f"{safe_decimal(value):.2f}"
 
+def is_truthy(value: Any) -> bool:
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
+def get_service_status() -> str:
+    try:
+        result = run_control("status")
+        text = str(result.get("output", "") or result.get("message", "")).lower()
+        if "active: active" in text or "is running" in text or "active (running)" in text:
+            return "Запущен"
+        if "inactive" in text or "not running" in text or "stopped" in text:
+            return "Остановлен"
+        return "Проблема"
+    except Exception:
+        return "Проблема"
+
 
 def fmt_pct_fraction(value: Any) -> str:
     return f"{safe_decimal(value) * Decimal('100'):.2f}"
@@ -75,6 +92,27 @@ def fmt_pct_fraction(value: Any) -> str:
 
 def bool01(value: Any) -> str:
     return "1" if str(value) in ("1", "true", "True") else "0"
+
+
+def is_truthy(value: Any) -> bool:
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
+def get_service_status_value() -> str:
+    try:
+        result = run_control("status")
+        raw = " ".join([
+            str(result.get("message", "") or ""),
+            str(result.get("output", "") or ""),
+        ]).lower()
+
+        if "active (running)" in raw or "is running" in raw or "active: active" in raw:
+            return "Запущен"
+        if "inactive" in raw or "dead" in raw or "stopped" in raw or "not running" in raw:
+            return "Остановлен"
+        return "Проблема"
+    except Exception:
+        return "Проблема"
 
 
 def market_row(row: Dict[str, Any], market_map: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
@@ -92,19 +130,77 @@ def market_row(row: Dict[str, Any], market_map: Dict[str, Dict[str, Any]]) -> Di
 
 def summary_payload() -> Dict[str, Any]:
     s = get_all_settings()
-    r = get_all_runtime()
     st = get_trade_stats_today()
+    instruments = list_instruments()
+
+    active_profile_name = (s.get("activeprofilename", "") or "").strip() or "—"
+    active_strategy_name = (s.get("activestrategyname", "") or "").strip() or "—"
+    bot_enabled = is_truthy(s.get("botenabled", "1"))
+
+    enabled_instruments = [
+        x for x in instruments
+        if str(x.get("enabled", 0)).strip().lower() in ("1", "true")
+    ]
+
+    service_status = get_service_status_value()
+
+    try:
+        health = dashboard_health()
+        api_ok = str(health.get("status", "")).strip().lower() == "ok"
+    except Exception:
+        api_ok = False
+
+    try:
+        portfolio = get_portfolio_snapshot()
+        portfolio_ok = True
+    except Exception as e:
+        logger.exception("portfolio snapshot error")
+        portfolio_ok = False
+        portfolio = {
+            "cash": Decimal("0"),
+            "positions_value": Decimal("0"),
+            "blocked": Decimal("0"),
+            "total_assets": Decimal("0"),
+            "positions_count": 0,
+            "money_by_currency": [],
+        }
+        if not s.get("lasterror"):
+            s["lasterror"] = str(e)
+
+    if service_status == "Запущен" and not api_ok:
+        service_status = "Проблема"
+
+    if service_status != "Запущен":
+        trading_status = "Остановлена"
+    elif not bot_enabled:
+        trading_status = "Остановлена"
+    elif active_profile_name == "—":
+        trading_status = "Проблема"
+    elif active_strategy_name == "—":
+        trading_status = "Проблема"
+    elif len(enabled_instruments) == 0:
+        trading_status = "Проблема"
+    elif not portfolio_ok:
+        trading_status = "Проблема"
+    else:
+        trading_status = "Ведётся"
+
     return {
-        "status": s.get("status", "INIT"),
-        "bot_enabled": s.get("botenabled", "1"),
+        "status": service_status,
+        "trading_status": trading_status,
+        "bot_enabled": "1" if bot_enabled else "0",
         "trades_today": st.get("trades_count", 0),
         "daily_pnl_ui": fmt_money(st.get("total_pnl", 0)),
         "total_commission_ui": fmt_money(st.get("total_commission", 0)),
-        "session_balance_start_ui": fmt_money(r.get("sessionbalancestart", 0)),
-        "session_balance_current_ui": fmt_money(r.get("sessionbalancecurrent", 0)),
-        "active_profile_name": s.get("activeprofilename", "—"),
-        "active_strategy_name": s.get("activestrategyname", "—"),
-        "last_error": s.get("lasterror", ""),
+        "cash_rub_ui": fmt_money(portfolio.get("cash", 0)),
+        "positions_value_rub_ui": fmt_money(portfolio.get("positions_value", 0)),
+        "blocked_rub_ui": fmt_money(portfolio.get("blocked", 0)),
+        "total_assets_rub_ui": fmt_money(portfolio.get("total_assets", 0)),
+        "positions_count": portfolio.get("positions_count", 0),
+        "money_by_currency": portfolio.get("money_by_currency", []),
+        "active_profile_name": active_profile_name,
+        "active_strategy_name": active_strategy_name,
+        "last_error": s.get("lasterror", "") or "—",
     }
 
 
