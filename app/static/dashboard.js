@@ -1016,11 +1016,10 @@ function renderInstrumentSearchRows(items) {
           return;
         }
 
-        const payload = [normalizeInstrumentForAdd(item)];
-        const r = await fetch("/api/instruments/add", {
+       const r = await fetch("/api/instruments/add", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ items: payload }),
+          body: JSON.stringify({ items }),
           credentials: "same-origin",
         });
 

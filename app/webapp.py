@@ -125,6 +125,10 @@ def settings_payload() -> Dict[str, Any]:
         "allow_short_global": s.get("allowshortglobal", "1"),
         "trade_only_session": s.get("tradeonlysession", "0"),
         "pause_after_error_sec": s.get("pauseaftererrorsec", "10"),
+        "tinvestusesandbox": s.get("tinvestusesandbox", "true"),
+        "tradingmode": s.get("tradingmode", "trend"),
+        "errorseriespausecount": s.get("errorseriespausecount", "3"),
+        "stopseriespausecount": s.get("stopseriespausecount", "3"),
     }
 
 

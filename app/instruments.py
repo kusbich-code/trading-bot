@@ -22,6 +22,22 @@ def _instrument_to_dict(inst) -> dict:
         "min_price_increment": str(getattr(inst, "min_price_increment", "0.01") or "0.01"),
     }
 
+def get_instrument_meta(figi: str) -> dict:
+    with Client(settings.TINVEST_TOKEN) as client:
+        resp = client.instruments.get_instrument_by(id_type=1, id=figi)
+        inst = getattr(resp, "instrument", None)
+        if not inst:
+            return {}
+        return _instrument_to_dict(inst)
+
+
+def round_to_price_step(price, step):
+    from decimal import Decimal
+    price = Decimal(str(price))
+    step = Decimal(str(step or "0.01"))
+    if step <= 0:
+        return price
+    return (price / step).quantize(Decimal("1")) * step
 
 @router.get("/search")
 async def search_instruments(q: str, kind: str = "shares"):
