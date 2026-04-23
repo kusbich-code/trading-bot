@@ -1,6 +1,9 @@
 import os
+import logging
+logger = logging.getLogger(__name__)
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict
+from t_tech.invest import Client
 
 from fastapi import FastAPI, Form, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -34,6 +37,7 @@ from app.db import (
     get_setting,
 )
 
+from app.config import settings
 from app.services.tbank_client import (
     search_instruments,
     get_top_shares,
@@ -48,7 +52,7 @@ from app.services.healthcheck import dashboard_health
 from decimal import Decimal
 from app.telegram_health import send_telegram, health_snapshot
 
-app = FastAPI(title="Trading Bot Dashboard v4.0")
+app = FastAPI(title="Trading Bot Dashboard v4.1")
 
 if os.path.isdir("app/static"):
     app.mount("/static", StaticFiles(directory="app/static"), name="static")
@@ -394,20 +398,127 @@ def api_save_strategy(strategy_name: str = Form(...)):
 
 
 @app.get("/api/instruments/search")
-def api_instruments_search(q: str = Query(""), mode: str = Query("")):
-    rows = [market_row(i, get_instrument_market_state_map()) for i in list_instruments()]
-    if mode == "top-volume":
-        rows = rows[:20]
-    elif q.strip():
-        needle = q.strip().lower()
-        rows = [x for x in rows if needle in str(x.get("ticker", "")).lower() or needle in str(x.get("name", "")).lower()]
-    for idx, row in enumerate(rows):
-        row["volume_score"] = len(rows) - idx
-    return JSONResponse([{"ticker": x.get("ticker", ""), "name": x.get("name", ""), "figi": x.get("figi", ""), "instrument_type": x.get("instrumenttype", ""), "currency": x.get("currency", ""), "lot": x.get("lot", 1), "min_price_increment": x.get("minpriceincrement", "0.01"), "last_price_ui": x.get("last_price_ui", "0.00"), "price_time": x.get("price_time", "-"), "volume_score": x.get("volume_score", 0)} for x in rows])
+async def api_instruments_search(q: str, kind: str = "shares"):
+    try:
+        query = (q or "").strip()
+        if not query:
+            return []
+
+        with Client(settings.TINVEST_TOKEN) as client:
+            resp = client.instruments.find_instrument(query=query)
+
+        raw_items = []
+        for inst in getattr(resp, "instruments", []):
+            raw_items.append({
+                "ticker": getattr(inst, "ticker", "") or "",
+                "figi": getattr(inst, "figi", "") or "",
+                "name": getattr(inst, "name", "") or "",
+                "class_code": getattr(inst, "class_code", "") or "",
+                "instrument_type": str(getattr(inst, "instrument_type", "") or ""),
+                "uid": getattr(inst, "uid", "") or "",
+                "position_uid": getattr(inst, "position_uid", "") or "",
+            })
+
+        if kind == "shares":
+            raw_items = [x for x in raw_items if x["instrument_type"] == "share"]
+        elif kind == "futures":
+            raw_items = [x for x in raw_items if x["instrument_type"] == "futures"]
+        elif kind == "bonds":
+            raw_items = [x for x in raw_items if x["instrument_type"] == "bond"]
+
+        seen = set()
+        items = []
+        for x in raw_items:
+            key = (x["ticker"], x["class_code"], x["instrument_type"], x["figi"])
+            if key in seen:
+                continue
+            seen.add(key)
+            items.append(x)
+
+        q_upper = query.upper()
+
+        def score_item(x):
+            score = 0
+            if x["ticker"].upper() == q_upper:
+                score += 1000
+            elif q_upper in x["ticker"].upper():
+                score += 300
+            elif q_upper in x["name"].upper():
+                score += 100
+
+            if x["instrument_type"] == "share":
+                score += 200
+            elif x["instrument_type"] == "futures":
+                score += 50
+
+            if x["class_code"] == "TQBR":
+                score += 500
+            elif x["class_code"] == "TQTF":
+                score += 200
+            elif x["class_code"] == "SPBFUT":
+                score += 100
+            elif x["class_code"] in ("SMAL", "SPEQ", "BEB", "RDL"):
+                score -= 50
+
+            return score
+
+        items.sort(key=lambda x: (-score_item(x), x["ticker"], x["name"]))
+        return items[:20]
+
+    except Exception as e:
+        logger.exception("Ошибка поиска инструментов")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/instruments/top")
-def api_instruments_top(limit: int = 20):
-    return get_top_shares(limit=limit)
+async def api_instruments_top(limit: int = 20):
+    try:
+        with Client(settings.TINVEST_TOKEN) as client:
+            resp = client.instruments.shares()
+
+        items = []
+        for inst in getattr(resp, "instruments", []):
+            item = {
+                "ticker": getattr(inst, "ticker", "") or "",
+                "figi": getattr(inst, "figi", "") or "",
+                "name": getattr(inst, "name", "") or "",
+                "class_code": getattr(inst, "class_code", "") or "",
+                "instrument_type": "share",
+                "api_trade_available_flag": bool(getattr(inst, "api_trade_available_flag", False)),
+                "for_qual_investor_flag": bool(getattr(inst, "for_qual_investor_flag", False)),
+                "liquidity_flag": bool(getattr(inst, "liquidity_flag", False)),
+            }
+            items.append(item)
+
+        filtered = [
+            x for x in items
+            if x["api_trade_available_flag"]
+            and not x["for_qual_investor_flag"]
+            and x["class_code"] in ("TQBR", "TQTF", "TQTD", "TQTE")
+        ]
+
+        priority_tickers = [
+            "SBER", "SBERP", "GAZP", "LKOH", "ROSN", "NVTK", "GMKN", "TATN",
+            "YDEX", "VTBR", "T", "MOEX", "SNGS", "SNGSP", "MAGN", "CHMF",
+            "ALRS", "PLZL", "IRAO", "MTSS"
+        ]
+        priority_map = {ticker: idx for idx, ticker in enumerate(priority_tickers)}
+
+        def top_score(x):
+            score = 0
+            if x["ticker"] in priority_map:
+                score += 10000 - priority_map[x["ticker"]]
+            if x["class_code"] == "TQBR":
+                score += 500
+            if x["liquidity_flag"]:
+                score += 100
+            return score
+
+        filtered.sort(key=lambda x: (-top_score(x), x["ticker"], x["name"]))
+        return filtered[:limit]
+
+    except Exception as e:
+        logger.exception("Ошибка top-20 инструментов")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/instruments/add")
 async def api_instruments_add(request: Request):
@@ -525,11 +636,21 @@ def api_debug_search(q: str = "SBER"):
         with client_cls(settings.TINVEST_TOKEN) as client:
             resp = client.instruments.find_instrument(query=q)
             instruments = getattr(resp, "instruments", [])
+            # Показываем все инструменты с их типами
+            all_items = []
+            for x in instruments:
+                all_items.append({
+                    "ticker": getattr(x, "ticker", ""),
+                    "figi": getattr(x, "figi", ""),
+                    "name": getattr(x, "name", ""),
+                    "instrument_type": str(getattr(x, "instrument_type", "")),
+                    "instrument_kind": str(getattr(x, "instrument_kind", "")),
+                    "api_trade_available": getattr(x, "api_trade_available_flag", False),
+                })
             return {
                 "ok": True,
                 "count": len(instruments),
-                "raw_type": str(type(resp)),
-                "first": str(instruments[0]) if instruments else None,
+                "items": all_items,
             }
     except Exception as e:
         return {
@@ -537,11 +658,3 @@ def api_debug_search(q: str = "SBER"):
             "error": str(e),
             "traceback": traceback.format_exc(),
         }
-
-@app.post("/api/settings/runtime-mode")
-def api_runtime_mode(mode: str = Form(...)):
-    mode = (mode or "sandbox").strip().lower()
-    use_sandbox = "true" if mode == "sandbox" else "false"
-    set_setting("tinvestusesandbox", use_sandbox)
-    log_event("RUNTIME_MODE", f"mode switched to {mode}")
-    return {"ok": True, "mode": mode, "tinvest_use_sandbox": use_sandbox}

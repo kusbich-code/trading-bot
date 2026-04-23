@@ -6,4 +6,5 @@ logs/*
 data/*.json
 !logs/.gitkeep
 !data/.gitkeep
+ trading_bot.sqlite3
  

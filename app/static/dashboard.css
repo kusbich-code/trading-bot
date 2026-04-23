@@ -43,3 +43,68 @@
 .health-ok { color: #2ecc71; }
 .health-warn { color: #ffb020; }
 .health-error { color: #ff5c5c; }
+.instrument-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 12px;
+  background: rgba(255,255,255,0.03);
+  margin-bottom: 10px;
+}
+
+.instrument-main {
+  min-width: 0;
+  flex: 1;
+}
+
+.instrument-title {
+  font-weight: 700;
+  color: #eef4ff;
+  margin-bottom: 6px;
+}
+
+.instrument-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.pill {
+  display: inline-block;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(76,141,255,0.16);
+  color: #dbe8ff;
+  font-size: 12px;
+}
+.instrument-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 12px;
+  background: rgba(255,255,255,0.03);
+  margin-bottom: 10px;
+}
+
+.instrument-pick-row { cursor: pointer; }
+.instrument-pick-left { display: flex; align-items: flex-start; padding-top: 4px; }
+.instrument-pick-actions { display: flex; align-items: center; gap: 8px; }
+.instrument-main { min-width: 0; flex: 1; }
+.instrument-title { font-weight: 700; color: #eef4ff; margin-bottom: 6px; }
+.instrument-meta { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+
+.pill {
+  display: inline-block;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(76,141,255,0.16);
+  color: #dbe8ff;
+  font-size: 12px;
+}

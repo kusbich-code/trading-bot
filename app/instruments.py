@@ -1,202 +1,153 @@
-from datetime import datetime, timezone, timedelta
-from decimal import Decimal, ROUND_HALF_UP
 
-from t_tech.invest import CandleInterval, InstrumentIdType, InstrumentType
-from t_tech.invest.utils import quotation_to_decimal
+import asyncio
+from fastapi import APIRouter, HTTPException
+from typing import List, Optional
+import logging
 
+logger = logging.getLogger(__name__)
+router = APIRouter()
 
-def safe_float(v, default=0.0):
-    try:
-        return float(v)
-    except Exception:
-        return default
+def _is_trade_available(instrument) -> bool:
+    v1 = getattr(instrument, 'api_trade_available', None)
+    v2 = getattr(instrument, 'api_trade_available_flag', None)
+    return bool(v1) or bool(v2)
 
-
-def round_to_price_step(price: Decimal, min_price_increment: Decimal) -> Decimal:
-    if not min_price_increment or min_price_increment <= 0:
-        return price
-    steps = (price / min_price_increment).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
-    return (steps * min_price_increment).quantize(min_price_increment)
-
-
-def _mpi_str(x) -> str:
-    mpi = getattr(x, "min_price_increment", None)
-    try:
-        return str(quotation_to_decimal(mpi)) if mpi else "0.01"
-    except Exception:
-        return "0.01"
-
-
-def get_instrument_meta(client, figi: str):
-    try:
-        resp = client.instruments.get_instrument_by(
-            id_type=InstrumentIdType.INSTRUMENT_ID_TYPE_FIGI,
-            id=figi,
-        )
-        instrument = getattr(resp, "instrument", None)
-        if not instrument:
-            return None
-
-        mpi_raw = getattr(instrument, "min_price_increment", None)
-        mpi = quotation_to_decimal(mpi_raw) if mpi_raw else Decimal("0.01")
-        lot = getattr(instrument, "lot", 1)
-
-        return {
-            "figi": figi,
-            "ticker": getattr(instrument, "ticker", ""),
-            "name": getattr(instrument, "name", ""),
-            "class_code": getattr(instrument, "class_code", ""),
-            "instrument_type": getattr(instrument, "instrument_type", ""),
-            "currency": getattr(instrument, "currency", ""),
-            "lot": int(lot) if lot else 1,
-            "min_price_increment": mpi,
-        }
-    except Exception:
-        return None
-
-
-def estimate_liquidity_score(client, figi: str, minutes: int = 30) -> int:
-    try:
-        now = datetime.now(timezone.utc)
-        resp = client.market_data.get_candles(
-            figi=figi,
-            from_=now - timedelta(minutes=minutes + 5),
-            to=now,
-            interval=CandleInterval.CANDLE_INTERVAL_1_MIN,
-        )
-        candles = getattr(resp, "candles", []) or []
-        return sum(int(getattr(c, "volume", 0) or 0) for c in candles)
-    except Exception:
-        return 0
-
-
-def find_instruments(client, query: str) -> list:
-    try:
-        resp = client.instruments.find_instrument(query=query)
-        items = []
-        for x in getattr(resp, "instruments", []):
-            figi = getattr(x, "figi", "")
-            ticker = getattr(x, "ticker", "")
-
-            if not figi or not ticker:
-                continue
-
-            # Оставляем только акции и фьючерсы
-            kind = getattr(x, "instrument_kind", None)
-            if kind not in (
-                InstrumentType.INSTRUMENT_TYPE_SHARE,
-                InstrumentType.INSTRUMENT_TYPE_FUTURES,
-            ):
-                continue
-
-            # Пропускаем ISIN-подобные тикеры (облигации маскируются под тикер)
-            if len(ticker) > 10 or ticker.startswith("RU0"):
-                continue
-
-            items.append({
-                "ticker": ticker,
-                "figi": figi,
-                "name": getattr(x, "name", ""),
-                "class_code": getattr(x, "class_code", ""),
-                "instrument_type": str(kind),
-                "currency": getattr(x, "currency", ""),
-                "lot": int(getattr(x, "lot", 1) or 1),
-                "min_price_increment": _mpi_str(x),
-                "использовать": False,
-            })
-        return items
-    except Exception as e:
-        print(f"[find_instruments] ERROR: {e}")
-        return []
-
-
-def get_last_prices_for_figis(client, figis: list) -> dict:
-    if not figis:
-        return {}
-    try:
-        resp = client.market_data.get_last_prices(figi=figis)
-        result = {}
-        for item in getattr(resp, "last_prices", []):
-            price = quotation_to_decimal(item.price)
-            t = getattr(item, "time", None)
-            result[item.figi] = {
-                "last_price": str(price),
-                "price_time": str(t) if t else "",
-            }
-        return result
-    except Exception as e:
-        print(f"[get_last_prices_for_figis] ERROR: {e}")
-        return {}
-
-
-def get_popular_tickers() -> list:
-    return [
-        "SBER", "GAZP", "LKOH", "ROSN", "NVTK",
-        "GMKN", "TATN", "VTBR", "SMLT", "MGNT",
-        "YDEX", "MOEX", "CHMF", "PLZL", "ALRS",
-        "SNGS", "PIKK", "AFKS", "RUAL", "IRAO",
-    ]
-
-
-def get_volume_top20_instruments(client) -> list:
-    base_tickers = [
-        "SBER", "GAZP", "LKOH", "ROSN", "NVTK",
-        "GMKN", "TATN", "VTBR", "SMLT", "MGNT",
-        "YDEX", "MOEX", "CHMF", "PLZL", "ALRS",
-        "SNGS", "PIKK", "AFKS", "RUAL", "IRAO",
-        "MAGN", "T", "HEAD", "FLOT", "MTSS",
-        "BANEP", "SBERP", "TRNFP", "AFLT", "PHOR",
-    ]
-
-    candidates = []
-    seen_figi = set()
-
-    for ticker in base_tickers:
+def _instrument_to_dict(inst) -> dict:
+    figi = getattr(inst, 'figi', '') or ''
+    ticker = getattr(inst, 'ticker', '') or ''
+    name = getattr(inst, 'name', '') or ''
+    currency = getattr(inst, 'currency', '') or ''
+    itype = getattr(inst, 'instrument_type', '') or ''
+    lot = getattr(inst, 'lot', 1)
+    
+    step_obj = getattr(inst, 'min_price_increment', None)
+    if step_obj is not None:
         try:
-            found = find_instruments(client, ticker)
-            if not found:
-                continue
-            # Ищем точное совпадение тикера, иначе берём первый результат
-            exact = next(
-                (x for x in found if x.get("ticker", "").upper() == ticker.upper()),
-                found[0],
-            )
-            figi = exact.get("figi", "")
-            if not figi or figi in seen_figi:
-                continue
-            seen_figi.add(figi)
-            candidates.append(exact)
-        except Exception as e:
-            print(f"[get_volume_top20] ticker={ticker} ERROR: {e}")
-            continue
+            from tinkoff.invest.utils import quotation_to_decimal
+            step = float(quotation_to_decimal(step_obj))
+        except:
+            step = 0.0
+    else:
+        step = 0.0
+    
+    return {
+        "figi": figi,
+        "ticker": ticker,
+        "name": name,
+        "currency": currency,
+        "instrument_type": itype,
+        "instrument_kind": str(getattr(inst, 'instrument_kind', '') or ''),
+        "lot": lot,
+        "step": step,
+        "api_trade_available": True,
+    }
 
-    if not candidates:
-        print("[get_volume_top20] No candidates found")
+@router.get("/search")
+async def search_instruments(q: str = ""):
+    from bot import get_client_and_token
+    try:
+        client, token = get_client_and_token()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Нет клиента: {e}")
+    
+    if not q or len(q.strip()) < 1:
         return []
+    
+    q = q.strip()
+    results = []
+    
+    try:
+        async with client(token=token) as c:
+            resp = await c.instruments.find_instrument(query=q)
+            instruments = resp.instruments if resp else []
+            logger.info(f"find_instrument({q!r}) вернул {len(instruments)} инструментов")
+            
+            for inst in instruments:
+                if _is_trade_available(inst):
+                    results.append(_instrument_to_dict(inst))
+                    
+            logger.info(f"После фильтра api_trade_available: {len(results)}")
+            
+    except Exception as e:
+        logger.error(f"Ошибка search_instruments: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+    
+    return results
 
-    now = datetime.now(timezone.utc)
-    frm = now - timedelta(hours=1)
 
-    scored = []
-    for item in candidates:
-        figi = item.get("figi", "")
-        volume_sum = 0
+@router.get("/top")
+async def get_top_instruments():
+    from bot import get_client_and_token
+    try:
+        client, token = get_client_and_token()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Нет клиента: {e}")
+    
+    results = []
+    
+    try:
+        async with client(token=token) as c:
+            try:
+                resp = await c.instruments.futures()
+                for inst in (resp.instruments or []):
+                    if _is_trade_available(inst):
+                        results.append(_instrument_to_dict(inst))
+            except Exception as e:
+                logger.warning(f"Ошибка futures: {e}")
+            
+            try:
+                from tinkoff.invest import InstrumentStatus
+                resp = await c.instruments.shares(instrument_status=InstrumentStatus.INSTRUMENT_STATUS_BASE)
+                for inst in (resp.instruments or []):
+                    if _is_trade_available(inst):
+                        results.append(_instrument_to_dict(inst))
+            except Exception as e:
+                logger.warning(f"Ошибка shares: {e}")
+                
+        logger.info(f"Топ: {len(results)} доступных")
+        return results[:50]
+        
+    except Exception as e:
+        logger.error(f"Ошибка get_top_instruments: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/list")
+async def list_instruments():
+    import json, os
+    config_path = os.path.join(os.path.dirname(__file__), 'config.json')
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+        return config.get('instruments', [])
+    except FileNotFoundError:
+        return []
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/add")
+async def add_instrument(data: dict):
+    import json, os
+    config_path = os.path.join(os.path.dirname(__file__), 'config.json')
+    
+    figi = data.get('figi', '').strip()
+    if not figi:
+        raise HTTPException(status_code=400, detail="figi обязателен")
+    
+    try:
         try:
-            candles_resp = client.market_data.get_candles(
-                figi=figi,
-                from_=frm,
-                to=now,
-                interval=CandleInterval.CANDLE_INTERVAL_5_MIN,
-            )
-            for c in getattr(candles_resp, "candles", []) or []:
-                volume_sum += int(getattr(c, "volume", 0) or 0)
-        except Exception as e:
-            print(f"[get_volume_top20] get_candles figi={figi} ERROR: {e}")
-            volume_sum = 0
-
-        item["volume_score"] = volume_sum
-        item["использовать"] = False
-        scored.append(item)
-
-    scored.sort(key=lambda x: x.get("volume_score", 0), reverse=True)
-    return scored[:20]
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+        except FileNotFoundError:
+            config = {}
+        
+        instruments = config.get('instruments', [])
+        
+        if any(i.get('figi') == figi for i in instruments):
+            return {"ok": True, "message": "Уже добавлен"}
+        
+        instruments.append(data)
+        config['instruments'] = instruments
+        
+        with open

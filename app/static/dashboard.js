@@ -953,31 +953,111 @@ function closeAddInstrumentModal() {
 }
 
 function renderInstrumentSearchRows(items) {
-  instrumentSearchData = items || [];
-  const body = document.getElementById("instrumentSearchBody");
-  if (!body) return;
+  const host = document.getElementById("instrumentSearchRows");
+  if (!host) return;
 
-  body.innerHTML = instrumentSearchData.map((item, idx) => `
-    <tr>
-      <td><input type="checkbox" data-idx="${idx}"></td>
-      <td>${esc(item.ticker)}</td>
-      <td>${esc(item.name)}</td>
-      <td>${esc(item.figi)}</td>
-      <td>${esc(item.instrument_type)}</td>
-      <td>${esc(item.currency)}</td>
-      <td>${esc(item.lot)}</td>
-      <td>${esc(item.min_price_increment)}</td>
-      <td>${esc(item.last_price_ui)}</td>
-      <td>${esc(item.price_time)}</td>
-      <td>${esc(item.volume_score || 0)}</td>
-    </tr>
-  `).join("");
+  instrumentSearchData = Array.isArray(items) ? items : [];
+
+  if (!instrumentSearchData.length) {
+    host.innerHTML = `<div class="note">Ничего не найдено</div>`;
+    return;
+  }
+
+  host.innerHTML = instrumentSearchData.map((item, idx) => {
+    const classCode = item.class_code || item.classcode || "-";
+    const instrumentType = item.instrument_type || item.instrumenttype || "-";
+    const name = item.name || "Без названия";
+    const ticker = item.ticker || "";
+    const figi = item.figi || "";
+
+    return `
+      <label class="instrument-row instrument-pick-row">
+        <div class="instrument-pick-left">
+          <input type="checkbox" data-instrument-pick data-idx="${idx}" checked>
+        </div>
+        <div class="instrument-main">
+          <div class="instrument-title">${esc(ticker)} — ${esc(name)}</div>
+          <div class="instrument-meta">
+            <span class="pill">${esc(classCode)}</span>
+            <span class="pill">${esc(instrumentType)}</span>
+            <span class="muted">${esc(figi)}</span>
+          </div>
+        </div>
+        <div class="instrument-pick-actions">
+          <button type="button" class="btn" data-add-one-instrument data-idx="${idx}">Добавить</button>
+        </div>
+      </label>
+    `;
+  }).join("");
+
+  host.querySelectorAll("[data-add-one-instrument]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      try {
+        const idx = Number(btn.dataset.idx);
+        const item = instrumentSearchData[idx];
+        if (!item) {
+          showToast("Инструмент не найден", "error");
+          return;
+        }
+
+        const payload = [normalizeInstrumentForAdd(item)];
+        const r = await fetch("/api/instruments/add", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+          credentials: "same-origin",
+        });
+
+        const data = await r.json();
+        if (!r.ok) throw new Error(data?.detail || data?.message || `HTTP ${r.status}`);
+
+        showToast(data.message || "Инструмент добавлен", "success");
+        if (getTabFromHash() === "settings") await renderSettingsTab();
+        await renderMainShell();
+        await renderMainData();
+      } catch (e) {
+        showToast(`Ошибка добавления: ${e.message}`, "error");
+      }
+    });
+  });
+}
+
+function normalizeInstrumentForAdd(item) {
+  const classCode = item.class_code || item.classcode || "";
+  const instrumentType = item.instrument_type || item.instrumenttype || "share";
+
+  return {
+    ticker: item.ticker || "",
+    figi: item.figi || "",
+    name: item.name || "",
+    classcode: classCode,
+    instrumenttype: instrumentType,
+    lot: Number(item.lot || 1),
+    minpriceincrement: String(item.min_price_increment || item.minpriceincrement || "0.01"),
+    lotsoverride: 1,
+    stoplosspct: "0.0025",
+    takeprofitpct: "0.0050",
+    maxspreadpct: "0",
+    minvolume: 0,
+    allowlong: 1,
+    allowshort: 1,
+    priority: 100,
+    enabled: 1,
+  };
 }
 
 async function searchInstruments() {
   try {
     const q = document.getElementById("instrumentSearchInput")?.value?.trim() || "";
-    renderInstrumentSearchRows(await apiGet(`/api/instruments/search?q=${encodeURIComponent(q)}`));
+    const instrumentKind = document.getElementById("instrumentKindSelect")?.value || "shares";
+
+    if (!q) {
+      showToast("Введи тикер или название", "error");
+      return;
+    }
+
+    const items = await apiGet(`/api/instruments/search?q=${encodeURIComponent(q)}&kind=${encodeURIComponent(instrumentKind)}`);
+    renderInstrumentSearchRows(items || []);
   } catch (e) {
     showToast(`Ошибка поиска: ${e.message}`, "error");
   }
@@ -985,36 +1065,45 @@ async function searchInstruments() {
 
 async function loadTopVolumeInstruments() {
   try {
-    renderInstrumentSearchRows(await apiGet("/api/instruments/top?limit=20"));
+    const items = await apiGet("/api/instruments/top?limit=20");
+    renderInstrumentSearchRows(items || []);
   } catch (e) {
-    showToast(`Ошибка загрузки популярных инструментов: ${e.message}`, "error");
+    showToast(`Ошибка загрузки top-20: ${e.message}`, "error");
   }
 }
 
 async function acceptSelectedInstruments() {
   try {
-    const rows = Array.from(document.querySelectorAll('#instrumentSearchBody input[type="checkbox"]'));
-    const items = instrumentSearchData.map((x, idx) => ({
-      ...x,
-      использовать: rows.find((r) => Number(r.dataset.idx) === idx)?.checked || false,
-    }));
+    const checks = Array.from(document.querySelectorAll("[data-instrument-pick]"));
+    const items = checks
+      .filter(ch => ch.checked)
+      .map(ch => instrumentSearchData[Number(ch.dataset.idx)])
+      .filter(Boolean)
+      .map(normalizeInstrumentForAdd);
+
+    if (!items.length) {
+      showToast("Выбери хотя бы один инструмент", "error");
+      return;
+    }
 
     const r = await fetch("/api/instruments/add", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ items }),
+      body: JSON.stringify(items),
       credentials: "same-origin",
     });
 
     const data = await r.json();
-    showToast(`Добавлено: ${data["добавлено"]}`, "success");
+    if (!r.ok) throw new Error(data?.detail || data?.message || `HTTP ${r.status}`);
+
+    showToast(data.message || "Инструменты добавлены", "success");
     closeAddInstrumentModal();
 
-    if (getTabFromHash() === "настройки") await renderSettingsTab();
+    if (getTabFromHash() === "settings") await renderSettingsTab();
     await renderMainShell();
     await renderMainData();
   } catch (e) {
-    showToast(`Ошибка сохранения: ${e.message}`, "error");
+    showToast(e.message, "error");
   }
 }
 

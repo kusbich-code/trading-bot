@@ -10,7 +10,7 @@ class Settings:
     TINVEST_ACCOUNT_ID = os.getenv("TINVEST_ACCOUNT_ID", "").strip()
     TINVEST_USE_SANDBOX = os.getenv("TINVEST_USE_SANDBOX", "true").lower() == "true"
 
-    BOT_NAME = os.getenv("BOT_NAME", "ScalperV33")
+    BOT_NAME = os.getenv("BOT_NAME", "ScalperV4.1")
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
     CHECK_INTERVAL_SEC = int(os.getenv("CHECK_INTERVAL_SEC", "5"))

@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 try:
-    from ttech.invest import (
+    from t_tech.invest import (
         Client,
         CandleInterval,
         InstrumentIdType,
@@ -14,8 +14,8 @@ try:
         StopOrderExpirationType,
         StopOrderType,
     )
-    from ttech.invest.sandbox.client import SandboxClient
-    from ttech.invest.utils import decimal_to_quotation, quotation_to_decimal
+    from t_tech.invest.sandbox.client import SandboxClient
+    from t_tech.invest.utils import decimal_to_quotation, quotation_to_decimal
 except Exception:
     Client = None
     SandboxClient = None
