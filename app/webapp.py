@@ -38,6 +38,8 @@ from app.db import (
     get_instrument_market_state,
     get_instrument_market_state_map,
     get_setting,
+    delete_settings_profile,
+    delete_strategy_profile,
 )
 
 from app.config import settings
@@ -403,6 +405,63 @@ def api_dashboard_portfolio():
         "stop_orders": []
     })
 
+
+@app.get("/api/dashboard/stop-orders")
+def api_dashboard_stop_orders():
+    try:
+        items = get_active_stop_orders()
+        return {"ok": True, "items": items}
+    except Exception as e:
+        return {"ok": False, "items": [], "message": str(e)}
+    
+
+@app.get("/api/dashboard/runtime")
+def api_dashboard_runtime():
+    settings_map = get_all_settings()
+    runtime_map = get_all_runtime()
+
+    return {
+        "botenabled": settings_map.get("botenabled", "1"),
+        "tinvestusesandbox": settings_map.get("tinvestusesandbox", "true"),
+        "activeprofilename": settings_map.get("activeprofilename", ""),
+        "activestrategyname": settings_map.get("activestrategyname", ""),
+        "lasterror": settings_map.get("lasterror", ""),
+        "status": settings_map.get("status", "INIT"),
+        "runtime": runtime_map,
+    }
+
+
+@app.get("/api/dashboard/bot-explain")
+def api_dashboard_bot_explain():
+    settings_map = get_all_settings()
+    instruments = list_instruments(enabled_only=True)
+    open_positions = get_open_positions()
+
+    reasons = []
+
+    if str(settings_map.get("botenabled", "1")) != "1":
+        reasons.append("Бот выключен в настройках")
+
+    if not instruments:
+        reasons.append("Нет активных инструментов")
+
+    if str(settings_map.get("tradeonlysession", "0")) == "1":
+        reasons.append("Торговля ограничена торговой сессией")
+
+    if int(str(settings_map.get("maxopenpositions", "2"))) <= len(open_positions):
+        reasons.append("Достигнут лимит открытых позиций")
+
+    if int(str(settings_map.get("maxtradesperday", "15"))) <= int(str(settings_map.get("tradestoday", "0"))):
+        reasons.append("Достигнут лимит сделок за день")
+
+    if not reasons:
+        reasons.append("Бот готов искать сигнал")
+
+    return {
+        "ok": True,
+        "reasons": reasons,
+    }
+
 @app.post("/api/stop-orders/create-bundle")
 def api_create_stop_bundle(
     figi: str = Form(...),
@@ -562,12 +621,24 @@ def api_activate_profile(profile_name: str = Form(...)):
     activate_settings_profile(profile_name.strip())
     return JSONResponse({"ok": True})
 
+@app.post("/api/профили/удалить")
+def api_delete_profile(profile_name: str = Form(...)):
+    result = delete_settings_profile(profile_name.strip())
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error", "Ошибка"))
+    return {"ok": True}
 
 @app.post("/api/стратегии/активировать")
 def api_activate_strategy(strategy_name: str = Form(...)):
     activate_strategy_profile(strategy_name.strip())
     return JSONResponse({"ok": True})
 
+@app.post("/api/стратегии/удалить")
+def api_delete_strategy(strategy_name: str = Form(...)):
+    result = delete_strategy_profile(strategy_name.strip())
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error", "Ошибка"))
+    return {"ok": True}
 
 @app.post("/api/стратегии/сохранить")
 def api_save_strategy(strategy_name: str = Form(...)):
@@ -716,6 +787,33 @@ async def api_instruments_add(request: Request):
         added += 1
     return JSONResponse({"ok": True, "добавлено": added})
 
+@app.post("/api/instruments/add-one")
+def api_instruments_add_one(
+    ticker: str = Form(...),
+    figi: str = Form(...),
+    name: str = Form(""),
+):
+    add_instrument({
+        "ticker": ticker,
+        "figi": figi,
+        "name": name,
+        "classcode": "",
+        "instrumenttype": "share",
+        "currency": "rub",
+        "lot": 1,
+        "minpriceincrement": "0.01",
+        "lotsoverride": 1,
+        "stoplosspct": "0.0025",
+        "takeprofitpct": "0.0050",
+        "maxspreadpct": "0",
+        "minvolume": 0,
+        "allowlong": 1,
+        "allowshort": 1,
+        "priority": 100,
+        "enabled": 1,
+    })
+    log_event("INSTRUMENT_ADD", f"added instrument {ticker}", ticker=ticker)
+    return {"ok": True, "ticker": ticker, "figi": figi}
 
 @app.post("/api/instruments/update")
 def api_instruments_update(

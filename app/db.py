@@ -510,11 +510,6 @@ def update_instrument(figi, fields: dict):
         """, params)
 
 
-def delete_instrument(figi):
-    with db_cursor() as cur:
-        cur.execute("DELETE FROM instruments WHERE figi = ?", (figi,))
-
-
 def upsert_position(position: dict):
     with db_cursor() as cur:
         source = position.get("source", "BOT")
@@ -599,6 +594,10 @@ def get_position_history(limit=200):
 
 
 def create_settings_profile(profile_name: str):
+    profile_name = (profile_name or "").strip()
+    if not profile_name:
+        raise ValueError("Имя профиля не может быть пустым")
+
     with db_cursor() as cur:
         cur.execute("""
         INSERT OR IGNORE INTO settings_profiles(profile_name, is_active)
@@ -615,16 +614,34 @@ def create_settings_profile(profile_name: str):
             """, (profile_name, row["key"], row["value"]))
 
 
-def list_settings_profiles():
+def delete_settings_profile(profile_name: str):
+    profile_name = (profile_name or "").strip()
+    if not profile_name:
+        raise ValueError("Имя профиля не может быть пустым")
+
     with db_cursor() as cur:
         cur.execute("""
-        SELECT * FROM settings_profiles
-        ORDER BY profile_name ASC
-        """)
-        return [dict(row) for row in cur.fetchall()]
+        SELECT is_active
+        FROM settings_profiles
+        WHERE profile_name = ?
+        """, (profile_name,))
+        row = cur.fetchone()
+
+        if not row:
+            raise ValueError("Профиль не найден")
+
+        if int(row["is_active"]) == 1:
+            raise ValueError("Нельзя удалить активный профиль")
+
+        cur.execute("DELETE FROM settings_profile_values WHERE profile_name = ?", (profile_name,))
+        cur.execute("DELETE FROM settings_profiles WHERE profile_name = ?", (profile_name,))
 
 
 def activate_settings_profile(profile_name: str):
+    profile_name = (profile_name or "").strip()
+    if not profile_name:
+        raise ValueError("Имя профиля не может быть пустым")
+
     with db_cursor() as cur:
         cur.execute("UPDATE settings_profiles SET is_active = 0")
         cur.execute("""
@@ -652,6 +669,119 @@ def activate_settings_profile(profile_name: str):
         VALUES ('active_profile_name', ?)
         ON CONFLICT(key) DO UPDATE SET value = excluded.value
         """, (profile_name,))
+
+
+def save_current_settings_to_strategy(strategy_name: str):
+    strategy_name = (strategy_name or "").strip()
+    if not strategy_name:
+        raise ValueError("Имя стратегии не может быть пустым")
+
+    with db_cursor() as cur:
+        cur.execute("""
+        INSERT OR IGNORE INTO strategy_profiles(strategy_name, is_active)
+        VALUES (?, 0)
+        """, (strategy_name,))
+
+        cur.execute("SELECT key, value FROM bot_settings")
+        rows = cur.fetchall()
+        trade_keys = {
+            "max_trades_per_day",
+            "max_daily_loss_rub",
+            "max_open_positions",
+            "check_interval_sec",
+            "default_stop_loss_pct",
+            "default_take_profit_pct",
+            "estimated_commission_pct",
+            "allow_long_global",
+            "allow_short_global",
+            "trade_only_session",
+            "pause_after_error_sec",
+        }
+
+        for row in rows:
+            if row["key"] not in trade_keys:
+                continue
+            cur.execute("""
+            INSERT INTO strategy_profile_values(strategy_name, setting_key, setting_value)
+            VALUES (?, ?, ?)
+            ON CONFLICT(strategy_name, setting_key) DO UPDATE SET setting_value = excluded.setting_value
+            """, (strategy_name, row["key"], row["value"]))
+
+
+def activate_strategy_profile(strategy_name: str):
+    strategy_name = (strategy_name or "").strip()
+    if not strategy_name:
+        raise ValueError("Имя стратегии не может быть пустым")
+
+    with db_cursor() as cur:
+        cur.execute("UPDATE strategy_profiles SET is_active = 0")
+        cur.execute("""
+        UPDATE strategy_profiles
+        SET is_active = 1
+        WHERE strategy_name = ?
+        """, (strategy_name,))
+
+        cur.execute("""
+        SELECT setting_key, setting_value
+        FROM strategy_profile_values
+        WHERE strategy_name = ?
+        """, (strategy_name,))
+        rows = cur.fetchall()
+
+        for row in rows:
+            cur.execute("""
+            INSERT INTO bot_settings(key, value)
+            VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """, (row["setting_key"], row["setting_value"]))
+
+        cur.execute("""
+        INSERT INTO bot_settings(key, value)
+        VALUES ('active_strategy_name', ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        """, (strategy_name,))
+
+
+def delete_strategy_profile(strategy_name: str):
+    strategy_name = (strategy_name or "").strip()
+    if not strategy_name:
+        raise ValueError("Имя стратегии не может быть пустым")
+
+    with db_cursor() as cur:
+        cur.execute("""
+        SELECT is_active
+        FROM strategy_profiles
+        WHERE strategy_name = ?
+        """, (strategy_name,))
+        row = cur.fetchone()
+
+        if not row:
+            raise ValueError("Стратегия не найдена")
+
+        if int(row["is_active"]) == 1:
+            raise ValueError("Нельзя удалить активную стратегию")
+
+        cur.execute("DELETE FROM strategy_profile_values WHERE strategy_name = ?", (strategy_name,))
+        cur.execute("DELETE FROM strategy_profiles WHERE strategy_name = ?", (strategy_name,))
+
+
+def delete_instrument(figi):
+    with db_cursor() as cur:
+        cur.execute("""
+        UPDATE instruments
+        SET enabled = 0
+        WHERE figi = ?
+        """, (figi,))
+
+
+def list_settings_profiles():
+    with db_cursor() as cur:
+        cur.execute("""
+        SELECT * FROM settings_profiles
+        ORDER BY profile_name ASC
+        """)
+        return [dict(row) for row in cur.fetchall()]
+
 
 
 def save_current_settings_to_profile(profile_name: str):
@@ -744,69 +874,6 @@ def list_strategy_profiles():
         ORDER BY strategy_name ASC
         """)
         return [dict(row) for row in cur.fetchall()]
-
-
-def activate_strategy_profile(strategy_name: str):
-    with db_cursor() as cur:
-        cur.execute("UPDATE strategy_profiles SET is_active = 0")
-        cur.execute("""
-        UPDATE strategy_profiles
-        SET is_active = 1
-        WHERE strategy_name = ?
-        """, (strategy_name,))
-
-        cur.execute("""
-        SELECT setting_key, setting_value
-        FROM strategy_profile_values
-        WHERE strategy_name = ?
-        """, (strategy_name,))
-        rows = cur.fetchall()
-
-        for row in rows:
-            cur.execute("""
-            INSERT INTO bot_settings(key, value)
-            VALUES (?, ?)
-            ON CONFLICT(key) DO UPDATE SET value = excluded.value
-            """, (row["setting_key"], row["setting_value"]))
-
-        cur.execute("""
-        INSERT INTO bot_settings(key, value)
-        VALUES ('active_strategy_name', ?)
-        ON CONFLICT(key) DO UPDATE SET value = excluded.value
-        """, (strategy_name,))
-
-
-def save_current_settings_to_strategy(strategy_name: str):
-    with db_cursor() as cur:
-        cur.execute("""
-        INSERT OR IGNORE INTO strategy_profiles(strategy_name, is_active)
-        VALUES (?, 0)
-        """, (strategy_name,))
-
-        cur.execute("SELECT key, value FROM bot_settings")
-        rows = cur.fetchall()
-        trade_keys = {
-            "max_trades_per_day",
-            "max_daily_loss_rub",
-            "max_open_positions",
-            "check_interval_sec",
-            "default_stop_loss_pct",
-            "default_take_profit_pct",
-            "estimated_commission_pct",
-            "allow_long_global",
-            "allow_short_global",
-            "trade_only_session",
-            "pause_after_error_sec",
-        }
-
-        for row in rows:
-            if row["key"] not in trade_keys:
-                continue
-            cur.execute("""
-            INSERT INTO strategy_profile_values(strategy_name, setting_key, setting_value)
-            VALUES (?, ?, ?)
-            ON CONFLICT(strategy_name, setting_key) DO UPDATE SET setting_value = excluded.setting_value
-            """, (strategy_name, row["key"], row["value"]))
 
 
 def upsert_instrument_market_state(figi: str, ticker: str, last_price, price_time: str, volume_1m: int = 0):

@@ -607,7 +607,7 @@ def process_instrument(client, item):
 
 def main():
 
-    log.info("=== Bot v3.3 started ===")
+    log.info("=== Bot v4.2 started  610 line ===")
     log_event("BOT_START", "Bot started")
 
     if settings.TELEGRAM_ENABLED and settings.TELEGRAM_POLLING_ENABLED:

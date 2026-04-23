@@ -175,6 +175,15 @@ async function renderSummaryCards() {
   `;
 }
 
+async function bootstrapDashboard() {
+  console.log("[tabs] DOMContentLoaded");
+  bindRouter();
+  await renderSummaryCards();
+  toggleSummaryCardsVisibility();
+  await applyRoute();
+  startRefreshLoops();
+}
+
 function helpCard(title, bullets) {
   return `
     <section class="help-card">
@@ -197,7 +206,21 @@ async function renderMainShell() {
       "Таблица инструментов показывает бумагу, лоты, SL/TP и текущую цену.",
       "Позиции и сделки обновляются отдельно от остальных вкладок."
     ])}
+    <section class="block">
+      <div class="row between">
+        <h2>Runtime</h2>
+        <div class="note">Текущее состояние бота</div>
+      </div>
+      <div id="runtimeBox">Загрузка...</div>
+    </section>
 
+    <section class="block">
+      <div class="row between">
+        <h2>Почему бот сейчас не торгует</h2>
+        <div class="note">Короткое объяснение</div>
+      </div>
+      <div id="botExplainBox">Загрузка...</div>
+    </section>
     <section class="block">
       <div class="row between">
         <h2>Управление</h2>
@@ -338,6 +361,37 @@ async function renderMainData() {
       box.innerHTML = `<span class="health-error">Ошибка health-check: ${e.message}</span>`;
     }
   }
+  try {
+    const runtime = await apiGet("/api/dashboard/runtime");
+    const box = document.getElementById("runtimeBox");
+    if (box) {
+      box.innerHTML = `
+        <div><strong>Статус:</strong> ${esc(runtime.status || "INIT")}</div>
+        <div><strong>API:</strong> ${String(runtime.tinvestusesandbox || "true") === "true" ? "Sandbox" : "Боевой"}</div>
+        <div><strong>Профиль:</strong> ${esc(runtime.activeprofilename || "—")}</div>
+        <div><strong>Стратегия:</strong> ${esc(runtime.activestrategyname || "—")}</div>
+        <div><strong>Последняя ошибка:</strong> ${esc(runtime.lasterror || "—")}</div>
+      `;
+    }
+  } catch (e) {
+    const box = document.getElementById("runtimeBox");
+    if (box) box.innerHTML = `<span class="health-error">Ошибка runtime: ${esc(e.message)}</span>`;
+  }
+
+  try {
+    const explain = await apiGet("/api/dashboard/bot-explain");
+    const box = document.getElementById("botExplainBox");
+    if (box) {
+      box.innerHTML = `
+        <ul>
+          ${(explain.reasons || []).map(x => `<li>${esc(x)}</li>`).join("")}
+        </ul>
+      `;
+    }
+  } catch (e) {
+    const box = document.getElementById("botExplainBox");
+    if (box) box.innerHTML = `<span class="health-error">Ошибка explain: ${esc(e.message)}</span>`;
+  }
 }
 
 async function refreshQuotesOnly() {
@@ -397,6 +451,29 @@ async function renderPortfolioTab() {
         </table>
       </div>
     </section>
+    <section class="block">
+     <div class="row between">
+        <h2>Активные stop orders</h2>
+        <div class="note">SL / TP из T-Bank</div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>FIGI</th>
+              <th>Тип</th>
+              <th>Направление</th>
+              <th>Лоты</th>
+              <th>Цена</th>
+              <th>Stop</th>
+              <th>Создан</th>
+              <th>Действие</th>
+            </tr>
+          </thead>
+          <tbody id="activeStopOrdersBody"></tbody>
+        </table>
+      </div>
+    </section>
 
     <section class="block">
       <div class="row between">
@@ -444,6 +521,29 @@ async function renderPortfolioTab() {
   `;
 
   document.getElementById("btnCloseAllPositions")?.addEventListener("click", closeAllPositionsConfirm);
+  try {
+    const stopData = await apiGet("/api/dashboard/stop-orders");
+    const stopBody = document.getElementById("activeStopOrdersBody");
+    if (stopBody) {
+      stopBody.innerHTML = (stopData.items || []).map(x => `
+        <tr>
+          <td>${esc(x.figi || "")}</td>
+          <td>${esc(x.stop_order_type || "")}</td>
+          <td>${esc(x.direction || "")}</td>
+          <td>${esc(x.lots_requested || "")}</td>
+          <td>${esc(x.price || "")}</td>
+          <td>${esc(x.stop_price || "")}</td>
+          <td>${esc(x.created_at || "")}</td>
+          <td><button class="btn btn-danger" data-cancel-stop="${esc(x.stop_order_id || "")}">Отменить</button></td>
+        </tr>
+      `).join("") || `<tr><td colspan="8">Нет активных stop orders</td></tr>`;
+    }
+  } catch (e) {
+    const stopBody = document.getElementById("activeStopOrdersBody");
+    if (stopBody) {
+      stopBody.innerHTML = `<tr><td colspan="8">Ошибка загрузки stop orders: ${esc(e.message)}</td></tr>`;
+    }
+  }
   host.querySelectorAll("[data-close-one]").forEach((btn) => {
     btn.addEventListener("click", () => closeOnePosition(btn.dataset.figi, btn.dataset.qty, btn.dataset.direction));
   });
@@ -465,6 +565,19 @@ async function renderPortfolioTab() {
         showToast("SL/TP bundle создан", "success");
       } catch (e) {
         showToast(`Ошибка SL/TP: ${e.message}`, "error");
+      }
+    });
+  });
+  host.querySelectorAll("[data-cancel-stop]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      try {
+        await apiPostForm("/api/stop-orders/cancel", {
+          stop_order_id: btn.dataset.cancelStop,
+        });
+        showToast("Stop order отменён", "success");
+        await renderPortfolioTab();
+      } catch (e) {
+        showToast(`Ошибка отмены stop order: ${e.message}`, "error");
       }
     });
   });
@@ -592,6 +705,7 @@ async function renderSettingsTab() {
                 <td>${p.is_active === 1 ? "Да" : "Нет"}</td>
                 <td>${esc(p.created_at)}</td>
                 <td><button class="btn" data-activate-profile="${esc(p.profile_name)}">Активировать</button></td>
+                <td><button class="btn btn-danger" data-delete-profile="${esc(p.profile_name)}" ${p.is_active === 1 ? "disabled title='Нельзя удалить активный профиль'" : ""} style="background:#c0392b;opacity:${p.is_active === 1 ? '0.4' : '1'}">Удалить</button></td>
               </tr>
             `).join("")}
           </tbody>
@@ -614,6 +728,7 @@ async function renderSettingsTab() {
                 <td>${esc(x.created_at)}</td>
                 <td><button class="btn" data-activate-strategy="${esc(x.strategy_name)}">Активировать</button></td>
                 <td><button class="btn" data-save-strategy="${esc(x.strategy_name)}">Сохранить</button></td>
+                <td><button class="btn btn-danger" data-delete-strategy="${esc(x.strategy_name)}" ${x.is_active === 1 ? "disabled title='Нельзя удалить активную стратегию'" : ""} style="background:#c0392b;opacity:${x.is_active === 1 ? '0.4' : '1'}">Удалить</button></td>
               </tr>
             `).join("")}
           </tbody>
@@ -673,17 +788,21 @@ async function renderSettingsTab() {
     }
   });
 
-  host.querySelectorAll("[data-activate-profile]").forEach((btn) => {
-    btn.addEventListener("click", () => activateProfile(btn.dataset.activateProfile));
-  });
-
-  host.querySelectorAll("[data-activate-strategy]").forEach((btn) => {
-    btn.addEventListener("click", () => activateStrategy(btn.dataset.activateStrategy));
-  });
-
-  host.querySelectorAll("[data-save-strategy]").forEach((btn) => {
-    btn.addEventListener("click", () => saveStrategy(btn.dataset.saveStrategy));
-  });
+host.querySelectorAll("[data-activate-profile]").forEach((btn) => {
+  btn.addEventListener("click", () => activateProfile(btn.dataset.activateProfile));
+});
+host.querySelectorAll("[data-delete-profile]").forEach((btn) => {
+  btn.addEventListener("click", () => deleteProfile(btn.dataset.deleteProfile));
+});
+host.querySelectorAll("[data-activate-strategy]").forEach((btn) => {
+  btn.addEventListener("click", () => activateStrategy(btn.dataset.activateStrategy));
+});
+host.querySelectorAll("[data-save-strategy]").forEach((btn) => {
+  btn.addEventListener("click", () => saveStrategy(btn.dataset.saveStrategy));
+});
+host.querySelectorAll("[data-delete-strategy]").forEach((btn) => {
+  btn.addEventListener("click", () => deleteStrategy(btn.dataset.deleteStrategy));
+});
 
   host.querySelectorAll(".instrument-form").forEach((form) => {
     form.addEventListener("submit", (e) => submitInstrumentUpdate(e, form.dataset.figi));
@@ -897,6 +1016,15 @@ async function renderChartTabWithParams(figi, interval) {
 
   renderCandlesAndScore(data);
 }
+
+function toggleSummaryCardsVisibility() {
+  const host = document.getElementById("summaryCards");
+  if (!host) return;
+
+  const isMain = getTabFromHash() === "главное";
+  host.style.display = isMain ? "grid" : "none";
+}
+
 function renderCandlesAndScore(data) {
   const candles = data.candles || [];
   const signal = data.signal || { action: "HOLD", score: 0, reasons: ["Нет данных"] };
@@ -987,6 +1115,8 @@ async function serviceAction(action) {
 
 function openAddInstrumentModal() {
   document.getElementById("modalAddInstrument")?.classList.remove("hidden");
+  const input = document.getElementById("instrumentSearchInput");
+  if (input) input.value = "";
   loadTopVolumeInstruments();
 }
 
@@ -995,66 +1125,48 @@ function closeAddInstrumentModal() {
 }
 
 function renderInstrumentSearchRows(items) {
-  const host = document.getElementById("instrumentSearchBody");
+  const host = document.getElementById("instrumentSearchRows");
   if (!host) return;
 
-  instrumentSearchData = Array.isArray(items) ? items : [];
-
-  if (!instrumentSearchData.length) {
+  if (!items || !items.length) {
     host.innerHTML = `<div class="note">Ничего не найдено</div>`;
     return;
   }
 
-  host.innerHTML = instrumentSearchData.map((item, idx) => {
-    const classCode = item.class_code || item.classcode || "-";
-    const instrumentType = item.instrument_type || item.instrumenttype || "-";
-    const name = item.name || "Без названия";
-    const ticker = item.ticker || "";
-    const figi = item.figi || "";
-
-    return `
-      <label class="instrument-row instrument-pick-row">
-        <div class="instrument-pick-left">
-          <input type="checkbox" data-instrument-pick data-idx="${idx}" checked>
-        </div>
+  host.innerHTML = `
+    <div class="note" style="margin-bottom: 12px;">Популярные инструменты из T-Bank, нажми «Добавить»</div>
+    ${items.map(item => `
+      <div class="instrument-row">
         <div class="instrument-main">
-          <div class="instrument-title">${esc(ticker)} — ${esc(name)}</div>
+          <div class="instrument-title">${esc(item.ticker)} — ${esc(item.name)}</div>
           <div class="instrument-meta">
-            <span class="pill">${esc(classCode)}</span>
-            <span class="pill">${esc(instrumentType)}</span>
-            <span class="muted">${esc(figi)}</span>
+            <span class="pill">${esc(item.classcode || "—")}</span>
+            <span class="pill">${esc(item.instrumenttype || item.instrument_type || "—")}</span>
+            <span class="muted">${esc(item.figi)}</span>
           </div>
         </div>
-        <div class="instrument-pick-actions">
-          <button type="button" class="btn" data-add-one-instrument data-idx="${idx}">Добавить</button>
+        <div>
+          <button class="btn" data-add-instrument
+            data-ticker="${esc(item.ticker)}"
+            data-figi="${esc(item.figi)}"
+            data-name="${esc(item.name || "")}">
+            Добавить
+          </button>
         </div>
-      </label>
-    `;
-  }).join("");
+      </div>
+    `).join("")}
+  `;
 
-  host.querySelectorAll("[data-add-one-instrument]").forEach((btn) => {
+  host.querySelectorAll("[data-add-instrument]").forEach((btn) => {
     btn.addEventListener("click", async () => {
       try {
-        const idx = Number(btn.dataset.idx);
-        const item = instrumentSearchData[idx];
-        if (!item) {
-          showToast("Инструмент не найден", "error");
-          return;
-        }
-
-       const r = await fetch("/api/instruments/add", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ items }),
-          credentials: "same-origin",
+        await apiPostForm("/api/instruments/add-one", {
+          ticker: btn.dataset.ticker,
+          figi: btn.dataset.figi,
+          name: btn.dataset.name,
         });
-
-        const data = await r.json();
-        if (!r.ok) throw new Error(data?.detail || data?.message || `HTTP ${r.status}`);
-
-        showToast(data.message || "Инструмент добавлен", "success");
-        if (getTabFromHash() === "settings") await renderSettingsTab();
-        await renderMainShell();
+        showToast(`Инструмент ${btn.dataset.ticker} добавлен`, "success");
+        await renderSettingsTab();
         await renderMainData();
       } catch (e) {
         showToast(`Ошибка добавления: ${e.message}`, "error");
@@ -1226,6 +1338,24 @@ async function activateProfile(name) {
   }
 }
 
+async function deleteProfile(name) {
+  if (!confirm(`Удалить профиль "${name}" и все его настройки? Это действие необратимо.`)) return;
+  try {
+    const fd = new FormData();
+    fd.append("profile_name", name);
+    const r = await fetch("/api/профили/удалить", { method: "POST", body: fd });
+    const d = await r.json();
+    if (d.ok) {
+      showToast(`Профиль "${name}" удалён`, "success");
+      loadSettingsTab();
+    } else {
+      showToast(d.detail || "Ошибка удаления профиля", "error");
+    }
+  } catch (e) {
+    showToast("Ошибка сети", "error");
+  }
+}
+
 async function activateStrategy(name) {
   try {
     await apiPostForm("/api/стратегии/активировать", { strategy_name: name });
@@ -1234,6 +1364,24 @@ async function activateStrategy(name) {
     await renderSummaryCards();
   } catch (e) {
     showToast(`Ошибка активации стратегии: ${e.message}`, "error");
+  }
+}
+
+async function deleteStrategy(name) {
+  if (!confirm(`Удалить стратегию "${name}"? Это действие необратимо.`)) return;
+  try {
+    const fd = new FormData();
+    fd.append("strategy_name", name);
+    const r = await fetch("/api/стратегии/удалить", { method: "POST", body: fd });
+    const d = await r.json();
+    if (d.ok) {
+      showToast(`Стратегия "${name}" удалена`, "success");
+      loadSettingsTab();
+    } else {
+      showToast(d.detail || "Ошибка удаления стратегии", "error");
+    }
+  } catch (e) {
+    showToast("Ошибка сети", "error");
   }
 }
 
@@ -1277,12 +1425,12 @@ async function deleteInstrument(figi) {
 
 async function applyRoute() {
   const tab = getTabFromHash();
-
   try {
     console.log("[tabs] applyRoute ->", tab);
     ensureViewsExist();
     setVisibleView(tab);
-    document.title = "Вкладка: " + tab;
+    toggleSummaryCardsVisibility();
+    document.title = tab;
 
     if (tab === "главное") {
       await renderMainShell();
@@ -1297,8 +1445,8 @@ async function applyRoute() {
       await renderChartTab();
     }
   } catch (e) {
-    console.error("[tabs] route error:", e);
-    showToast("Ошибка вкладки: " + e.message, "error", 5000);
+    console.error("[tabs] route error", e);
+    showToast(e.message, "error", 5000);
   }
 }
 
@@ -1341,20 +1489,22 @@ function startRefreshLoops() {
 
   setInterval(async () => {
     try {
-      await renderSummaryCards();
-    } catch (_) {}
+      if (getTabFromHash() === "главное") {
+        await renderSummaryCards();
+      }
+    } catch {}
   }, REFRESH_SUMMARY_MS);
 
   setInterval(async () => {
     try {
       await refreshQuotesOnly();
-    } catch (_) {}
+    } catch {}
   }, REFRESH_QUOTES_MS);
 
   setInterval(async () => {
     try {
       if (getTabFromHash() === "портфель") await renderPortfolioTab();
-    } catch (_) {}
+    } catch {}
   }, REFRESH_PORTFOLIO_MS);
 }
 
