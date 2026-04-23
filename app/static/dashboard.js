@@ -1329,7 +1329,11 @@ async function createProfile() {
 
 async function activateProfile(name) {
   try {
-    await apiPostForm("/api/профили/активировать", { profile_name: name });
+   await fetch('/api/профили/активировать', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ profile_name: profileName })
+      });
     showToast(`Профиль "${name}" активирован`, "success");
     await renderSettingsTab();
     await renderSummaryCards();
