@@ -8,6 +8,14 @@ from t_tech.invest import Client
 import platform
 import subprocess
 
+from pydantic import BaseModel
+
+class ProfilePayload(BaseModel):
+    profile_name: str
+
+class StrategyPayload(BaseModel):
+    strategy_name: str
+
 from fastapi import FastAPI, Form, Query, Request, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -609,40 +617,44 @@ def api_runtime_mode(mode: str = Form(...)):
 
 
 @app.post("/api/профили/создать")
-def api_create_profile(profile_name: str = Form(...)):
-    name = profile_name.strip()
+def api_create_profile(payload: ProfilePayload):
+    name = payload.profile_name.strip()
     create_settings_profile(name)
     save_current_settings_to_profile(name)
     return JSONResponse({"ok": True})
 
 
 @app.post("/api/профили/активировать")
-def api_activate_profile(profile_name: str = Form(...)):
-    activate_settings_profile(profile_name.strip())
+def api_activate_profile(payload: ProfilePayload):
+    activate_settings_profile(payload.profile_name.strip())
     return JSONResponse({"ok": True})
+
 
 @app.post("/api/профили/удалить")
-def api_delete_profile(profile_name: str = Form(...)):
-    result = delete_settings_profile(profile_name.strip())
+def api_delete_profile(payload: ProfilePayload):
+    result = delete_settings_profile(payload.profile_name.strip())
     if not result.get("ok"):
         raise HTTPException(status_code=400, detail=result.get("error", "Ошибка"))
     return {"ok": True}
+
 
 @app.post("/api/стратегии/активировать")
-def api_activate_strategy(strategy_name: str = Form(...)):
-    activate_strategy_profile(strategy_name.strip())
+def api_activate_strategy(payload: StrategyPayload):
+    activate_strategy_profile(payload.strategy_name.strip())
     return JSONResponse({"ok": True})
 
+
 @app.post("/api/стратегии/удалить")
-def api_delete_strategy(strategy_name: str = Form(...)):
-    result = delete_strategy_profile(strategy_name.strip())
+def api_delete_strategy(payload: StrategyPayload):
+    result = delete_strategy_profile(payload.strategy_name.strip())
     if not result.get("ok"):
         raise HTTPException(status_code=400, detail=result.get("error", "Ошибка"))
     return {"ok": True}
 
+
 @app.post("/api/стратегии/сохранить")
-def api_save_strategy(strategy_name: str = Form(...)):
-    save_current_settings_to_strategy(strategy_name.strip())
+def api_save_strategy(payload: StrategyPayload):
+    save_current_settings_to_strategy(payload.strategy_name.strip())
     return JSONResponse({"ok": True})
 
 
