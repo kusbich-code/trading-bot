@@ -1,6 +1,6 @@
-.venv/
-app/__pycache__
-services/__pycache__
+.venv/*
+app/__pycache__/*
+services/__pycache__/*
 *.pyc
 .env
 logs/*

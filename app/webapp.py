@@ -5,6 +5,9 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Dict
 from t_tech.invest import Client
 
+import platform
+import subprocess
+
 from fastapi import FastAPI, Form, Query, Request, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -72,6 +75,39 @@ def fmt_money(value: Any) -> str:
 def is_truthy(value: Any) -> bool:
     return str(value).strip().lower() in ("1", "true", "yes", "on")
 
+def get_service_status_value() -> str:
+    try:
+        system_name = platform.system().lower()
+
+        if system_name == "windows":
+            result = subprocess.run(
+                [
+                    "powershell",
+                    "-Command",
+                    "Get-CimInstance Win32_Process | "
+                    "Where-Object { $_.Name -match 'python' -and $_.CommandLine -match 'main.py' } | "
+                    "Select-Object -First 1 -ExpandProperty ProcessId"
+                ],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            output = (result.stdout or "").strip()
+            return "Запущен" if output else "Остановлен"
+
+        result = run_control("status")
+        raw = " ".join([
+            str(result.get("message", "") or ""),
+            str(result.get("output", "") or ""),
+        ]).lower()
+
+        if "active (running)" in raw or "is running" in raw or "active: active" in raw:
+            return "Запущен"
+        if "inactive" in raw or "dead" in raw or "stopped" in raw or "not running" in raw:
+            return "Остановлен"
+        return "Проблема"
+    except Exception:
+        return "Проблема"
 
 def get_service_status() -> str:
     try:
