@@ -8,4 +8,4 @@ data/*.json
 !logs/.gitkeep
 !data/.gitkeep
 data/trading_bot.sqlite3
- 
+.vscode/*

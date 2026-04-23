@@ -72,8 +72,63 @@ def safe_decimal(value: Any, default: Decimal = Decimal("0")) -> Decimal:
 def fmt_money(value: Any) -> str:
     return f"{safe_decimal(value):.2f}"
 
+
 def is_truthy(value: Any) -> bool:
     return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
+def get_service_status_value() -> str:
+    try:
+        system_name = platform.system().lower()
+
+        if system_name == "windows":
+            result = subprocess.run(
+                [
+                    "powershell",
+                    "-Command",
+                    "Get-CimInstance Win32_Process | "
+                    "Where-Object { $_.Name -match 'python|py' -and $_.CommandLine -match 'main.py' } | "
+                    "Select-Object -First 1 -ExpandProperty ProcessId"
+                ],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            process_running = bool((result.stdout or "").strip())
+
+            if not process_running:
+                return "Остановлен"
+
+            try:
+                health = dashboard_health()
+                api_ok = str(health.get("status", "")).strip().lower() == "ok"
+            except Exception:
+                api_ok = False
+
+            return "Запущен" if api_ok else "Проблема"
+
+        result = run_control("status")
+        raw = " ".join([
+            str(result.get("message", "") or ""),
+            str(result.get("output", "") or ""),
+        ]).lower()
+
+        if "active (running)" in raw or "is running" in raw or "active: active" in raw:
+            try:
+                health = dashboard_health()
+                api_ok = str(health.get("status", "")).strip().lower() == "ok"
+            except Exception:
+                api_ok = False
+
+            return "Запущен" if api_ok else "Проблема"
+
+        if "inactive" in raw or "dead" in raw or "stopped" in raw or "not running" in raw:
+            return "Остановлен"
+
+        return "Проблема"
+    except Exception:
+        return "Проблема"
+    
 
 def get_service_status_value() -> str:
     try:
@@ -109,18 +164,6 @@ def get_service_status_value() -> str:
     except Exception:
         return "Проблема"
 
-def get_service_status() -> str:
-    try:
-        result = run_control("status")
-        text = str(result.get("output", "") or result.get("message", "")).lower()
-        if "active: active" in text or "is running" in text or "active (running)" in text:
-            return "Запущен"
-        if "inactive" in text or "not running" in text or "stopped" in text:
-            return "Остановлен"
-        return "Проблема"
-    except Exception:
-        return "Проблема"
-
 
 def fmt_pct_fraction(value: Any) -> str:
     return f"{safe_decimal(value) * Decimal('100'):.2f}"
@@ -128,27 +171,6 @@ def fmt_pct_fraction(value: Any) -> str:
 
 def bool01(value: Any) -> str:
     return "1" if str(value) in ("1", "true", "True") else "0"
-
-
-def is_truthy(value: Any) -> bool:
-    return str(value).strip().lower() in ("1", "true", "yes", "on")
-
-
-def get_service_status_value() -> str:
-    try:
-        result = run_control("status")
-        raw = " ".join([
-            str(result.get("message", "") or ""),
-            str(result.get("output", "") or ""),
-        ]).lower()
-
-        if "active (running)" in raw or "is running" in raw or "active: active" in raw:
-            return "Запущен"
-        if "inactive" in raw or "dead" in raw or "stopped" in raw or "not running" in raw:
-            return "Остановлен"
-        return "Проблема"
-    except Exception:
-        return "Проблема"
 
 
 def market_row(row: Dict[str, Any], market_map: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
@@ -180,11 +202,6 @@ def summary_payload() -> Dict[str, Any]:
 
     service_status = get_service_status_value()
 
-    try:
-        health = dashboard_health()
-        api_ok = str(health.get("status", "")).strip().lower() == "ok"
-    except Exception:
-        api_ok = False
 
     try:
         portfolio = get_portfolio_snapshot()
@@ -203,8 +220,6 @@ def summary_payload() -> Dict[str, Any]:
         if not s.get("lasterror"):
             s["lasterror"] = str(e)
 
-    if service_status == "Запущен" and not api_ok:
-        service_status = "Проблема"
 
     if service_status != "Запущен":
         trading_status = "Остановлена"
