@@ -1020,7 +1020,7 @@ function renderInstrumentSearchRows(items) {
         const r = await fetch("/api/instruments/add", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
+          body: JSON.stringify({ items: payload }),
           credentials: "same-origin",
         });
 
