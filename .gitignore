@@ -1,10 +1,11 @@
 .venv/
-__pycache__/
+app/__pycache__/
+services/__pycache__/
 *.pyc
 .env
 logs/*
 data/*.json
 !logs/.gitkeep
 !data/.gitkeep
- trading_bot.sqlite3
+data/trading_bot.sqlite3
  
