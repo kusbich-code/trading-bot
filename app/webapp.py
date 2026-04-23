@@ -5,7 +5,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Dict
 from t_tech.invest import Client
 
-from fastapi import FastAPI, Form, Query, Request
+from fastapi import FastAPI, Form, Query, Request, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -292,7 +292,14 @@ def api_dashboard_history():
     def norm(x: Dict[str, Any]) -> Dict[str, Any]:
         return {"event_time": x.get("eventtime", ""), "event_type": x.get("eventtype", ""), "ticker": x.get("ticker", ""), "level": x.get("level", ""), "message": x.get("message", "")}
     return JSONResponse({
-        "trades": [{**dict(t), "entry_ui": fmt_money(t.get("entry", 0)), "exit_ui": fmt_money(t.get("exit", 0)), "commission_ui": fmt_money(t.get("commission", 0)), "pnl_ui": fmt_money(t.get("pnl", 0))} for t in get_trades(limit=200)],
+        "trades": [{
+            **dict(t),
+            "entry_ui": fmt_money(t.get("entry", 0)),
+            "exit_ui": fmt_money(t.get("exit", 0)),
+            "commission_ui": fmt_money(t.get("commission", 0)),
+            "pnl_ui": fmt_money(t.get("pnl", 0)),
+            "time": t.get("time", "") or "",
+        } for t in get_trades(limit=200)],
         "system_logs": [norm(x) for x in get_system_logs(limit=200)],
         "error_logs": [norm(x) for x in get_error_logs(limit=200)],
         "common_logs": [norm(x) for x in get_logs(limit=300)],
@@ -301,17 +308,37 @@ def api_dashboard_history():
 
 @app.get("/api/dashboard/chart")
 def api_dashboard_chart(figi: str = "", interval: str = "1min"):
-    """Заглушка графика — возвращает пустой массив если figi не указан"""
-    from app.db import get_setting  # локальный импорт как защита
-    if not figi:
-        return []
-    try:
-        mode = get_setting("trading_mode", "trend")
-        # Здесь в будущем можно добавить реальные свечи из БД
-        return {"figi": figi, "interval": interval, "candles": [], "mode": mode}
-    except Exception as e:
-        log_event("BOT_ERROR", f"chart error: {e}", level="ERROR")
-        return []
+    from app.db import get_setting
+    instruments = list_instruments()
+    available = [{"figi": i["figi"], "ticker": i["ticker"], "name": i.get("name", "")} for i in instruments]
+
+    selected_figi = figi
+    if not selected_figi and available:
+        selected_figi = available[0]["figi"]
+
+    candles = []
+    if selected_figi:
+        try:
+            candles = get_candles(selected_figi, interval_name=interval, hours=8)
+        except Exception as e:
+            log_event("BOT_ERROR", f"chart candles error: {e}", level="ERROR")
+
+    signal = {"action": "HOLD", "score": 0, "reasons": ["Нет данных"]}
+    if candles:
+        try:
+            mode = get_setting("trading_mode", "trend")
+            signal = evaluate_signal(selected_figi, candles, mode=mode)
+        except Exception:
+            pass
+
+    return {
+        "figi": selected_figi,
+        "interval": interval,
+        "candles": candles,
+        "signal": signal,
+        "available_instruments": available,
+        "selected_figi": selected_figi,
+    }
 
 
 @app.post("/api/control/{action}")
@@ -607,7 +634,23 @@ def api_create_stop_bundle(
 
 @app.post("/api/позиции/закрыть-все")
 def api_close_all_positions():
-    return JSONResponse({"ok": True, "message": "close all requested"})
+    positions = get_open_positions(source="BOT")
+    closed = 0
+    errors = []
+    for p in positions:
+        try:
+            figi = p.get("figi", "")
+            qty = int(p.get("qty", 0))
+            direction = str(p.get("direction", "BUY")).upper()
+            if not figi or qty <= 0:
+                continue
+            close_direction = "LONG_CLOSE" if direction == "BUY" else "SHORT_CLOSE"
+            post_market_close(figi=figi, quantity=qty, direction=close_direction)
+            log_event("POSITION_CLOSE", f"close-all: figi={figi} qty={qty}", ticker=figi)
+            closed += 1
+        except Exception as e:
+            errors.append(str(e))
+    return JSONResponse({"ok": True, "closed": closed, "errors": errors})
 
 
 @app.post("/api/стоп-заявки/создать")
@@ -618,10 +661,6 @@ def api_create_stop_orders(figi: str = Form(...), qty: str = Form(...), side: st
 @app.post("/api/стоп-заявки/отменить")
 def api_cancel_stop_order(stop_order_id: str = Form(...)):
     return JSONResponse({"ok": True, "message": f"stop cancel requested: {stop_order_id}"})
-
-@app.get("/api/health")
-def api_health():
-    return dashboard_health()
 
 
 @app.get("/api/debug/search")

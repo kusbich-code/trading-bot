@@ -827,6 +827,22 @@ async function renderChartTab() {
   }
 
   renderCandlesAndScore(data);
+  // Обновляем health-check для вкладки "График"
+  try {
+    const health = await apiGet("/api/health");
+    const box = document.getElementById("healthBox");
+    if (box) {
+      box.innerHTML = `
+        <div><strong>Статус:</strong> <span class="health-${health.status === "ok" ? "ok" : "warn"}">${health.status}</span></div>
+        <div style="margin-top:10px;">
+          ${(health.checks || []).map(x => `<div><strong>${x.name}:</strong> ${x.status} — ${x.details}</div>`).join("")}
+        </div>
+      `;
+    }
+  } catch (e) {
+    const box = document.getElementById("healthBox");
+    if (box) box.innerHTML = `<span class="health-error">Ошибка health-check: ${e.message}</span>`;
+  }
 
   document.getElementById("btnReloadChart")?.addEventListener("click", async () => {
     await renderChartTabWithParams(
@@ -953,7 +969,7 @@ function closeAddInstrumentModal() {
 }
 
 function renderInstrumentSearchRows(items) {
-  const host = document.getElementById("instrumentSearchRows");
+  const host = document.getElementById("instrumentSearchBody");
   if (!host) return;
 
   instrumentSearchData = Array.isArray(items) ? items : [];

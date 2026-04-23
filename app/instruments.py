@@ -23,7 +23,7 @@ def _instrument_to_dict(inst) -> dict:
     step_obj = getattr(inst, 'min_price_increment', None)
     if step_obj is not None:
         try:
-            from tinkoff.invest.utils import quotation_to_decimal
+            from t_tech.invest.utils import quotation_to_decimal
             step = float(quotation_to_decimal(step_obj))
         except:
             step = 0.0
@@ -96,7 +96,7 @@ async def get_top_instruments():
                 logger.warning(f"Ошибка futures: {e}")
             
             try:
-                from tinkoff.invest import InstrumentStatus
+                from t_tech.invest import InstrumentStatus
                 resp = await c.instruments.shares(instrument_status=InstrumentStatus.INSTRUMENT_STATUS_BASE)
                 for inst in (resp.instruments or []):
                     if _is_trade_available(inst):
