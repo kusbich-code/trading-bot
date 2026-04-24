@@ -129,6 +129,36 @@ async function apiPostForm(url, data) {
   return await r.json();
 }
 
+async function apiPostJson(url, data) {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(data),
+  });
+
+  let payload = null;
+  const text = await res.text();
+
+  try {
+    payload = text ? JSON.parse(text) : null;
+  } catch {
+    payload = text;
+  }
+
+  if (!res.ok) {
+    const message =
+      (payload && payload.detail) ||
+      (payload && payload.error) ||
+      (typeof payload === "string" && payload) ||
+      `HTTP ${res.status}`;
+    throw new Error(message);
+  }
+
+  return payload;
+}
+
 function diffTbody(tbody, rowsHtml) {
   if (!tbody) return;
   const next = rowsHtml.trim();
