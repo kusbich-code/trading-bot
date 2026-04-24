@@ -350,12 +350,15 @@ def dashboard_page(request: Request):
     <div class=\"modal-box\">
       <div class=\"row between\">
         <h2>Добавить инструменты</h2>
-        <div class=\"row\">
-          <input id=\"instrumentSearchInput\" class=\"field\" type=\"text\" placeholder=\"Тикер или название\">
-          <button class=\"btn\" onclick=\"searchInstruments()\">Поиск</button>
-          <button class=\"btn\" onclick=\"loadTopVolumeInstruments()\">Топ</button>
-          <button class=\"btn btn-primary\" onclick=\"acceptSelectedInstruments()\">Добавить</button>
-          <button class=\"btn btn-danger\" onclick=\"closeAddInstrumentModal()\">Закрыть</button>
+            <div class="row">
+            <input id="instrumentSearchInput" class="field" type="text" placeholder="Тикер или название">
+            <button class="btn" onclick="searchInstruments()">Поиск</button>
+            <button class="btn" onclick="loadTopVolumeInstruments()">Топ</button>
+            <button class="btn" onclick="selectAllInstrumentSearchRows()">Выделить все</button>
+            <button class="btn" onclick="clearAllInstrumentSearchRows()">Снять все</button>
+            <button class="btn btn-primary" onclick="acceptSelectedInstruments()">Добавить выбранные</button>
+            <button class="btn btn-danger" onclick="closeAddInstrumentModal()">Закрыть</button>
+            </div>        
         </div>
       </div>
       <div class=\"table-wrap\">
@@ -878,23 +881,38 @@ async def api_instruments_add(request: Request):
     items = payload if isinstance(payload, list) else payload.get("items", [])
     added = 0
     for item in items:
+        figi = item.get("figi", "")
         add_instrument({
-            "ticker": item.get("ticker", ""), "figi": item.get("figi", ""), "name": item.get("name", ""),
-            "classcode": item.get("classcode", ""), "instrumenttype": item.get("instrumenttype", item.get("instrument_type", "share")), "currency": item.get("currency", "rub"),
-            "lot": item.get("lot", 1), "minpriceincrement": item.get("minpriceincrement", item.get("min_price_increment", "0.01")),
-            "lotsoverride": item.get("lotsoverride", 1), "stoplosspct": item.get("stoplosspct", "0.0025"), "takeprofitpct": item.get("takeprofitpct", "0.0050"), "maxspreadpct": item.get("maxspreadpct", "0"),
-            "minvolume": item.get("minvolume", 0), "allowlong": item.get("allowlong", 1), "allowshort": item.get("allowshort", 1), "priority": item.get("priority", 100), "enabled": item.get("enabled", 1),
+            "ticker": item.get("ticker", ""),
+            "figi": figi,
+            "name": item.get("name", ""),
+            "classcode": item.get("classcode", ""),
+            "instrumenttype": item.get("instrumenttype", item.get("instrument_type", "share")),
+            "currency": item.get("currency", "rub"),
+            "lot": item.get("lot", 1),
+            "minpriceincrement": item.get("minpriceincrement", item.get("min_price_increment", "0.01")),
+            "lotsoverride": item.get("lotsoverride", 1),
+            "stoplosspct": item.get("stoplosspct", "0.0025"),
+            "takeprofitpct": item.get("takeprofitpct", "0.0050"),
+            "maxspreadpct": item.get("maxspreadpct", "0"),
+            "minvolume": item.get("minvolume", 0),
+            "allowlong": item.get("allowlong", 1),
+            "allowshort": item.get("allowshort", 1),
+            "priority": item.get("priority", 100),
+            "enabled": item.get("enabled", 1),
         })
+
         with db_cursor() as cur:
             cur.execute("SELECT value FROM bot_settings WHERE key = 'active_profile_name'")
             row = cur.fetchone()
             active_profile = row["value"] if row and row["value"] else "Основной"
-        cur.execute("""
-        INSERT OR IGNORE INTO profile_instruments(profile_name, figi)
-        VALUES (?, ?)
-        """, (active_profile, figi))
-        added += 1
-    return JSONResponse({"ok": True, "добавлено": added})
+            cur.execute("""
+            INSERT OR IGNORE INTO profile_instruments(profile_name, figi)
+            VALUES (?, ?)
+            """, (active_profile, figi))
+
+        added += 1   
+        return JSONResponse({"ok": True, "добавлено": added})
 
 @app.post("/api/instruments/update")
 def api_instruments_update(

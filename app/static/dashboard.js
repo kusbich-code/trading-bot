@@ -40,6 +40,31 @@ function setActiveTabButton(tab) {
   });
 }
 
+async function acceptSelectedInstruments() {
+  try {
+    const selectedIndexes = [...document.querySelectorAll("[data-instrument-pick]:checked")]
+      .map((el) => Number(el.dataset.instrumentPick))
+      .filter((idx) => Number.isInteger(idx) && instrumentSearchData[idx]);
+
+    if (!selectedIndexes.length) {
+      showToast("Отметь хотя бы один инструмент", "error");
+      return;
+    }
+
+    const items = selectedIndexes.map((idx) => instrumentSearchData[idx]);
+
+    await apiPostJson("/api/instruments/add", items);
+
+    showToast(`Добавлено инструментов: ${items.length}`, "success");
+    closeAddInstrumentModal();
+    instrumentSearchData = [];
+    await renderSettingsTab();
+    await renderMainData();
+  } catch (e) {
+    showToast(`Ошибка добавления: ${e.message}`, "error");
+  }
+}
+
 function setVisibleView(tab) {
   const normalized = normalizeTab(tab);
   const views = document.querySelectorAll("[data-view]");
@@ -182,6 +207,8 @@ async function bootstrapDashboard() {
   toggleSummaryCardsVisibility();
   await applyRoute();
   startRefreshLoops();
+  window.selectAllInstrumentSearchRows = selectAllInstrumentSearchRows;
+  window.clearAllInstrumentSearchRows = clearAllInstrumentSearchRows;
 }
 
 function helpCard(title, bullets) {
@@ -1228,22 +1255,21 @@ function renderInstrumentSearchRows(items) {
   const host = document.getElementById("instrumentSearchRows");
   if (!host) return;
 
-  if (!items || !items.length) {
+  instrumentSearchData = Array.isArray(items) ? items.map(normalizeInstrumentForAdd) : [];
+
+  if (!instrumentSearchData.length) {
     host.innerHTML = `<tr><td colspan="11" class="note">Ничего не найдено</td></tr>`;
     return;
   }
 
-  host.innerHTML = items.map(item => `
+  host.innerHTML = instrumentSearchData.map((item, idx) => `
     <tr>
-      <td style="width:72px;">
-        <button
-          class="btn"
-          data-add-instrument
-          data-ticker="${esc(item.ticker)}"
-          data-figi="${esc(item.figi)}"
-          data-name="${esc(item.name || "")}">
-          Добавить
-        </button>
+      <td style="width:72px;text-align:center;">
+        <input
+          type="checkbox"
+          class="checkbox"
+          data-instrument-pick="${idx}"
+        >
       </td>
       <td><strong>${esc(item.ticker || "—")}</strong></td>
       <td style="min-width:260px;">${esc(item.name || "—")}</td>
@@ -1257,22 +1283,17 @@ function renderInstrumentSearchRows(items) {
       <td>${esc(item.score ?? "—")}</td>
     </tr>
   `).join("");
+}
 
-  host.querySelectorAll("[data-add-instrument]").forEach((btn) => {
-    btn.addEventListener("click", async () => {
-      try {
-        await apiPostForm("/api/instruments/add-one", {
-          ticker: btn.dataset.ticker,
-          figi: btn.dataset.figi,
-          name: btn.dataset.name,
-        });
-        showToast(`Инструмент ${btn.dataset.ticker} добавлен`, "success");
-        await renderSettingsTab();
-        await renderMainData();
-      } catch (e) {
-        showToast(`Ошибка добавления: ${e.message}`, "error");
-      }
-    });
+function selectAllInstrumentSearchRows() {
+  document.querySelectorAll("[data-instrument-pick]").forEach((el) => {
+    el.checked = true;
+  });
+}
+
+function clearAllInstrumentSearchRows() {
+  document.querySelectorAll("[data-instrument-pick]").forEach((el) => {
+    el.checked = false;
   });
 }
 
