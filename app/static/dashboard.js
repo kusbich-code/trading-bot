@@ -42,7 +42,7 @@ function setActiveTabButton(tab) {
 
 async function acceptSelectedInstruments() {
   try {
-    const selectedIndexes = [...document.querySelectorAll("[data-instrument-pick]:checked")]
+    const selectedIndexes = [...document.querySelectorAll("#instrumentSearchRows [data-instrument-pick]:checked")]
       .map((el) => Number(el.dataset.instrumentPick))
       .filter((idx) => Number.isInteger(idx) && instrumentSearchData[idx]);
 
@@ -53,13 +53,14 @@ async function acceptSelectedInstruments() {
 
     const items = selectedIndexes.map((idx) => instrumentSearchData[idx]);
 
-    await apiPostJson("/api/instruments/add", items);
+    const result = await apiPostJson("/api/instruments/add", items);
 
-    showToast(`Добавлено инструментов: ${items.length}`, "success");
+    showToast(`Добавлено инструментов: ${result?.добавлено ?? items.length}`, "success");
     closeAddInstrumentModal();
     instrumentSearchData = [];
     await renderSettingsTab();
     await renderMainData();
+    await renderSummaryCards();
   } catch (e) {
     showToast(`Ошибка добавления: ${e.message}`, "error");
   }
@@ -1259,12 +1260,12 @@ function renderInstrumentSearchRows(items) {
       <td><strong>${esc(item.ticker || "—")}</strong></td>
       <td style="min-width:260px;">${esc(item.name || "—")}</td>
       <td class="muted" style="font-size:12px;">${esc(item.figi || "—")}</td>
-      <td><span class="pill">${esc(item.instrumenttype || item.instrument_type || "—")}</span></td>
+      <td><span class="pill">${esc(item.instrumenttype || "—")}</span></td>
       <td>${esc(item.currency || "—")}</td>
       <td>${esc(item.lot ?? "—")}</td>
-      <td>${esc(item.minpriceincrement || item.min_price_increment || "—")}</td>
-      <td>${esc(item.last_price || item.price || "—")}</td>
-      <td>${esc(item.price_time || item.updated_at || "—")}</td>
+      <td>${esc(item.minpriceincrement || "—")}</td>
+      <td>${esc(item.last_price || "—")}</td>
+      <td>${esc(item.price_time || "—")}</td>
       <td>${esc(item.score ?? "—")}</td>
     </tr>
   `).join("");
