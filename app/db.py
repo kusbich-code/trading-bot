@@ -712,13 +712,12 @@ def save_current_settings_to_strategy(strategy_name: str):
             "max_daily_loss_rub",
             "max_open_positions",
             "check_interval_sec",
-            "default_stop_loss_pct",
-            "default_take_profit_pct",
             "estimated_commission_pct",
-            "allow_long_global",
-            "allow_short_global",
             "trade_only_session",
             "pause_after_error_sec",
+            "tradingmode",
+            "errorseriespausecount",
+            "stopseriespausecount",
         }
 
         for row in rows:

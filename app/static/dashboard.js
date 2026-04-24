@@ -697,29 +697,16 @@ async function renderSettingsTab() {
       <h2>Риск и стратегия</h2>
       <form id="strategySettingsForm" class="form-grid">
         <label>Сделок/день<input class="field" name="max_trades_per_day" value="${esc(s.max_trades_per_day || 15)}"></label>
+        <label>Сделок/день<input class="field" name="max_trades_per_day" value="${esc(s.max_trades_per_day || 15)}"></label>
         <label>Лимит убытка<input class="field" name="max_daily_loss_rub" value="${esc(s.max_daily_loss_rub_ui || 0)}"></label>
         <label>Позиций макс<input class="field" name="max_open_positions" value="${esc(s.max_open_positions || 2)}"></label>
         <label>Пауза, сек<input class="field" name="pause_after_error_sec" value="${esc(s.pause_after_error_sec || 10)}"></label>
-        <label>SL %<input class="field" name="default_stop_loss_pct" value="${esc(s.default_stop_loss_pct_ui || 0.25)}"></label>
-        <label>TP %<input class="field" name="default_take_profit_pct" value="${esc(s.default_take_profit_pct_ui || 0.50)}"></label>
         <label>Комиссия %<input class="field" name="estimated_commission_pct" value="${esc(s.estimated_commission_pct_ui || 0.04)}"></label>
         <label>Режим торговли
           <select class="field" name="tradingmode">
             <option value="trend" ${(String(s.tradingmode || "trend") === "trend") ? "selected" : ""}>Тренд</option>
             <option value="mean_reversion" ${(String(s.tradingmode || "trend") === "mean_reversion") ? "selected" : ""}>Возврат к средней</option>
             <option value="breakout" ${(String(s.tradingmode || "trend") === "breakout") ? "selected" : ""}>Пробой</option>
-          </select>
-        </label>
-        <label>Лонг
-          <select class="field" name="allow_long_global">
-            <option value="1" ${String(s.allow_long_global) === "1" ? "selected" : ""}>Да</option>
-            <option value="0" ${String(s.allow_long_global) === "0" ? "selected" : ""}>Нет</option>
-          </select>
-        </label>
-        <label>Шорт
-          <select class="field" name="allow_short_global">
-            <option value="1" ${String(s.allow_short_global) === "1" ? "selected" : ""}>Да</option>
-            <option value="0" ${String(s.allow_short_global) === "0" ? "selected" : ""}>Нет</option>
           </select>
         </label>
         <label>Только сессия
@@ -735,6 +722,9 @@ async function renderSettingsTab() {
         <label>Пауза после стопов
           <input class="field" name="stopseriespausecount" value="${esc(s.stopseriespausecount || 3)}">
         </label>
+        <div class="row-buttons">
+          <button type="button" class="btn btn-primary" id="btnSaveStrategySettings">Сохранить стратегию</button>
+        </div>
         <div class="row-buttons">
           <button type="button" class="btn btn-primary" id="btnSaveStrategySettings">Сохранить стратегию</button>
         </div>
