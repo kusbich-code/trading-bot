@@ -201,96 +201,95 @@ def ensure_instruments_columns(cur):
         if col_name not in cols:
             cur.execute(f"ALTER TABLE instruments ADD COLUMN {col_name} {col_def}")
 
-        seed_setting(cur, "status", "INIT")
-        seed_setting(cur, "daily_pnl", "0")
-        seed_setting(cur, "trades_today", "0")
-        seed_setting(cur, "last_error", "")
-        seed_setting(cur, "session_balance_start", "0")
-        seed_setting(cur, "session_balance_current", "0")
-        seed_setting(cur, "current_trade_date", "")
-        seed_setting(cur, "bot_enabled", "1")
-  
-        seed_setting(cur, "max_trades_per_day", "15")
-        seed_setting(cur, "max_daily_loss_rub", "200")
-        seed_setting(cur, "max_open_positions", "2")
-        seed_setting(cur, "check_interval_sec", "5")
-        seed_setting(cur, "default_stop_loss_pct", "0.0025")
-        seed_setting(cur, "default_take_profit_pct", "0.005")
-        seed_setting(cur, "estimated_commission_pct", "0.0004")
-        seed_setting(cur, "allow_long_global", "1")
-        seed_setting(cur, "allow_short_global", "1")
-        seed_setting(cur, "trade_only_session", "0")
-        seed_setting(cur, "pause_after_error_sec", "10")
-        seed_setting(cur, "telegram_errors_only", "0")
-        seed_setting(cur, "auto_reload_settings", "1")
-        seed_setting(cur, "active_profile_name", "Основной")
-        seed_setting(cur, "active_strategy_name", "Сбалансированный")
-        seed_setting(cur, "tradingmode", "trend")
-        seed_setting(cur, "sandboxmode", "1")
-        seed_setting(cur, "errorseriespausecount", "3")
-        seed_setting(cur, "stopseriespausecount", "3")
-        seed_setting(cur, "healthtelegramenabled", "0")
-        
-        cur.execute("SELECT id FROM settings_profiles WHERE profile_name = ?", ("Основной",))
-        if not cur.fetchone():
-            cur.execute("""
-            INSERT INTO settings_profiles(profile_name, is_active)
-            VALUES (?, ?)
-            """, ("Основной", 1))
+    seed_setting(cur, "status", "INIT")
+    seed_setting(cur, "daily_pnl", "0")
+    seed_setting(cur, "trades_today", "0")
+    seed_setting(cur, "last_error", "")
+    seed_setting(cur, "session_balance_start", "0")
+    seed_setting(cur, "session_balance_current", "0")
+    seed_setting(cur, "current_trade_date", "")
+    seed_setting(cur, "bot_enabled", "1")
+    seed_setting(cur, "max_trades_per_day", "15")
+    seed_setting(cur, "max_daily_loss_rub", "200")
+    seed_setting(cur, "max_open_positions", "2")
+    seed_setting(cur, "check_interval_sec", "5")
+    seed_setting(cur, "default_stop_loss_pct", "0.0025")
+    seed_setting(cur, "default_take_profit_pct", "0.005")
+    seed_setting(cur, "estimated_commission_pct", "0.0004")
+    seed_setting(cur, "allow_long_global", "1")
+    seed_setting(cur, "allow_short_global", "1")
+    seed_setting(cur, "trade_only_session", "0")
+    seed_setting(cur, "pause_after_error_sec", "10")
+    seed_setting(cur, "telegram_errors_only", "0")
+    seed_setting(cur, "auto_reload_settings", "1")
+    seed_setting(cur, "active_profile_name", "Основной")
+    seed_setting(cur, "active_strategy_name", "Сбалансированный")
+    seed_setting(cur, "tradingmode", "trend")
+    seed_setting(cur, "sandboxmode", "1")
+    seed_setting(cur, "errorseriespausecount", "3")
+    seed_setting(cur, "stopseriespausecount", "3")
+    seed_setting(cur, "healthtelegramenabled", "0")
 
-        cur.execute("SELECT id FROM strategy_profiles WHERE strategy_name = ?", ("Агрессивный",))
-        if not cur.fetchone():
-            cur.execute("INSERT INTO strategy_profiles(strategy_name, is_active) VALUES (?, 0)", ("Агрессивный",))
+    cur.execute("SELECT id FROM settings_profiles WHERE profile_name = ?", ("Основной",))
+    if not cur.fetchone():
+        cur.execute("""
+        INSERT INTO settings_profiles(profile_name, is_active)
+        VALUES (?, ?)
+        """, ("Основной", 1))
 
-        cur.execute("SELECT id FROM strategy_profiles WHERE strategy_name = ?", ("Спокойный",))
-        if not cur.fetchone():
-            cur.execute("INSERT INTO strategy_profiles(strategy_name, is_active) VALUES (?, 0)", ("Спокойный",))
+    cur.execute("SELECT id FROM strategy_profiles WHERE strategy_name = ?", ("Агрессивный",))
+    if not cur.fetchone():
+        cur.execute("INSERT INTO strategy_profiles(strategy_name, is_active) VALUES (?, 0)", ("Агрессивный",))
 
-        cur.execute("SELECT id FROM strategy_profiles WHERE strategy_name = ?", ("Сбалансированный",))
-        if not cur.fetchone():
-            cur.execute("INSERT INTO strategy_profiles(strategy_name, is_active) VALUES (?, 1)", ("Сбалансированный",))
+    cur.execute("SELECT id FROM strategy_profiles WHERE strategy_name = ?", ("Спокойный",))
+    if not cur.fetchone():
+        cur.execute("INSERT INTO strategy_profiles(strategy_name, is_active) VALUES (?, 0)", ("Спокойный",))
 
-        seed_strategy_values(cur, "Агрессивный", {
-            "max_trades_per_day": "40",
-            "max_daily_loss_rub": "600",
-            "max_open_positions": "5",
-            "check_interval_sec": "3",
-            "default_stop_loss_pct": "0.0040",
-            "default_take_profit_pct": "0.0080",
-            "estimated_commission_pct": "0.0004",
-            "allow_long_global": "1",
-            "allow_short_global": "1",
-            "trade_only_session": "1",
-            "pause_after_error_sec": "5",
-        })
+    cur.execute("SELECT id FROM strategy_profiles WHERE strategy_name = ?", ("Сбалансированный",))
+    if not cur.fetchone():
+        cur.execute("INSERT INTO strategy_profiles(strategy_name, is_active) VALUES (?, 1)", ("Сбалансированный",))
 
-        seed_strategy_values(cur, "Спокойный", {
-            "max_trades_per_day": "8",
-            "max_daily_loss_rub": "150",
-            "max_open_positions": "1",
-            "check_interval_sec": "10",
-            "default_stop_loss_pct": "0.0020",
-            "default_take_profit_pct": "0.0035",
-            "estimated_commission_pct": "0.0004",
-            "allow_long_global": "1",
-            "allow_short_global": "0",
-            "trade_only_session": "1",
-            "pause_after_error_sec": "15",
-        })
+    seed_strategy_values(cur, "Агрессивный", {
+        "max_trades_per_day": "40",
+        "max_daily_loss_rub": "600",
+        "max_open_positions": "5",
+        "check_interval_sec": "3",
+        "default_stop_loss_pct": "0.0040",
+        "default_take_profit_pct": "0.0080",
+        "estimated_commission_pct": "0.0004",
+        "allow_long_global": "1",
+        "allow_short_global": "1",
+        "trade_only_session": "1",
+        "pause_after_error_sec": "5",
+    })
 
-        seed_strategy_values(cur, "Сбалансированный", {
-            "max_trades_per_day": "15",
-            "max_daily_loss_rub": "250",
-            "max_open_positions": "2",
-            "check_interval_sec": "5",
-            "default_stop_loss_pct": "0.0025",
-            "default_take_profit_pct": "0.0050",
-            "estimated_commission_pct": "0.0004",
-            "allow_long_global": "1",
-            "allow_short_global": "1",
-            "trade_only_session": "1",
-            "pause_after_error_sec": "10",
-        })            
+    seed_strategy_values(cur, "Спокойный", {
+        "max_trades_per_day": "8",
+        "max_daily_loss_rub": "150",
+        "max_open_positions": "1",
+        "check_interval_sec": "10",
+        "default_stop_loss_pct": "0.0020",
+        "default_take_profit_pct": "0.0035",
+        "estimated_commission_pct": "0.0004",
+        "allow_long_global": "1",
+        "allow_short_global": "0",
+        "trade_only_session": "1",
+        "pause_after_error_sec": "15",
+    })
+
+    seed_strategy_values(cur, "Сбалансированный", {
+        "max_trades_per_day": "15",
+        "max_daily_loss_rub": "250",
+        "max_open_positions": "2",
+        "check_interval_sec": "5",
+        "default_stop_loss_pct": "0.0025",
+        "default_take_profit_pct": "0.0050",
+        "estimated_commission_pct": "0.0004",
+        "allow_long_global": "1",
+        "allow_short_global": "1",
+        "trade_only_session": "1",
+        "pause_after_error_sec": "10",
+    })     
 
 
 def get_setting(key, default=None):
