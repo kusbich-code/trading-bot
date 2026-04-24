@@ -78,18 +78,24 @@ def safe_decimal(value: Any, default: Decimal = Decimal("0")) -> Decimal:
     except (InvalidOperation, TypeError, ValueError):
         return default
 
-def quotation_to_decimal(q) -> str:
+def quotation_to_decimal(q) -> Decimal:
     if q is None:
-        return ""
+        return Decimal("0")
     units = getattr(q, "units", 0) or 0
     nano = getattr(q, "nano", 0) or 0
-    value = Decimal(str(units)) + (Decimal(str(nano)) / Decimal("1000000000"))
-    return format(value.normalize(), "f")
+    return Decimal(str(units)) + (Decimal(str(nano)) / Decimal("1000000000"))
 
 def fmt_money(value: Any) -> str:
     return f"{safe_decimal(value):.2f}"
 
-
+def money_value_to_text(v) -> str:
+    if v is None:
+        return ""
+    try:
+        return format(quotation_to_decimal(v), "f")
+    except Exception:
+        return ""
+    
 def is_truthy(value: Any) -> bool:
     return str(value).strip().lower() in ("1", "true", "yes", "on")
 
@@ -744,14 +750,35 @@ async def api_instruments_search(q: str, kind: str = "shares"):
             return score
 
         items.sort(key=lambda x: (-score_item(x), x["ticker"], x["name"]))
+
+        selected = items[:20]
+        price_map = {}
+        figis = [x["figi"] for x in selected if x.get("figi")]
+
+        if figis:
+            try:
+                with Client(settings.TINVEST_TOKEN) as client:
+                    prices_resp = client.market_data.get_last_prices(figi=figis)
+
+                for p in getattr(prices_resp, "last_prices", []):
+                    price_map[getattr(p, "figi", "")] = {
+                        "last_price": money_value_to_text(getattr(p, "price", None)),
+                        "price_time": str(getattr(p, "time", "") or "")[:19].replace("T", " "),
+                    }
+            except Exception:
+                logger.exception("Ошибка получения last_prices для поиска инструментов")
+
         result = []
-        for x in items[:20]:
+        for x in selected:
             row = dict(x)
             row["score"] = score_item(x)
             row["classcode"] = row.get("class_code", "")
             row["instrumenttype"] = row.get("instrument_type", "")
             row["minpriceincrement"] = str(row.get("min_price_increment") or "")
+            row["last_price"] = price_map.get(row.get("figi", ""), {}).get("last_price", "")
+            row["price_time"] = price_map.get(row.get("figi", ""), {}).get("price_time", "")
             result.append(row)
+
         return result
 
     except Exception as e:
@@ -813,11 +840,32 @@ async def api_instruments_top(limit: int = 20):
             return score
 
         filtered.sort(key=lambda x: (-top_score(x), x["ticker"], x["name"]))
+
+        selected = filtered[:limit]
+        price_map = {}
+        figis = [x["figi"] for x in selected if x.get("figi")]
+
+        if figis:
+            try:
+                with Client(settings.TINVEST_TOKEN) as client:
+                    prices_resp = client.market_data.get_last_prices(figi=figis)
+
+                for p in getattr(prices_resp, "last_prices", []):
+                    price_map[getattr(p, "figi", "")] = {
+                        "last_price": money_value_to_text(getattr(p, "price", None)),
+                        "price_time": str(getattr(p, "time", "") or "")[:19].replace("T", " "),
+                    }
+            except Exception:
+                logger.exception("Ошибка получения last_prices для top инструментов")
+
         result = []
-        for x in filtered[:limit]:
+        for x in selected:
             row = dict(x)
             row["score"] = top_score(x)
+            row["last_price"] = price_map.get(row.get("figi", ""), {}).get("last_price", "")
+            row["price_time"] = price_map.get(row.get("figi", ""), {}).get("price_time", "")
             result.append(row)
+
         return result
 
     except Exception as e:

@@ -1150,8 +1150,8 @@ function renderInstrumentSearchRows(items) {
       <td>${esc(item.currency || "—")}</td>
       <td>${esc(item.lot ?? "—")}</td>
       <td>${esc(item.minpriceincrement || item.min_price_increment || "—")}</td>
-      <td>${esc(item.last_price || "—")}</td>
-      <td>${esc(item.price_time || "—")}</td>
+      <td>${esc(item.last_price || item.lastprice || "—")}</td>
+      <td>${esc(item.price_time || item.pricetime || "—")}</td>
       <td>${esc(item.score ?? "—")}</td>
     </tr>
   `).join("");
