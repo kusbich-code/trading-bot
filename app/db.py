@@ -188,42 +188,10 @@ def init_db():
         )
         """)
 
-        cur.execute("""INSERT OR IGNORE INTO settings_profiles(profile_name, is_active, created_at)
-        VALUES ('Основной', 1, datetime('now'))""")
-        for sname in ['Консервативный', 'Сбалансированный', 'Агрессивный']:
-            cur.execute("""INSERT OR IGNORE INTO strategy_profiles(strategy_name, is_active, created_at)
-            VALUES (?, 0, datetime('now'))""", (sname,))
-
-        cur.execute("""UPDATE strategy_profiles SET is_active = 1 WHERE strategy_name = 'Сбалансированный'
-        AND NOT EXISTS (SELECT 1 FROM strategy_profiles WHERE is_active = 1)""")
                 # --- Очистка мусорных записей с пустыми именами ---
         cur.execute("DELETE FROM settings_profiles WHERE TRIM(profile_name) = ''")
         cur.execute("DELETE FROM strategy_profiles WHERE TRIM(strategy_name) = ''")
 
-        # --- Дефолтный профиль ---
-        cur.execute("""
-            INSERT OR IGNORE INTO settings_profiles(profile_name, is_active, created_at)
-            VALUES ('Основной', 1, datetime('now'))
-        """)
-        # Если ни один профиль не активен — активируем Основной
-        cur.execute("""
-            UPDATE settings_profiles SET is_active = 1
-            WHERE profile_name = 'Основной'
-            AND NOT EXISTS (SELECT 1 FROM settings_profiles WHERE is_active = 1)
-        """)
-
-        # --- Дефолтные стратегии ---
-        for sname in ['Консервативный', 'Сбалансированный', 'Агрессивный']:
-            cur.execute("""
-                INSERT OR IGNORE INTO strategy_profiles(strategy_name, is_active, created_at)
-                VALUES (?, 0, datetime('now'))
-            """, (sname,))
-        # Если ни одна стратегия не активна — активируем Сбалансированный
-        cur.execute("""
-            UPDATE strategy_profiles SET is_active = 1
-            WHERE strategy_name = 'Сбалансированный'
-            AND NOT EXISTS (SELECT 1 FROM strategy_profiles WHERE is_active = 1)
-        """)
         ensure_instruments_columns(cur)
 
 
@@ -267,74 +235,12 @@ def ensure_instruments_columns(cur):
     seed_setting(cur, "pause_after_error_sec", "10")
     seed_setting(cur, "telegram_errors_only", "0")
     seed_setting(cur, "auto_reload_settings", "1")
-    seed_setting(cur, "active_profile_name", "Основной")
-    seed_setting(cur, "active_strategy_name", "Сбалансированный")
     seed_setting(cur, "tradingmode", "trend")
     seed_setting(cur, "sandboxmode", "1")
     seed_setting(cur, "errorseriespausecount", "3")
     seed_setting(cur, "stopseriespausecount", "3")
     seed_setting(cur, "healthtelegramenabled", "0")
-
-    cur.execute("SELECT id FROM settings_profiles WHERE profile_name = ?", ("Основной",))
-    if not cur.fetchone():
-        cur.execute("""
-        INSERT INTO settings_profiles(profile_name, is_active)
-        VALUES (?, ?)
-        """, ("Основной", 1))
-
-    cur.execute("SELECT id FROM strategy_profiles WHERE strategy_name = ?", ("Агрессивный",))
-    if not cur.fetchone():
-        cur.execute("INSERT INTO strategy_profiles(strategy_name, is_active) VALUES (?, 0)", ("Агрессивный",))
-
-    cur.execute("SELECT id FROM strategy_profiles WHERE strategy_name = ?", ("Спокойный",))
-    if not cur.fetchone():
-        cur.execute("INSERT INTO strategy_profiles(strategy_name, is_active) VALUES (?, 0)", ("Спокойный",))
-
-    cur.execute("SELECT id FROM strategy_profiles WHERE strategy_name = ?", ("Сбалансированный",))
-    if not cur.fetchone():
-        cur.execute("INSERT INTO strategy_profiles(strategy_name, is_active) VALUES (?, 1)", ("Сбалансированный",))
-
-    seed_strategy_values(cur, "Агрессивный", {
-        "max_trades_per_day": "40",
-        "max_daily_loss_rub": "600",
-        "max_open_positions": "5",
-        "check_interval_sec": "3",
-        "default_stop_loss_pct": "0.0040",
-        "default_take_profit_pct": "0.0080",
-        "estimated_commission_pct": "0.0004",
-        "allow_long_global": "1",
-        "allow_short_global": "1",
-        "trade_only_session": "1",
-        "pause_after_error_sec": "5",
-    })
-
-    seed_strategy_values(cur, "Спокойный", {
-        "max_trades_per_day": "8",
-        "max_daily_loss_rub": "150",
-        "max_open_positions": "1",
-        "check_interval_sec": "10",
-        "default_stop_loss_pct": "0.0020",
-        "default_take_profit_pct": "0.0035",
-        "estimated_commission_pct": "0.0004",
-        "allow_long_global": "1",
-        "allow_short_global": "0",
-        "trade_only_session": "1",
-        "pause_after_error_sec": "15",
-    })
-
-    seed_strategy_values(cur, "Сбалансированный", {
-        "max_trades_per_day": "15",
-        "max_daily_loss_rub": "250",
-        "max_open_positions": "2",
-        "check_interval_sec": "5",
-        "default_stop_loss_pct": "0.0025",
-        "default_take_profit_pct": "0.0050",
-        "estimated_commission_pct": "0.0004",
-        "allow_long_global": "1",
-        "allow_short_global": "1",
-        "trade_only_session": "1",
-        "pause_after_error_sec": "10",
-    })     
+   
 
 
 def get_setting(key, default=None):
