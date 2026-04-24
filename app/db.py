@@ -226,10 +226,6 @@ def ensure_instruments_columns(cur):
     seed_setting(cur, "max_daily_loss_rub", "200")
     seed_setting(cur, "max_open_positions", "2")
     seed_setting(cur, "check_interval_sec", "5")
-    seed_setting(cur, "default_stop_loss_pct", "0.0025")
-    seed_setting(cur, "default_take_profit_pct", "0.005")
-    seed_setting(cur, "estimated_commission_pct", "0.0004")
-    seed_setting(cur, "allow_long_global", "1")
     seed_setting(cur, "allow_short_global", "1")
     seed_setting(cur, "trade_only_session", "0")
     seed_setting(cur, "pause_after_error_sec", "10")
@@ -787,7 +783,7 @@ def save_current_settings_to_profile(profile_name: str):
             """, (profile_name, row["key"], row["value"]))
             cur.execute("""
             INSERT INTO settings_profile_values(profile_name, setting_key, setting_value)
-            VALUES (?, 'active_strategy_name', COALESCE((SELECT value FROM bot_settings WHERE key = 'active_strategy_name'), 'Сбалансированный'))
+            VALUES (?, 'active_strategy_name', COALESCE((SELECT value FROM bot_settings WHERE key = 'active_strategy_name'), ''))
             ON CONFLICT(profile_name, setting_key) DO UPDATE SET setting_value = excluded.setting_value
             """, (profile_name,))
         cur.execute("DELETE FROM profile_instruments WHERE profile_name = ?", (profile_name,))
