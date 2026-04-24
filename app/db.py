@@ -196,7 +196,34 @@ def init_db():
 
         cur.execute("""UPDATE strategy_profiles SET is_active = 1 WHERE strategy_name = 'Сбалансированный'
         AND NOT EXISTS (SELECT 1 FROM strategy_profiles WHERE is_active = 1)""")
-        
+                # --- Очистка мусорных записей с пустыми именами ---
+        cur.execute("DELETE FROM settings_profiles WHERE TRIM(profile_name) = ''")
+        cur.execute("DELETE FROM strategy_profiles WHERE TRIM(strategy_name) = ''")
+
+        # --- Дефолтный профиль ---
+        cur.execute("""
+            INSERT OR IGNORE INTO settings_profiles(profile_name, is_active, created_at)
+            VALUES ('Основной', 1, datetime('now'))
+        """)
+        # Если ни один профиль не активен — активируем Основной
+        cur.execute("""
+            UPDATE settings_profiles SET is_active = 1
+            WHERE profile_name = 'Основной'
+            AND NOT EXISTS (SELECT 1 FROM settings_profiles WHERE is_active = 1)
+        """)
+
+        # --- Дефолтные стратегии ---
+        for sname in ['Консервативный', 'Сбалансированный', 'Агрессивный']:
+            cur.execute("""
+                INSERT OR IGNORE INTO strategy_profiles(strategy_name, is_active, created_at)
+                VALUES (?, 0, datetime('now'))
+            """, (sname,))
+        # Если ни одна стратегия не активна — активируем Сбалансированный
+        cur.execute("""
+            UPDATE strategy_profiles SET is_active = 1
+            WHERE strategy_name = 'Сбалансированный'
+            AND NOT EXISTS (SELECT 1 FROM strategy_profiles WHERE is_active = 1)
+        """)
         ensure_instruments_columns(cur)
 
 
@@ -465,14 +492,16 @@ def add_instrument(item: dict):
             lot, min_price_increment, lots_override, stop_loss_pct, take_profit_pct,
             max_spread_pct, min_volume, allow_long, allow_short, priority, enabled
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(figi) DO UPDATE SET
-            ticker=excluded.ticker,
-            name=excluded.name,
-            class_code=excluded.class_code,
-            instrument_type=excluded.instrument_type,
-            currency=excluded.currency,
-            lot=excluded.lot,
-            min_price_increment=excluded.min_price_increment
+            ON CONFLICT(figi) DO UPDATE SET
+                ticker=excluded.ticker,
+                name=excluded.name,
+                class_code=excluded.class_code,
+                instrument_type=excluded.instrument_type,
+                currency=excluded.currency,
+                lot=excluded.lot,
+                min_price_increment=excluded.min_price_increment,
+                enabled=excluded.enabled,
+                priority=excluded.priority
         """, (
                         item["ticker"],
             item["figi"],

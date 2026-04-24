@@ -883,24 +883,29 @@ async def api_instruments_add(request: Request):
         payload = await request.json()
     except Exception:
         return JSONResponse({"ok": False, "error": "Invalid JSON"}, status_code=400)
+
     items = payload if isinstance(payload, list) else payload.get("items", [])
     added = 0
+
+    # Читаем активный профиль ДО цикла — один раз
     with db_cursor() as cur:
         cur.execute("SELECT value FROM bot_settings WHERE key = 'active_profile_name'")
         row = cur.fetchone()
-        active_profile = row["value"] if row and row["value"] else "Основной"
+        active_profile = (row["value"] if row and row["value"] else "").strip() or "Основной"
+
     for item in items:
-        figi = item.get("figi", "")
+        figi = (item.get("figi") or "").strip()
         if not figi:
             continue
+
         add_instrument({
-            "ticker":              item.get("ticker", ""),
+            "ticker":              (item.get("ticker") or "").strip(),
             "figi":                figi,
             "name":                item.get("name", ""),
             "class_code":          item.get("class_code", item.get("classcode", "")),
             "instrument_type":     item.get("instrument_type", item.get("instrumenttype", "share")),
             "currency":            item.get("currency", "rub"),
-            "lot":                 int(item.get("lot", 1) or 1),
+            "lot":                 int(item.get("lot") or 1),
             "min_price_increment": str(item.get("min_price_increment", item.get("minpriceincrement", "0.01")) or "0.01"),
             "lots_override":       int(item.get("lots_override", item.get("lotsoverride", 1)) or 1),
             "stop_loss_pct":       str(item.get("stop_loss_pct", item.get("stoplosspct", "0.0025")) or "0.0025"),
@@ -910,14 +915,18 @@ async def api_instruments_add(request: Request):
             "allow_long":          int(item.get("allow_long", item.get("allowlong", 1)) or 1),
             "allow_short":         int(item.get("allow_short", item.get("allowshort", 1)) or 1),
             "priority":            int(item.get("priority", 100) or 100),
-            "enabled":             1,
+            "enabled":             1,  # всегда включаем при добавлении
         })
-        with db_cursor() as cur:
-            cur.execute("INSERT OR IGNORE INTO profile_instruments(profile_name, figi) VALUES (?, ?)",
-                       (active_profile, figi))
-        added += 1
-    return JSONResponse({"ok": True, "добавлено": added})
 
+        with db_cursor() as cur:
+            cur.execute("""
+                INSERT OR IGNORE INTO profile_instruments(profile_name, figi)
+                VALUES (?, ?)
+            """, (active_profile, figi))
+
+        added += 1
+
+    return JSONResponse({"ok": True, "добавлено": added})
 @app.post("/api/instruments/update")
 def api_instruments_update(
     figi: str = Form(...), lots_override: str = Form("1"), stop_loss_pct: str = Form("0.25"), take_profit_pct: str = Form("0.50"),
