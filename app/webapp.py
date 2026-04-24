@@ -885,6 +885,14 @@ async def api_instruments_add(request: Request):
             "lotsoverride": item.get("lotsoverride", 1), "stoplosspct": item.get("stoplosspct", "0.0025"), "takeprofitpct": item.get("takeprofitpct", "0.0050"), "maxspreadpct": item.get("maxspreadpct", "0"),
             "minvolume": item.get("minvolume", 0), "allowlong": item.get("allowlong", 1), "allowshort": item.get("allowshort", 1), "priority": item.get("priority", 100), "enabled": item.get("enabled", 1),
         })
+        with db_cursor() as cur:
+            cur.execute("SELECT value FROM bot_settings WHERE key = 'active_profile_name'")
+            row = cur.fetchone()
+            active_profile = row["value"] if row and row["value"] else "Основной"
+        cur.execute("""
+        INSERT OR IGNORE INTO profile_instruments(profile_name, figi)
+        VALUES (?, ?)
+        """, (active_profile, figi))
         added += 1
     return JSONResponse({"ok": True, "добавлено": added})
 

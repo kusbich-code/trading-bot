@@ -151,6 +151,14 @@ def init_db():
         )
         """)
         cur.execute("""
+        CREATE TABLE IF NOT EXISTS profile_instruments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            profile_name TEXT NOT NULL,
+            figi TEXT NOT NULL,
+            UNIQUE(profile_name, figi)
+        )
+        """)
+        cur.execute("""
         CREATE TABLE IF NOT EXISTS strategy_profiles (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             strategy_name TEXT NOT NULL UNIQUE,
@@ -456,21 +464,21 @@ def add_instrument(item: dict):
             lot=excluded.lot,
             min_price_increment=excluded.min_price_increment
         """, (
-            item["ticker"],
+                        item["ticker"],
             item["figi"],
             item.get("name", ""),
-            item.get("class_code", ""),
-            item.get("instrument_type", ""),
+            item.get("class_code", item.get("classcode", "")),
+            item.get("instrument_type", item.get("instrumenttype", "")),
             item.get("currency", ""),
             item.get("lot", 1),
-            item.get("min_price_increment", "0.01"),
-            item.get("lots_override", 1),
-            item.get("stop_loss_pct", "0.0025"),
-            item.get("take_profit_pct", "0.005"),
-            item.get("max_spread_pct", "0"),
-            item.get("min_volume", 0),
-            item.get("allow_long", 1),
-            item.get("allow_short", 1),
+            item.get("min_price_increment", item.get("minpriceincrement", "0.01")),
+            item.get("lots_override", item.get("lotsoverride", 1)),
+            item.get("stop_loss_pct", item.get("stoplosspct", "0.0025")),
+            item.get("take_profit_pct", item.get("takeprofitpct", "0.005")),
+            item.get("max_spread_pct", item.get("maxspreadpct", "0")),
+            item.get("min_volume", item.get("minvolume", 0)),
+            item.get("allow_long", item.get("allowlong", 1)),
+            item.get("allow_short", item.get("allowshort", 1)),
             item.get("priority", 100),
             item.get("enabled", 1),
         ))
@@ -669,6 +677,22 @@ def activate_settings_profile(profile_name: str):
         ON CONFLICT(key) DO UPDATE SET value = excluded.value
         """, (profile_name,))
 
+        cur.execute("UPDATE instruments SET enabled = 0")
+
+        cur.execute("""
+        SELECT figi
+        FROM profile_instruments
+        WHERE profile_name = ?
+        """, (profile_name,))
+        profile_figis = [row["figi"] for row in cur.fetchall()]
+
+        for figi in profile_figis:
+            cur.execute("""
+            UPDATE instruments
+            SET enabled = 1
+            WHERE figi = ?
+            """, (figi,))
+
 
 def save_current_settings_to_strategy(strategy_name: str):
     strategy_name = (strategy_name or "").strip()
@@ -794,6 +818,18 @@ def save_current_settings_to_profile(profile_name: str):
             VALUES (?, ?, ?)
             ON CONFLICT(profile_name, setting_key) DO UPDATE SET setting_value = excluded.setting_value
             """, (profile_name, row["key"], row["value"]))
+            cur.execute("""
+            INSERT INTO settings_profile_values(profile_name, setting_key, setting_value)
+            VALUES (?, 'active_strategy_name', COALESCE((SELECT value FROM bot_settings WHERE key = 'active_strategy_name'), 'Сбалансированный'))
+            ON CONFLICT(profile_name, setting_key) DO UPDATE SET setting_value = excluded.setting_value
+            """, (profile_name,))
+        cur.execute("DELETE FROM profile_instruments WHERE profile_name = ?", (profile_name,))
+        cur.execute("SELECT figi FROM instruments WHERE enabled = 1")
+        for row in cur.fetchall():
+            cur.execute("""
+            INSERT OR IGNORE INTO profile_instruments(profile_name, figi)
+            VALUES (?, ?)
+            """, (profile_name, row["figi"]))            
 
 
 def get_error_logs(limit=200, ticker=None, date_from=None, date_to=None):
