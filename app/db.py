@@ -187,6 +187,16 @@ def init_db():
             updated_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
         """)
+
+        cur.execute("""INSERT OR IGNORE INTO settings_profiles(profile_name, is_active, created_at)
+        VALUES ('Основной', 1, datetime('now'))""")
+        for sname in ['Консервативный', 'Сбалансированный', 'Агрессивный']:
+            cur.execute("""INSERT OR IGNORE INTO strategy_profiles(strategy_name, is_active, created_at)
+            VALUES (?, 0, datetime('now'))""", (sname,))
+
+        cur.execute("""UPDATE strategy_profiles SET is_active = 1 WHERE strategy_name = 'Сбалансированный'
+        AND NOT EXISTS (SELECT 1 FROM strategy_profiles WHERE is_active = 1)""")
+        
         ensure_instruments_columns(cur)
 
 
@@ -311,7 +321,7 @@ def set_setting(key, value):
     with db_cursor() as cur:
         cur.execute("""
         INSERT INTO bot_settings(key, value) VALUES (?, ?)
-        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        ON CONFLICT(key) DO UPDATE SET value = excluded.enabled
         """, (key, str(value)))
 
 

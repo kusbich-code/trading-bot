@@ -879,46 +879,43 @@ async def api_instruments_top(limit: int = 20):
 
 @app.post("/api/instruments/add")
 async def api_instruments_add(request: Request):
-    payload = await request.json()
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "Invalid JSON"}, status_code=400)
     items = payload if isinstance(payload, list) else payload.get("items", [])
     added = 0
-
+    with db_cursor() as cur:
+        cur.execute("SELECT value FROM bot_settings WHERE key = 'active_profile_name'")
+        row = cur.fetchone()
+        active_profile = row["value"] if row and row["value"] else "Основной"
     for item in items:
         figi = item.get("figi", "")
         if not figi:
             continue
-
         add_instrument({
-            "ticker": item.get("ticker", ""),
-            "figi": figi,
-            "name": item.get("name", ""),
-            "classcode": item.get("classcode", ""),
-            "instrumenttype": item.get("instrumenttype", item.get("instrument_type", "share")),
-            "currency": item.get("currency", "rub"),
-            "lot": item.get("lot", 1),
-            "minpriceincrement": item.get("minpriceincrement", item.get("min_price_increment", "0.01")),
-            "lotsoverride": item.get("lotsoverride", 1),
-            "stoplosspct": item.get("stoplosspct", "0.0025"),
-            "takeprofitpct": item.get("takeprofitpct", "0.0050"),
-            "maxspreadpct": item.get("maxspreadpct", "0"),
-            "minvolume": item.get("minvolume", 0),
-            "allowlong": item.get("allowlong", 1),
-            "allowshort": item.get("allowshort", 1),
-            "priority": item.get("priority", 100),
-            "enabled": item.get("enabled", 1),
+            "ticker":              item.get("ticker", ""),
+            "figi":                figi,
+            "name":                item.get("name", ""),
+            "class_code":          item.get("class_code", item.get("classcode", "")),
+            "instrument_type":     item.get("instrument_type", item.get("instrumenttype", "share")),
+            "currency":            item.get("currency", "rub"),
+            "lot":                 int(item.get("lot", 1) or 1),
+            "min_price_increment": str(item.get("min_price_increment", item.get("minpriceincrement", "0.01")) or "0.01"),
+            "lots_override":       int(item.get("lots_override", item.get("lotsoverride", 1)) or 1),
+            "stop_loss_pct":       str(item.get("stop_loss_pct", item.get("stoplosspct", "0.0025")) or "0.0025"),
+            "take_profit_pct":     str(item.get("take_profit_pct", item.get("takeprofitpct", "0.005")) or "0.005"),
+            "max_spread_pct":      str(item.get("max_spread_pct", item.get("maxspreadpct", "0")) or "0"),
+            "min_volume":          int(item.get("min_volume", item.get("minvolume", 0)) or 0),
+            "allow_long":          int(item.get("allow_long", item.get("allowlong", 1)) or 1),
+            "allow_short":         int(item.get("allow_short", item.get("allowshort", 1)) or 1),
+            "priority":            int(item.get("priority", 100) or 100),
+            "enabled":             1,
         })
-
         with db_cursor() as cur:
-            cur.execute("SELECT value FROM bot_settings WHERE key = 'active_profile_name'")
-            row = cur.fetchone()
-            active_profile = row["value"] if row and row["value"] else "Основной"
-            cur.execute("""
-            INSERT OR IGNORE INTO profile_instruments(profile_name, figi)
-            VALUES (?, ?)
-            """, (active_profile, figi))
-
+            cur.execute("INSERT OR IGNORE INTO profile_instruments(profile_name, figi) VALUES (?, ?)",
+                       (active_profile, figi))
         added += 1
-
     return JSONResponse({"ok": True, "добавлено": added})
 
 @app.post("/api/instruments/update")
