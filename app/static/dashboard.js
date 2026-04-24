@@ -697,7 +697,6 @@ async function renderSettingsTab() {
       <h2>Риск и стратегия</h2>
       <form id="strategySettingsForm" class="form-grid">
         <label>Сделок/день<input class="field" name="max_trades_per_day" value="${esc(s.max_trades_per_day || 15)}"></label>
-        <label>Сделок/день<input class="field" name="max_trades_per_day" value="${esc(s.max_trades_per_day || 15)}"></label>
         <label>Лимит убытка<input class="field" name="max_daily_loss_rub" value="${esc(s.max_daily_loss_rub_ui || 0)}"></label>
         <label>Позиций макс<input class="field" name="max_open_positions" value="${esc(s.max_open_positions || 2)}"></label>
         <label>Пауза, сек<input class="field" name="pause_after_error_sec" value="${esc(s.pause_after_error_sec || 10)}"></label>
@@ -725,9 +724,6 @@ async function renderSettingsTab() {
         <div class="row-buttons">
           <button type="button" class="btn btn-primary" id="btnSaveStrategySettings">Сохранить стратегию</button>
         </div>
-        <div class="row-buttons">
-          <button type="button" class="btn btn-primary" id="btnSaveStrategySettings">Сохранить стратегию</button>
-        </div>
       </form>
     </section>
 
@@ -743,7 +739,7 @@ async function renderSettingsTab() {
       <div class="table-wrap">
         <table>
           <thead>
-            <tr><th>Профиль</th><th>Активен</th><th>Создан</th><th>Действие</th></tr>
+            <tr><th>Профиль</th><th>Активен</th><th>Создан</th><th>Выбрать</th><th>Удалить</th></tr>
           </thead>
           <tbody>
             ${(data.profiles || []).map((p) => `
@@ -752,20 +748,25 @@ async function renderSettingsTab() {
                 <td>${p.is_active === 1 ? "Да" : "Нет"}</td>
                 <td>${esc(p.created_at)}</td>
                 <td><button class="btn" data-activate-profile="${esc(p.profile_name)}">Активировать</button></td>
-                <td><button class="btn btn-danger" data-delete-profile="${esc(p.profile_name)}" ${p.is_active === 1 ? "disabled title='Нельзя удалить активный профиль'" : ""} style="background:#c0392b;opacity:${p.is_active === 1 ? '0.4' : '1'}">Удалить</button></td>
+                <td><button class="btn btn-danger" data-delete-profile="${esc(p.profile_name)}" ${p.is_active === 1 ? "disabled title='Нельзя удалить активный профиль'" : ""}>Удалить</button></td>
               </tr>
             `).join("")}
           </tbody>
         </table>
       </div>
-    </section>
 
     <section class="block">
-      <h2>Стратегии</h2>
+      <div class="row between">
+        <h2>Стратегии</h2>
+        <div class="row">
+          <input class="field" id="newStrategyName" type="text" placeholder="Имя стратегии">
+          <button class="btn" id="btnCreateStrategy">Создать стратегию</button>
+        </div>
+      </div>
       <div class="table-wrap">
         <table>
           <thead>
-            <tr><th>Стратегия</th><th>Активна</th><th>Создана</th><th>Выбрать</th><th>Сохранить</th></tr>
+            <tr><th>Стратегия</th><th>Активна</th><th>Создана</th><th>Выбрать</th><th>Сохранить</th><th>Удалить</th></tr>
           </thead>
           <tbody>
             ${(data.strategies || []).map((x) => `
@@ -775,7 +776,7 @@ async function renderSettingsTab() {
                 <td>${esc(x.created_at)}</td>
                 <td><button class="btn" data-activate-strategy="${esc(x.strategy_name)}">Активировать</button></td>
                 <td><button class="btn" data-save-strategy="${esc(x.strategy_name)}">Сохранить</button></td>
-                <td><button class="btn btn-danger" data-delete-strategy="${esc(x.strategy_name)}" ${x.is_active === 1 ? "disabled title='Нельзя удалить активную стратегию'" : ""} style="background:#c0392b;opacity:${x.is_active === 1 ? '0.4' : '1'}">Удалить</button></td>
+                <td><button class="btn btn-danger" data-delete-strategy="${esc(x.strategy_name)}" ${x.is_active === 1 ? "disabled title='Нельзя удалить активную стратегию'" : ""}>Удалить</button></td>
               </tr>
             `).join("")}
           </tbody>
@@ -823,6 +824,7 @@ async function renderSettingsTab() {
   `;
 
   document.getElementById("btnSaveSystemSettings")?.addEventListener("click", saveSystemSettings);
+  document.getElementById("btnCreateStrategy")?.addEventListener("click", createStrategy);
   document.getElementById("btnSaveStrategySettings")?.addEventListener("click", saveStrategySettings);
   document.getElementById("btnCreateProfile")?.addEventListener("click", createProfile);
   document.getElementById("btnOpenAddInstrument")?.addEventListener("click", openAddInstrumentModal);
@@ -1337,6 +1339,23 @@ async function createProfile() {
     await renderSummaryCards();
   } catch (e) {
     showToast(`Ошибка создания профиля: ${e.message}`, "error");
+  }
+}
+
+async function createStrategy() {
+  const name = document.getElementById("newStrategyName")?.value?.trim() || "";
+  if (!name) {
+    showToast("Укажи имя стратегии", "error");
+    return;
+  }
+
+  try {
+    await apiPostForm("/api/стратегии/сохранить", { strategy_name: name });
+    showToast(`Стратегия "${name}" сохранена`, "success");
+    await renderSettingsTab();
+    await renderSummaryCards();
+  } catch (e) {
+    showToast(`Ошибка создания стратегии: ${e.message}`, "error");
   }
 }
 
