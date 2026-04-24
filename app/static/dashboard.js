@@ -1333,11 +1333,11 @@ async function createProfile() {
     return;
   }
 
-  try {
+    try {
     await apiPostForm("/api/профили/создать", { profile_name: name });
+    showToast("Профиль создан", "success");
     const input = document.getElementById("newProfileName");
     if (input) input.value = "";
-    showToast("Профиль создан", "success");
     await renderSettingsTab();
     await renderSummaryCards();
   } catch (e) {
@@ -1359,6 +1359,7 @@ async function createStrategy() {
     if (input) input.value = "";
     await renderSettingsTab();
     await renderSummaryCards();
+    await renderMainData();
   } catch (e) {
     showToast(`Ошибка создания стратегии: ${e.message}`, "error");
   }
@@ -1402,6 +1403,7 @@ async function activateStrategy(name) {
     showToast(`Стратегия "${name}" активирована`, "success");
     await renderSettingsTab();
     await renderSummaryCards();
+    await renderMainData();
   } catch (e) {
     showToast(`Ошибка активации стратегии: ${e.message}`, "error");
   }
@@ -1431,6 +1433,8 @@ async function saveStrategy(name) {
     await apiPostForm("/api/стратегии/сохранить", { strategy_name: name });
     showToast(`Стратегия "${name}" сохранена`, "success");
     await renderSettingsTab();
+    await renderMainData();
+    await renderSummaryCards();
   } catch (e) {
     showToast(`Ошибка сохранения стратегии: ${e.message}`, "error");
   }

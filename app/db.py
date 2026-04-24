@@ -645,6 +645,9 @@ def create_settings_profile(profile_name: str):
         raise ValueError("Имя профиля не может быть пустым")
 
     with db_cursor() as cur:
+        cur.execute("SELECT 1 FROM settings_profiles WHERE profile_name = ?", (profile_name,))
+        if cur.fetchone():
+            raise ValueError("Профиль с таким именем уже существует")
         cur.execute("""
         INSERT OR IGNORE INTO settings_profiles(profile_name, is_active)
         VALUES (?, 0)
@@ -658,6 +661,22 @@ def create_settings_profile(profile_name: str):
             VALUES (?, ?, ?)
             ON CONFLICT(profile_name, setting_key) DO UPDATE SET setting_value = excluded.setting_value
             """, (profile_name, row["key"], row["value"]))
+
+        cur.execute("SELECT value FROM bot_settings WHERE key = 'active_profile_name'")
+        row = cur.fetchone()
+        active_profile = row["value"] if row and row["value"] else None
+
+        if active_profile:
+            cur.execute("""
+            SELECT figi
+            FROM profile_instruments
+            WHERE profile_name = ?
+            """, (active_profile,))
+            for row in cur.fetchall():
+                cur.execute("""
+                INSERT OR IGNORE INTO profile_instruments(profile_name, figi)
+                VALUES (?, ?)
+                """, (profile_name, row["figi"]))
 
 
 def delete_settings_profile(profile_name: str):
@@ -739,6 +758,10 @@ def save_current_settings_to_strategy(strategy_name: str):
         raise ValueError("Имя стратегии не может быть пустым")
 
     with db_cursor() as cur:
+        cur.execute("SELECT 1 FROM strategy_profiles WHERE strategy_name = ?", (strategy_name,))
+        if cur.fetchone():
+            raise ValueError("Стратегия с таким именем уже существует")
+        
         cur.execute("""
         INSERT OR IGNORE INTO strategy_profiles(strategy_name, is_active)
         VALUES (?, 0)
