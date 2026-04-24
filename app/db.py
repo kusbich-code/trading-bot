@@ -650,9 +650,9 @@ def delete_settings_profile(profile_name: str):
         if int(row["is_active"]) == 1:
             raise ValueError("Нельзя удалить активный профиль")
 
+        cur.execute("DELETE FROM profile_instruments WHERE profile_name = ?", (profile_name,))
         cur.execute("DELETE FROM settings_profile_values WHERE profile_name = ?", (profile_name,))
         cur.execute("DELETE FROM settings_profiles WHERE profile_name = ?", (profile_name,))
-
 
 def activate_settings_profile(profile_name: str):
     profile_name = (profile_name or "").strip()

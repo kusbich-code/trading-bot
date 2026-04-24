@@ -754,6 +754,7 @@ async function renderSettingsTab() {
           </tbody>
         </table>
       </div>
+    </section>
 
     <section class="block">
       <div class="row between">
@@ -1334,6 +1335,8 @@ async function createProfile() {
 
   try {
     await apiPostForm("/api/профили/создать", { profile_name: name });
+    const input = document.getElementById("newProfileName");
+    if (input) input.value = "";
     showToast("Профиль создан", "success");
     await renderSettingsTab();
     await renderSummaryCards();
@@ -1352,6 +1355,8 @@ async function createStrategy() {
   try {
     await apiPostForm("/api/стратегии/сохранить", { strategy_name: name });
     showToast(`Стратегия "${name}" сохранена`, "success");
+    const input = document.getElementById("newStrategyName");
+    if (input) input.value = "";
     await renderSettingsTab();
     await renderSummaryCards();
   } catch (e) {
@@ -1361,13 +1366,10 @@ async function createStrategy() {
 
 async function activateProfile(name) {
   try {
-   await fetch('/api/профили/активировать', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ profile_name: profileName })
-      });
+    await apiPostForm("/api/профили/активировать", { profile_name: name });
     showToast(`Профиль "${name}" активирован`, "success");
     await renderSettingsTab();
+    await renderMainData();
     await renderSummaryCards();
   } catch (e) {
     showToast(`Ошибка активации профиля: ${e.message}`, "error");
@@ -1383,7 +1385,9 @@ async function deleteProfile(name) {
     const d = await r.json();
     if (d.ok) {
       showToast(`Профиль "${name}" удалён`, "success");
-      loadSettingsTab();
+      await renderSettingsTab();
+      await renderMainData();
+      await renderSummaryCards();
     } else {
       showToast(d.detail || "Ошибка удаления профиля", "error");
     }
@@ -1412,7 +1416,8 @@ async function deleteStrategy(name) {
     const d = await r.json();
     if (d.ok) {
       showToast(`Стратегия "${name}" удалена`, "success");
-      loadSettingsTab();
+      await renderSettingsTab();
+      await renderSummaryCards();
     } else {
       showToast(d.detail || "Ошибка удаления стратегии", "error");
     }
