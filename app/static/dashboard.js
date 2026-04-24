@@ -1151,55 +1151,6 @@ function closeAddInstrumentModal() {
   document.getElementById("modalAddInstrument")?.classList.add("hidden");
 }
 
-function renderInstrumentSearchRows(items) {
-  const host = document.getElementById("instrumentSearchBody");
-  if (!host) return;
-
-  if (!items || !items.length) {
-    host.innerHTML = `<tr><td colspan="11" class="note">Ничего не найдено</td></tr>`;
-    return;
-  }
-
-  host.innerHTML = items.map(item => `
-    <tr>
-      <td>
-        <button class="btn" data-add-instrument
-          data-ticker="${esc(item.ticker)}"
-          data-figi="${esc(item.figi)}"
-          data-name="${esc(item.name || "")}">
-          Добавить
-        </button>
-      </td>
-      <td><strong>${esc(item.ticker || "—")}</strong></td>
-      <td style="min-width:280px;white-space:normal;">${esc(item.name || "—")}</td>
-      <td class="muted" style="font-size:12px;">${esc(item.figi || "—")}</td>
-      <td><span class="pill">${esc(item.instrumenttype || item.instrument_type || "—")}</span></td>
-      <td>${esc(item.currency || "—")}</td>
-      <td>${esc(item.lot ?? "—")}</td>
-      <td>${esc(item.minpriceincrement || item.min_price_increment || "—")}</td>
-      <td>${esc(item.last_price || item.lastprice || "—")}</td>
-      <td>${esc(item.price_time || item.pricetime || "—")}</td>
-      <td>${esc(item.score ?? "—")}</td>
-    </tr>
-  `).join("");
-
-  host.querySelectorAll("[data-add-instrument]").forEach((btn) => {
-    btn.addEventListener("click", async () => {
-      try {
-        await apiPostForm("/api/instruments/add-one", {
-          ticker: btn.dataset.ticker,
-          figi: btn.dataset.figi,
-          name: btn.dataset.name,
-        });
-        showToast(`Инструмент ${btn.dataset.ticker} добавлен`, "success");
-        await renderSettingsTab();
-        await renderMainData();
-      } catch (e) {
-        showToast(`Ошибка добавления: ${e.message}`, "error");
-      }
-    });
-  });
-}
 
 function normalizeInstrumentForAdd(item) {
   const classCode = item.class_code || item.classcode || "";
@@ -1211,8 +1162,12 @@ function normalizeInstrumentForAdd(item) {
     name: item.name || "",
     classcode: classCode,
     instrumenttype: instrumentType,
+    currency: item.currency || "",
     lot: Number(item.lot || 1),
     minpriceincrement: String(item.min_price_increment || item.minpriceincrement || "0.01"),
+    last_price: item.last_price || item.price || "",
+    price_time: item.price_time || item.updated_at || "",
+    score: item.score ?? "",
     lotsoverride: 1,
     stoplosspct: "0.0025",
     takeprofitpct: "0.0050",

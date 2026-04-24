@@ -346,31 +346,33 @@ def dashboard_page(request: Request):
 
   <div id=\"toastHost\" class=\"toast-host\"></div>
 
-  <div id=\"modalAddInstrument\" class=\"modal hidden\">
-    <div class=\"modal-box\">
-      <div class=\"row between\">
-        <h2>Добавить инструменты</h2>
-            <div class="row">
-            <input id="instrumentSearchInput" class="field" type="text" placeholder="Тикер или название">
-            <button class="btn" onclick="searchInstruments()">Поиск</button>
-            <button class="btn" onclick="loadTopVolumeInstruments()">Топ</button>
-            <button class="btn" onclick="selectAllInstrumentSearchRows()">Выделить все</button>
-            <button class="btn" onclick="clearAllInstrumentSearchRows()">Снять все</button>
-            <button class="btn btn-primary" onclick="acceptSelectedInstruments()">Добавить выбранные</button>
-            <button class="btn btn-danger" onclick="closeAddInstrumentModal()">Закрыть</button>
-            </div>        
-        </div>
-      </div>
-      <div class=\"table-wrap\">
-        <table>
-          <thead>
-            <tr><th>Выб.</th><th>Тикер</th><th>Название</th><th>FIGI</th><th>Тип</th><th>Валюта</th><th>Лот</th><th>Шаг</th><th>Цена</th><th>Время</th><th>Скор</th></tr>
-          </thead>
-          <tbody id=\"instrumentSearchRows\"></tbody>
-        </table>
+  <div id="modalAddInstrument" class="modal hidden">
+  <div class="modal-box">
+    <div class="row between">
+      <h2>Добавить инструменты</h2>
+      <div class="row">
+        <input id="instrumentSearchInput" class="field" type="text" placeholder="Тикер или название">
+        <button class="btn" onclick="searchInstruments()">Поиск</button>
+        <button class="btn" onclick="loadTopVolumeInstruments()">Топ</button>
+        <button class="btn" onclick="selectAllInstrumentSearchRows()">Выделить все</button>
+        <button class="btn" onclick="clearAllInstrumentSearchRows()">Снять все</button>
+        <button class="btn btn-primary" onclick="acceptSelectedInstruments()">Добавить выбранные</button>
+        <button class="btn btn-danger" onclick="closeAddInstrumentModal()">Закрыть</button>
       </div>
     </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Выб.</th><th>Тикер</th><th>Название</th><th>FIGI</th><th>Тип</th><th>Валюта</th><th>Лот</th><th>Шаг</th><th>Цена</th><th>Время</th><th>Скор</th>
+          </tr>
+        </thead>
+        <tbody id="instrumentSearchRows"></tbody>
+      </table>
+    </div>
   </div>
+</div>
 
   <script src=\"https://cdn.plot.ly/plotly-2.35.2.min.js\"></script>
   <script src=\"/static/dashboard.js?v=4.0\"></script>
