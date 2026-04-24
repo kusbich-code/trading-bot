@@ -1125,7 +1125,7 @@ function closeAddInstrumentModal() {
 }
 
 function renderInstrumentSearchRows(items) {
-  const host = document.getElementById("instrumentSearchRows");
+  const host = document.getElementById("instrumentSearchBody");
   if (!host) return;
 
   if (!items || !items.length) {

@@ -78,6 +78,13 @@ def safe_decimal(value: Any, default: Decimal = Decimal("0")) -> Decimal:
     except (InvalidOperation, TypeError, ValueError):
         return default
 
+def quotation_to_decimal(q) -> str:
+    if q is None:
+        return ""
+    units = getattr(q, "units", 0) or 0
+    nano = getattr(q, "nano", 0) or 0
+    value = Decimal(str(units)) + (Decimal(str(nano)) / Decimal("1000000000"))
+    return format(value.normalize(), "f")
 
 def fmt_money(value: Any) -> str:
     return f"{safe_decimal(value):.2f}"
