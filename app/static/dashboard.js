@@ -689,7 +689,6 @@ async function renderSettingsTab() {
         <div class="row">
           <input class="field" id="newProfileName" type="text" placeholder="Имя профиля">
           <button class="btn" id="btnCreateProfile">Создать профиль</button>
-          <button class="btn" id="btnOpenAddInstrument">Добавить инструмент</button>
         </div>
       </div>
 
@@ -738,6 +737,7 @@ async function renderSettingsTab() {
 
     <section class="block">
       <h2>Инструменты</h2>
+      <button class="btn" id="btnOpenAddInstrument">Добавить инструмент</button>
       ${(data.instruments || []).map((i) => `
         <form class="form-grid instrument-form block" data-figi="${esc(i.figi)}">
           <label>Тикер<input class="field" value="${esc(i.ticker)}" disabled></label>

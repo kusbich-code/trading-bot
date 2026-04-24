@@ -350,7 +350,7 @@ def dashboard_page(request: Request):
           <thead>
             <tr><th>Выб.</th><th>Тикер</th><th>Название</th><th>FIGI</th><th>Тип</th><th>Валюта</th><th>Лот</th><th>Шаг</th><th>Цена</th><th>Время</th><th>Скор</th></tr>
           </thead>
-          <tbody id=\"instrumentSearchBody\"></tbody>
+          <tbody id=\"instrumentSearchRows\"></tbody>
         </table>
       </div>
     </div>
@@ -784,48 +784,18 @@ async def api_instruments_top(limit: int = 20):
 @app.post("/api/instruments/add")
 async def api_instruments_add(request: Request):
     payload = await request.json()
-    items = payload.get("items", [])
+    items = payload if isinstance(payload, list) else payload.get("items", [])
     added = 0
     for item in items:
-        if not item.get("использовать"):
-            continue
         add_instrument({
             "ticker": item.get("ticker", ""), "figi": item.get("figi", ""), "name": item.get("name", ""),
-            "classcode": "", "instrumenttype": item.get("instrument_type", ""), "currency": item.get("currency", ""),
-            "lot": item.get("lot", 1), "minpriceincrement": item.get("min_price_increment", "0.01"),
-            "lotsoverride": 1, "stoplosspct": "0.0025", "takeprofitpct": "0.005", "maxspreadpct": "0",
-            "minvolume": 0, "allowlong": 1, "allowshort": 1, "priority": 100, "enabled": 1,
+            "classcode": item.get("classcode", ""), "instrumenttype": item.get("instrumenttype", item.get("instrument_type", "share")), "currency": item.get("currency", "rub"),
+            "lot": item.get("lot", 1), "minpriceincrement": item.get("minpriceincrement", item.get("min_price_increment", "0.01")),
+            "lotsoverride": item.get("lotsoverride", 1), "stoplosspct": item.get("stoplosspct", "0.0025"), "takeprofitpct": item.get("takeprofitpct", "0.0050"), "maxspreadpct": item.get("maxspreadpct", "0"),
+            "minvolume": item.get("minvolume", 0), "allowlong": item.get("allowlong", 1), "allowshort": item.get("allowshort", 1), "priority": item.get("priority", 100), "enabled": item.get("enabled", 1),
         })
         added += 1
     return JSONResponse({"ok": True, "добавлено": added})
-
-@app.post("/api/instruments/add-one")
-def api_instruments_add_one(
-    ticker: str = Form(...),
-    figi: str = Form(...),
-    name: str = Form(""),
-):
-    add_instrument({
-        "ticker": ticker,
-        "figi": figi,
-        "name": name,
-        "classcode": "",
-        "instrumenttype": "share",
-        "currency": "rub",
-        "lot": 1,
-        "minpriceincrement": "0.01",
-        "lotsoverride": 1,
-        "stoplosspct": "0.0025",
-        "takeprofitpct": "0.0050",
-        "maxspreadpct": "0",
-        "minvolume": 0,
-        "allowlong": 1,
-        "allowshort": 1,
-        "priority": 100,
-        "enabled": 1,
-    })
-    log_event("INSTRUMENT_ADD", f"added instrument {ticker}", ticker=ticker)
-    return {"ok": True, "ticker": ticker, "figi": figi}
 
 @app.post("/api/instruments/update")
 def api_instruments_update(
