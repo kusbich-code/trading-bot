@@ -880,8 +880,12 @@ async def api_instruments_add(request: Request):
     payload = await request.json()
     items = payload if isinstance(payload, list) else payload.get("items", [])
     added = 0
+
     for item in items:
         figi = item.get("figi", "")
+        if not figi:
+            continue
+
         add_instrument({
             "ticker": item.get("ticker", ""),
             "figi": figi,
@@ -911,8 +915,9 @@ async def api_instruments_add(request: Request):
             VALUES (?, ?)
             """, (active_profile, figi))
 
-        added += 1   
-        return JSONResponse({"ok": True, "добавлено": added})
+        added += 1
+
+    return JSONResponse({"ok": True, "добавлено": added})
 
 @app.post("/api/instruments/update")
 def api_instruments_update(
