@@ -678,6 +678,12 @@ async def api_instruments_search(q: str, kind: str = "shares"):
                 "instrument_type": str(getattr(inst, "instrument_type", "") or ""),
                 "uid": getattr(inst, "uid", "") or "",
                 "position_uid": getattr(inst, "position_uid", "") or "",
+                "currency": str(getattr(inst, "currency", "") or "").upper(),
+                "lot": getattr(inst, "lot", None),
+                "min_price_increment": quotation_to_decimal(getattr(inst, "min_price_increment", None)) if getattr(inst, "min_price_increment", None) else None,
+                "api_trade_available_flag": bool(getattr(inst, "api_trade_available_flag", False)),
+                "for_qual_investor_flag": bool(getattr(inst, "for_qual_investor_flag", False)),
+                "liquidity_flag": bool(getattr(inst, "liquidity_flag", False)),
             })
 
         if kind == "shares":
@@ -721,10 +727,25 @@ async def api_instruments_search(q: str, kind: str = "shares"):
             elif x["class_code"] in ("SMAL", "SPEQ", "BEB", "RDL"):
                 score -= 50
 
+            if x.get("api_trade_available_flag"):
+                score += 100
+            if x.get("liquidity_flag"):
+                score += 80
+            if x.get("for_qual_investor_flag"):
+                score -= 500
+
             return score
 
         items.sort(key=lambda x: (-score_item(x), x["ticker"], x["name"]))
-        return items[:20]
+        result = []
+        for x in items[:20]:
+            row = dict(x)
+            row["score"] = score_item(x)
+            row["classcode"] = row.get("class_code", "")
+            row["instrumenttype"] = row.get("instrument_type", "")
+            row["minpriceincrement"] = str(row.get("min_price_increment") or "")
+            result.append(row)
+        return result
 
     except Exception as e:
         logger.exception("Ошибка поиска инструментов")
@@ -743,10 +764,18 @@ async def api_instruments_top(limit: int = 20):
                 "figi": getattr(inst, "figi", "") or "",
                 "name": getattr(inst, "name", "") or "",
                 "class_code": getattr(inst, "class_code", "") or "",
+                "classcode": getattr(inst, "class_code", "") or "",
                 "instrument_type": "share",
+                "instrumenttype": "share",
+                "currency": str(getattr(inst, "currency", "") or "").upper(),
+                "lot": getattr(inst, "lot", None),
+                "min_price_increment": quotation_to_decimal(getattr(inst, "min_price_increment", None)) if getattr(inst, "min_price_increment", None) else None,
+                "minpriceincrement": str(quotation_to_decimal(getattr(inst, "min_price_increment", None))) if getattr(inst, "min_price_increment", None) else "",
                 "api_trade_available_flag": bool(getattr(inst, "api_trade_available_flag", False)),
                 "for_qual_investor_flag": bool(getattr(inst, "for_qual_investor_flag", False)),
                 "liquidity_flag": bool(getattr(inst, "liquidity_flag", False)),
+                "last_price": "",
+                "price_time": "",
             }
             items.append(item)
 
@@ -772,10 +801,17 @@ async def api_instruments_top(limit: int = 20):
                 score += 500
             if x["liquidity_flag"]:
                 score += 100
+            if x["api_trade_available_flag"]:
+                score += 50
             return score
 
         filtered.sort(key=lambda x: (-top_score(x), x["ticker"], x["name"]))
-        return filtered[:limit]
+        result = []
+        for x in filtered[:limit]:
+            row = dict(x)
+            row["score"] = top_score(x)
+            result.append(row)
+        return result
 
     except Exception as e:
         logger.exception("Ошибка top-20 инструментов")

@@ -1129,33 +1129,32 @@ function renderInstrumentSearchRows(items) {
   if (!host) return;
 
   if (!items || !items.length) {
-    host.innerHTML = `<div class="note">Ничего не найдено</div>`;
+    host.innerHTML = `<tr><td colspan="11" class="note">Ничего не найдено</td></tr>`;
     return;
   }
 
-  host.innerHTML = `
-    <div class="note" style="margin-bottom: 12px;">Популярные инструменты из T-Bank, нажми «Добавить»</div>
-    ${items.map(item => `
-      <div class="instrument-row">
-        <div class="instrument-main">
-          <div class="instrument-title">${esc(item.ticker)} — ${esc(item.name)}</div>
-          <div class="instrument-meta">
-            <span class="pill">${esc(item.classcode || "—")}</span>
-            <span class="pill">${esc(item.instrumenttype || item.instrument_type || "—")}</span>
-            <span class="muted">${esc(item.figi)}</span>
-          </div>
-        </div>
-        <div>
-          <button class="btn" data-add-instrument
-            data-ticker="${esc(item.ticker)}"
-            data-figi="${esc(item.figi)}"
-            data-name="${esc(item.name || "")}">
-            Добавить
-          </button>
-        </div>
-      </div>
-    `).join("")}
-  `;
+  host.innerHTML = items.map(item => `
+    <tr>
+      <td>
+        <button class="btn" data-add-instrument
+          data-ticker="${esc(item.ticker)}"
+          data-figi="${esc(item.figi)}"
+          data-name="${esc(item.name || "")}">
+          Добавить
+        </button>
+      </td>
+      <td><strong>${esc(item.ticker || "—")}</strong></td>
+      <td style="min-width:280px;white-space:normal;">${esc(item.name || "—")}</td>
+      <td class="muted" style="font-size:12px;">${esc(item.figi || "—")}</td>
+      <td><span class="pill">${esc(item.instrumenttype || item.instrument_type || "—")}</span></td>
+      <td>${esc(item.currency || "—")}</td>
+      <td>${esc(item.lot ?? "—")}</td>
+      <td>${esc(item.minpriceincrement || item.min_price_increment || "—")}</td>
+      <td>${esc(item.last_price || "—")}</td>
+      <td>${esc(item.price_time || "—")}</td>
+      <td>${esc(item.score ?? "—")}</td>
+    </tr>
+  `).join("");
 
   host.querySelectorAll("[data-add-instrument]").forEach((btn) => {
     btn.addEventListener("click", async () => {
@@ -1225,39 +1224,56 @@ async function loadTopVolumeInstruments() {
   }
 }
 
-async function acceptSelectedInstruments() {
-  try {
-    const checks = Array.from(document.querySelectorAll("[data-instrument-pick]"));
-    const items = checks
-      .filter(ch => ch.checked)
-      .map(ch => instrumentSearchData[Number(ch.dataset.idx)])
-      .filter(Boolean)
-      .map(normalizeInstrumentForAdd);
+function renderInstrumentSearchRows(items) {
+  const host = document.getElementById("instrumentSearchRows");
+  if (!host) return;
 
-    if (!items.length) {
-      showToast("Выбери хотя бы один инструмент", "error");
-      return;
-    }
-
-    const r = await fetch("/api/instruments/add", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(items),
-      credentials: "same-origin",
-    });
-
-    const data = await r.json();
-    if (!r.ok) throw new Error(data?.detail || data?.message || `HTTP ${r.status}`);
-
-    showToast(data.message || "Инструменты добавлены", "success");
-    closeAddInstrumentModal();
-
-    if (getTabFromHash() === "settings") await renderSettingsTab();
-    await renderMainShell();
-    await renderMainData();
-  } catch (e) {
-    showToast(e.message, "error");
+  if (!items || !items.length) {
+    host.innerHTML = `<tr><td colspan="11" class="note">Ничего не найдено</td></tr>`;
+    return;
   }
+
+  host.innerHTML = items.map(item => `
+    <tr>
+      <td style="width:72px;">
+        <button
+          class="btn"
+          data-add-instrument
+          data-ticker="${esc(item.ticker)}"
+          data-figi="${esc(item.figi)}"
+          data-name="${esc(item.name || "")}">
+          Добавить
+        </button>
+      </td>
+      <td><strong>${esc(item.ticker || "—")}</strong></td>
+      <td style="min-width:260px;">${esc(item.name || "—")}</td>
+      <td class="muted" style="font-size:12px;">${esc(item.figi || "—")}</td>
+      <td><span class="pill">${esc(item.instrumenttype || item.instrument_type || "—")}</span></td>
+      <td>${esc(item.currency || "—")}</td>
+      <td>${esc(item.lot ?? "—")}</td>
+      <td>${esc(item.minpriceincrement || item.min_price_increment || "—")}</td>
+      <td>${esc(item.last_price || item.price || "—")}</td>
+      <td>${esc(item.price_time || item.updated_at || "—")}</td>
+      <td>${esc(item.score ?? "—")}</td>
+    </tr>
+  `).join("");
+
+  host.querySelectorAll("[data-add-instrument]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      try {
+        await apiPostForm("/api/instruments/add-one", {
+          ticker: btn.dataset.ticker,
+          figi: btn.dataset.figi,
+          name: btn.dataset.name,
+        });
+        showToast(`Инструмент ${btn.dataset.ticker} добавлен`, "success");
+        await renderSettingsTab();
+        await renderMainData();
+      } catch (e) {
+        showToast(`Ошибка добавления: ${e.message}`, "error");
+      }
+    });
+  });
 }
 
 async function closeOnePosition(figi, qty, direction) {
