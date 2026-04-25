@@ -767,7 +767,7 @@ async function renderSettingsTab() {
       <div class="table-wrap">
         <table>
           <thead>
-            <tr><th>Стратегия</th><th>Активна</th><th>Создана</th><th>Выбрать</th><th>Сохранить</th><th>Удалить</th></tr>
+            <tr><th>Стратегия</th><th>Активна</th><th>Создана</th><th>Выбрать</th><th>Удалить</th></tr>
           </thead>
           <tbody>
             ${(data.strategies || []).map((x) => `
@@ -776,7 +776,6 @@ async function renderSettingsTab() {
                 <td>${x.is_active === 1 ? "Да" : "Нет"}</td>
                 <td>${esc(x.created_at)}</td>
                 <td><button class="btn" data-activate-strategy="${esc(x.strategy_name)}">Активировать</button></td>
-                <td><button class="btn" data-save-strategy="${esc(x.strategy_name)}">Сохранить</button></td>
                 <td><button class="btn btn-danger" data-delete-strategy="${esc(x.strategy_name)}" ${x.is_active === 1 ? "disabled title='Нельзя удалить активную стратегию'" : ""}>Удалить</button></td>
               </tr>
             `).join("")}
@@ -847,9 +846,6 @@ host.querySelectorAll("[data-delete-profile]").forEach((btn) => {
 });
 host.querySelectorAll("[data-activate-strategy]").forEach((btn) => {
   btn.addEventListener("click", () => activateStrategy(btn.dataset.activateStrategy));
-});
-host.querySelectorAll("[data-save-strategy]").forEach((btn) => {
-  btn.addEventListener("click", () => saveStrategy(btn.dataset.saveStrategy));
 });
 host.querySelectorAll("[data-delete-strategy]").forEach((btn) => {
   btn.addEventListener("click", () => deleteStrategy(btn.dataset.deleteStrategy));

@@ -178,6 +178,15 @@ def init_db():
         """)
 
         cur.execute("""
+        CREATE TABLE IF NOT EXISTS strategy_instruments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            strategy_name TEXT NOT NULL,
+            figi TEXT NOT NULL,
+            UNIQUE(strategy_name, figi)
+        )
+        """)
+
+        cur.execute("""
         CREATE TABLE IF NOT EXISTS instrument_market_state (
             figi TEXT PRIMARY KEY,
             ticker TEXT NOT NULL,
@@ -693,6 +702,14 @@ def save_current_settings_to_strategy(strategy_name: str):
             ON CONFLICT(strategy_name, setting_key) DO UPDATE SET setting_value = excluded.setting_value
             """, (strategy_name, row["key"], row["value"]))
 
+        # Копировать текущие инструменты
+        cur.execute("SELECT figi FROM instruments WHERE enabled = 1")
+        for row in cur.fetchall():
+            cur.execute("""
+            INSERT OR IGNORE INTO strategy_instruments(strategy_name, figi)
+            VALUES (?, ?)
+            """, (strategy_name, row["figi"]))
+
 
 def activate_strategy_profile(strategy_name: str):
     strategy_name = (strategy_name or "").strip()
@@ -721,6 +738,16 @@ def activate_strategy_profile(strategy_name: str):
             ON CONFLICT(key) DO UPDATE SET value = excluded.value
             """, (row["setting_key"], row["setting_value"]))
 
+        # Активировать инструменты стратегии
+        cur.execute("UPDATE instruments SET enabled = 0")
+        cur.execute("""
+        SELECT figi
+        FROM strategy_instruments
+        WHERE strategy_name = ?
+        """, (strategy_name,))
+        for row in cur.fetchall():
+            cur.execute("UPDATE instruments SET enabled = 1 WHERE figi = ?", (row["figi"],))
+
         cur.execute("""
         INSERT INTO bot_settings(key, value)
         VALUES ('active_strategy_name', ?)
@@ -748,6 +775,7 @@ def delete_strategy_profile(strategy_name: str):
             raise ValueError("Нельзя удалить активную стратегию")
 
         cur.execute("DELETE FROM strategy_profile_values WHERE strategy_name = ?", (strategy_name,))
+        cur.execute("DELETE FROM strategy_instruments WHERE strategy_name = ?", (strategy_name,))
         cur.execute("DELETE FROM strategy_profiles WHERE strategy_name = ?", (strategy_name,))
 
 
