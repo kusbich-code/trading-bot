@@ -203,6 +203,65 @@ def init_db():
 
         ensure_instruments_columns(cur)
 
+        # Seed some instruments
+        seed_instruments(cur)
+
+
+def seed_instruments(cur):
+    instruments = [
+        {
+            "ticker": "VTBR",
+            "figi": "BBG004730N88",
+            "name": "Банк ВТБ",
+            "class_code": "TQBR",
+            "instrument_type": "share",
+            "currency": "RUB",
+            "lot": 10000,
+            "min_price_increment": 0.01,
+            "lots_override": 1,
+            "stop_loss_pct": 0.0025,
+            "take_profit_pct": 0.005,
+            "max_spread_pct": 0,
+            "min_volume": 0,
+            "allow_long": 1,
+            "allow_short": 1,
+            "priority": 100,
+            "enabled": 0
+        },
+        {
+            "ticker": "YDEX",
+            "figi": "BBG004731032",
+            "name": "Яндекс",
+            "class_code": "TQBR",
+            "instrument_type": "share",
+            "currency": "RUB",
+            "lot": 1,
+            "min_price_increment": 0.01,
+            "lots_override": 1,
+            "stop_loss_pct": 0.0025,
+            "take_profit_pct": 0.005,
+            "max_spread_pct": 0,
+            "min_volume": 0,
+            "allow_long": 1,
+            "allow_short": 1,
+            "priority": 100,
+            "enabled": 0
+        },
+        # Add more if needed
+    ]
+    for inst in instruments:
+        cur.execute("""
+            INSERT OR IGNORE INTO instruments (
+                ticker, figi, name, class_code, instrument_type, currency,
+                lot, min_price_increment, lots_override, stop_loss_pct, take_profit_pct,
+                max_spread_pct, min_volume, allow_long, allow_short, priority, enabled
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            inst["ticker"], inst["figi"], inst["name"], inst["class_code"], inst["instrument_type"], inst["currency"],
+            inst["lot"], inst["min_price_increment"], inst["lots_override"], inst["stop_loss_pct"], inst["take_profit_pct"],
+            inst["max_spread_pct"], inst["min_volume"], inst["allow_long"], inst["allow_short"], inst["priority"], inst["enabled"]
+        ))
+
 
 def ensure_instruments_columns(cur):
     cur.execute("PRAGMA table_info(instruments)")
