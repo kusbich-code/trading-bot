@@ -145,7 +145,7 @@ def notify(message: str, is_error: bool = False):
     telegram_errors_only = get_setting("telegram_errors_only", "0") == "1"
     if telegram_errors_only and not is_error:
         return
-    notify(message)
+    notifier.send(message)
 
 
 def sync_portfolio_positions(client):
@@ -274,7 +274,7 @@ def load_enabled_instruments(client):
     state.instrument_meta = {}
 
     for item in items:
-        meta = get_instrument_meta(client, item["figi"])
+        meta = get_instrument_meta(item["figi"])
         if not meta:
             log_event("INVALID_FIGI", f"Meta not loaded for figi={item['figi']}", ticker=item["ticker"], level="WARNING")
             continue

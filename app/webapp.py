@@ -517,8 +517,22 @@ def api_dashboard_settings():
     market_map = get_instrument_market_state_map()
     return JSONResponse({
         "settings": settings_payload(),
-        "profiles": [{"profile_name": x.get("profilename", ""), "is_active": x.get("isactive", 0), "created_at": x.get("createdat", "")} for x in list_settings_profiles()],
-        "strategies": [{"strategy_name": x.get("strategyname", ""), "is_active": x.get("isactive", 0), "created_at": x.get("createdat", "")} for x in list_strategy_profiles()],
+        "profiles": [
+            {
+                "profile_name": x.get("profile_name", ""),
+                "is_active": x.get("is_active", 0),
+                "created_at": x.get("created_at", ""),
+            }
+            for x in list_settings_profiles()
+        ],
+        "strategies": [
+            {
+                "strategy_name": x.get("strategy_name", ""),
+                "is_active": x.get("is_active", 0),
+                "created_at": x.get("created_at", ""),
+            }
+            for x in list_strategy_profiles()
+        ],
         "instruments": [market_row(i, market_map) for i in list_instruments()],
     })
 
@@ -638,7 +652,6 @@ def api_runtime_mode(mode: str = Form(...)):
 def api_create_profile(payload: ProfilePayload):
     name = payload.profile_name.strip()
     create_settings_profile(name)
-    save_current_settings_to_profile(name)
     return JSONResponse({"ok": True})
 
 
