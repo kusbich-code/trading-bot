@@ -2,7 +2,7 @@ import os
 import logging
 logger = logging.getLogger(__name__)
 from decimal import Decimal, InvalidOperation
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 from t_tech.invest import Client
 
 import platform
@@ -18,7 +18,6 @@ from app.control import run_control
 from app.db import (
     init_db,
     get_all_settings,
-    set_setting,
     get_all_runtime,
     get_trade_stats_today,
     get_trades,
@@ -27,21 +26,32 @@ from app.db import (
     get_system_logs,
     list_instruments,
     add_instrument,
-    update_instrument,
-    delete_instrument,
     get_open_positions,
-    list_settings_profiles,
-    create_settings_profile,
-    activate_settings_profile,
-    save_current_settings_to_profile,
-    list_strategy_profiles,
-    activate_strategy_profile,
-    save_current_settings_to_strategy,
     get_instrument_market_state,
     get_instrument_market_state_map,
     get_setting,
-    delete_settings_profile,
-    delete_strategy_profile,
+    log_event,
+    # profiles
+    list_profiles,
+    get_profile,
+    get_profile_settings,
+    create_profile,
+    delete_profile,
+    activate_profile,
+    update_profile_settings,
+    set_profile_strategy,
+    # strategies
+    list_strategies,
+    get_strategy,
+    get_strategy_settings,
+    create_strategy,
+    delete_strategy,
+    update_strategy_settings,
+    # strategy instruments
+    list_strategy_instruments,
+    add_strategy_instrument,
+    update_strategy_instrument,
+    delete_strategy_instrument,
 )
 
 from app.config import settings
@@ -60,7 +70,7 @@ from app.services.healthcheck import dashboard_health
 from decimal import Decimal
 from app.telegram_health import send_telegram, health_snapshot
 
-app = FastAPI(title="Trading Bot Dashboard v4.1")
+app = FastAPI(title="Trading Bot Dashboard v4.2")
 
 if os.path.isdir("app/static"):
     app.mount("/static", StaticFiles(directory="app/static"), name="static")
@@ -72,6 +82,7 @@ def safe_decimal(value: Any, default: Decimal = Decimal("0")) -> Decimal:
     except (InvalidOperation, TypeError, ValueError):
         return default
 
+
 def quotation_to_decimal(q) -> Decimal:
     if q is None:
         return Decimal("0")
@@ -79,8 +90,10 @@ def quotation_to_decimal(q) -> Decimal:
     nano = getattr(q, "nano", 0) or 0
     return Decimal(str(units)) + (Decimal(str(nano)) / Decimal("1000000000"))
 
+
 def fmt_money(value: Any) -> str:
     return f"{safe_decimal(value):.2f}"
+
 
 def money_value_to_text(v) -> str:
     if v is None:
@@ -89,97 +102,10 @@ def money_value_to_text(v) -> str:
         return format(quotation_to_decimal(v), "f")
     except Exception:
         return ""
-    
+
+
 def is_truthy(value: Any) -> bool:
     return str(value).strip().lower() in ("1", "true", "yes", "on")
-
-
-def get_service_status_value() -> str:
-    try:
-        system_name = platform.system().lower()
-
-        if system_name == "windows":
-            result = subprocess.run(
-                [
-                    "powershell",
-                    "-Command",
-                    "Get-CimInstance Win32_Process | "
-                    "Where-Object { $_.Name -match 'python|py' -and $_.CommandLine -match 'main.py' } | "
-                    "Select-Object -First 1 -ExpandProperty ProcessId"
-                ],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            process_running = bool((result.stdout or "").strip())
-
-            if not process_running:
-                return "Остановлен"
-
-            try:
-                health = dashboard_health()
-                api_ok = str(health.get("status", "")).strip().lower() == "ok"
-            except Exception:
-                api_ok = False
-
-            return "Запущен" if api_ok else "Проблема"
-
-        result = run_control("status")
-        raw = " ".join([
-            str(result.get("message", "") or ""),
-            str(result.get("output", "") or ""),
-        ]).lower()
-
-        if "active (running)" in raw or "is running" in raw or "active: active" in raw:
-            try:
-                health = dashboard_health()
-                api_ok = str(health.get("status", "")).strip().lower() == "ok"
-            except Exception:
-                api_ok = False
-
-            return "Запущен" if api_ok else "Проблема"
-
-        if "inactive" in raw or "dead" in raw or "stopped" in raw or "not running" in raw:
-            return "Остановлен"
-
-        return "Проблема"
-    except Exception:
-        return "Проблема"
-    
-
-def get_service_status_value() -> str:
-    try:
-        system_name = platform.system().lower()
-
-        if system_name == "windows":
-            result = subprocess.run(
-                [
-                    "powershell",
-                    "-Command",
-                    "Get-CimInstance Win32_Process | "
-                    "Where-Object { $_.Name -match 'python' -and $_.CommandLine -match 'main.py' } | "
-                    "Select-Object -First 1 -ExpandProperty ProcessId"
-                ],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            output = (result.stdout or "").strip()
-            return "Запущен" if output else "Остановлен"
-
-        result = run_control("status")
-        raw = " ".join([
-            str(result.get("message", "") or ""),
-            str(result.get("output", "") or ""),
-        ]).lower()
-
-        if "active (running)" in raw or "is running" in raw or "active: active" in raw:
-            return "Запущен"
-        if "inactive" in raw or "dead" in raw or "stopped" in raw or "not running" in raw:
-            return "Остановлен"
-        return "Проблема"
-    except Exception:
-        return "Проблема"
 
 
 def fmt_pct_fraction(value: Any) -> str:
@@ -190,35 +116,64 @@ def bool01(value: Any) -> str:
     return "1" if str(value) in ("1", "true", "True") else "0"
 
 
-def market_row(row: Dict[str, Any], market_map: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+def get_service_status_value() -> str:
+    try:
+        system_name = platform.system().lower()
+        if system_name == "windows":
+            result = subprocess.run(
+                ["powershell", "-Command",
+                 "Get-CimInstance Win32_Process | "
+                 "Where-Object { $_.Name -match 'python' -and $_.CommandLine -match 'main.py' } | "
+                 "Select-Object -First 1 -ExpandProperty ProcessId"],
+                capture_output=True, text=True, timeout=5,
+            )
+            output = (result.stdout or "").strip()
+            return "Запущен" if output else "Остановлен"
+
+        result = run_control("status")
+        raw = " ".join([str(result.get("message", "") or ""), str(result.get("output", "") or "")]).lower()
+        if "active (running)" in raw or "is running" in raw or "active: active" in raw:
+            return "Запущен"
+        if "inactive" in raw or "dead" in raw or "stopped" in raw or "not running" in raw:
+            return "Остановлен"
+        return "Проблема"
+    except Exception:
+        return "Проблема"
+
+
+def strategy_instrument_row(row: Dict[str, Any], market_map: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
     figi = row.get("figi", "")
     market = market_map.get(figi, {})
     out = dict(row)
-    out["stop_loss_pct_ui"] = fmt_pct_fraction(row.get("stoplosspct", 0))
-    out["take_profit_pct_ui"] = fmt_pct_fraction(row.get("takeprofitpct", 0))
-    out["max_spread_pct_ui"] = fmt_pct_fraction(row.get("maxspreadpct", 0))
-    out["last_price"] = market.get("lastprice", "0")
-    out["last_price_ui"] = fmt_money(market.get("lastprice", 0))
-    out["price_time"] = market.get("pricetime", "") or "-"
+    out["stop_loss_pct_ui"] = fmt_pct_fraction(row.get("stop_loss_pct", 0))
+    out["take_profit_pct_ui"] = fmt_pct_fraction(row.get("take_profit_pct", 0))
+    out["max_spread_pct_ui"] = fmt_pct_fraction(row.get("max_spread_pct", 0))
+    out["last_price"] = market.get("last_price", "0")
+    out["last_price_ui"] = fmt_money(market.get("last_price", 0))
+    out["price_time"] = market.get("price_time", "") or "-"
     return out
+
+
+def market_row(row: Dict[str, Any], market_map: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    return strategy_instrument_row(row, market_map)
 
 
 def summary_payload() -> Dict[str, Any]:
     s = get_all_settings()
     st = get_trade_stats_today()
-    instruments = list_instruments()
 
-    active_profile_name = (s.get("activeprofilename", "") or "").strip() or "—"
-    active_strategy_name = (s.get("activestrategyname", "") or "").strip() or "—"
-    bot_enabled = is_truthy(s.get("botenabled", "1"))
+    active_profile_name = (s.get("active_profile_name", "") or "").strip() or "—"
+    active_strategy_name = (s.get("active_strategy_name", "") or "").strip() or "—"
+    bot_enabled = is_truthy(s.get("bot_enabled", "1"))
 
-    enabled_instruments = [
-        x for x in instruments
-        if str(x.get("enabled", 0)).strip().lower() in ("1", "true")
-    ]
+    active_strategy_id = (s.get("active_strategy_id", "") or "").strip()
+    if active_strategy_id:
+        strategy_instruments = list_strategy_instruments(int(active_strategy_id))
+    else:
+        strategy_instruments = []
+    enabled_instruments = [x for x in strategy_instruments if str(x.get("enabled", 0)) in ("1", "true")]
 
     service_status = get_service_status_value()
-
 
     try:
         portfolio = get_portfolio_snapshot()
@@ -227,16 +182,12 @@ def summary_payload() -> Dict[str, Any]:
         logger.exception("portfolio snapshot error")
         portfolio_ok = False
         portfolio = {
-            "cash": Decimal("0"),
-            "positions_value": Decimal("0"),
-            "blocked": Decimal("0"),
-            "total_assets": Decimal("0"),
-            "positions_count": 0,
-            "money_by_currency": [],
+            "cash": Decimal("0"), "positions_value": Decimal("0"),
+            "blocked": Decimal("0"), "total_assets": Decimal("0"),
+            "positions_count": 0, "money_by_currency": [],
         }
-        if not s.get("lasterror"):
-            s["lasterror"] = str(e)
-
+        if not s.get("last_error"):
+            s["last_error"] = str(e)
 
     if service_status != "Запущен":
         trading_status = "Остановлена"
@@ -268,31 +219,7 @@ def summary_payload() -> Dict[str, Any]:
         "money_by_currency": portfolio.get("money_by_currency", []),
         "active_profile_name": active_profile_name,
         "active_strategy_name": active_strategy_name,
-        "last_error": s.get("lasterror", "") or "—",
-    }
-
-
-def settings_payload() -> Dict[str, Any]:
-    s = get_all_settings()
-    return {
-        "bot_enabled": s.get("botenabled", "1"),
-        "telegram_errors_only": s.get("telegramerrorsonly", "0"),
-        "auto_reload_settings": s.get("autoreloadsettings", "1"),
-        "max_trades_per_day": s.get("maxtradesperday", "15"),
-        "max_daily_loss_rub_ui": fmt_money(s.get("maxdailylossrub", 0)),
-        "max_open_positions": s.get("maxopenpositions", "2"),
-        "check_interval_sec": s.get("checkintervalsec", "5"),
-        "default_stop_loss_pct_ui": fmt_pct_fraction(s.get("defaultstoplosspct", 0)),
-        "default_take_profit_pct_ui": fmt_pct_fraction(s.get("defaulttakeprofitpct", 0)),
-        "estimated_commission_pct_ui": fmt_pct_fraction(s.get("estimatedcommissionpct", 0)),
-        "allow_long_global": s.get("allowlongglobal", "1"),
-        "allow_short_global": s.get("allowshortglobal", "1"),
-        "trade_only_session": s.get("tradeonlysession", "0"),
-        "pause_after_error_sec": s.get("pauseaftererrorsec", "10"),
-        "tinvestusesandbox": s.get("tinvestusesandbox", "true"),
-        "tradingmode": s.get("tradingmode", "trend"),
-        "errorseriespausecount": s.get("errorseriespausecount", "3"),
-        "stopseriespausecount": s.get("stopseriespausecount", "3"),
+        "last_error": s.get("last_error", "") or "—",
     }
 
 
@@ -302,77 +229,107 @@ def startup_event():
 
 
 @app.get("/dashboard/", response_class=HTMLResponse)
-def dashboard_page(request: Request):
+def dashboard_page():
     return HTMLResponse("""<!doctype html>
-<html lang=\"ru\">
+<html lang="ru">
 <head>
-  <meta charset=\"utf-8\">
-  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
-  <title>Панель управления торговым ботом v4.0</title>
-  <link rel=\"stylesheet\" href=\"/static/dashboard.css?v=4.0\">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Панель управления торговым ботом v4.2</title>
+  <link rel="stylesheet" href="/static/dashboard.css?v=4.2">
 </head>
 <body>
-  <div class=\"app\">
-    <header class=\"topbar\">
+  <div class="app">
+    <header class="topbar">
       <div>
-        <h1>Панель управления торговым ботом v4.0</h1>
-        <p class=\"sub\">Русский интерфейс, отдельная справка на каждой вкладке, стабильные переходы и подготовка к режимам торговли.</p>
+        <h1>Панель управления торговым ботом v4.2</h1>
+        <p class="sub">Профили содержат общие настройки и выбор стратегии. Стратегия содержит параметры риска и инструменты.</p>
       </div>
-      <div id=\"routeDebugBadge\" class=\"route-badge\">Вкладка: главное</div>
+      <div id="routeDebugBadge" class="route-badge">Вкладка: главное</div>
     </header>
 
-    <nav class=\"tabs\">
-      <a href=\"#/главное\" class=\"tab-link active\" data-tab-link=\"главное\">Главное</a>
-      <a href=\"#/портфель\" class=\"tab-link\" data-tab-link=\"портфель\">Портфель</a>
-      <a href=\"#/настройки\" class=\"tab-link\" data-tab-link=\"настройки\">Настройки</a>
-      <a href=\"#/история\" class=\"tab-link\" data-tab-link=\"история\">История</a>
-      <a href=\"#/график\" class=\"tab-link\" data-tab-link=\"график\">График</a>
+    <nav class="tabs">
+      <a href="#/главное" class="tab-link active" data-tab-link="главное">Главное</a>
+      <a href="#/портфель" class="tab-link" data-tab-link="портфель">Портфель</a>
+      <a href="#/настройки" class="tab-link" data-tab-link="настройки">Настройки</a>
+      <a href="#/история" class="tab-link" data-tab-link="история">История</a>
+      <a href="#/график" class="tab-link" data-tab-link="график">График</a>
     </nav>
 
-    <section id=\"summaryCards\" class=\"summary-grid\"></section>
+    <section id="summaryCards" class="summary-grid"></section>
 
-    <section id=\"view-main\" data-view=\"главное\"></section>
-    <section id=\"view-portfolio\" data-view=\"портфель\" class=\"hidden\"></section>
-    <section id=\"view-settings\" data-view=\"настройки\" class=\"hidden\"></section>
-    <section id=\"view-history\" data-view=\"история\" class=\"hidden\"></section>
-    <section id=\"view-chart\" data-view=\"график\" class=\"hidden\"></section>
+    <section id="view-main" data-view="главное"></section>
+    <section id="view-portfolio" data-view="портфель" class="hidden"></section>
+    <section id="view-settings" data-view="настройки" class="hidden"></section>
+    <section id="view-history" data-view="история" class="hidden"></section>
+    <section id="view-chart" data-view="график" class="hidden"></section>
   </div>
 
-  <div id=\"toastHost\" class=\"toast-host\"></div>
+  <div id="toastHost" class="toast-host"></div>
 
+  <!-- Modal: Add instrument -->
   <div id="modalAddInstrument" class="modal hidden">
-  <div class="modal-box">
-    <div class="row between">
-      <h2>Добавить инструменты</h2>
-      <div class="row">
-        <input id="instrumentSearchInput" class="field" type="text" placeholder="Тикер или название">
-        <button class="btn" onclick="searchInstruments()">Поиск</button>
-        <button class="btn" onclick="loadTopVolumeInstruments()">Топ</button>
-        <button class="btn" onclick="selectAllInstrumentSearchRows()">Выделить все</button>
-        <button class="btn" onclick="clearAllInstrumentSearchRows()">Снять все</button>
-        <button class="btn btn-primary" onclick="acceptSelectedInstruments()">Добавить выбранные</button>
-        <button class="btn btn-danger" onclick="closeAddInstrumentModal()">Закрыть</button>
+    <div class="modal-box">
+      <div class="row between">
+        <h2>Добавить инструменты</h2>
+        <div class="row">
+          <input id="instrumentSearchInput" class="field" type="text" placeholder="Тикер или название">
+          <button class="btn" onclick="searchInstruments()">Поиск</button>
+          <button class="btn" onclick="loadTopVolumeInstruments()">Топ</button>
+          <button class="btn" onclick="selectAllInstrumentSearchRows()">Выделить все</button>
+          <button class="btn" onclick="clearAllInstrumentSearchRows()">Снять все</button>
+          <button class="btn btn-primary" onclick="acceptSelectedInstruments()">Добавить выбранные</button>
+          <button class="btn btn-danger" onclick="closeAddInstrumentModal()">Закрыть</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Выб.</th><th>Тикер</th><th>Название</th><th>FIGI</th><th>Тип</th><th>Валюта</th><th>Лот</th><th>Шаг</th><th>Цена</th><th>Время</th><th>Скор</th></tr>
+          </thead>
+          <tbody id="instrumentSearchRows"></tbody>
+        </table>
       </div>
     </div>
+  </div>
 
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>Выб.</th><th>Тикер</th><th>Название</th><th>FIGI</th><th>Тип</th><th>Валюта</th><th>Лот</th><th>Шаг</th><th>Цена</th><th>Время</th><th>Скор</th>
-          </tr>
-        </thead>
-        <tbody id="instrumentSearchRows"></tbody>
-      </table>
+  <!-- Modal: Profiles -->
+  <div id="modalProfiles" class="modal hidden">
+    <div class="modal-box">
+      <div class="row between">
+        <h2>Профили</h2>
+        <button class="btn btn-danger" onclick="closeProfilesModal()">Закрыть</button>
+      </div>
+      <div id="profilesModalBody"></div>
+      <div class="row" style="margin-top:12px;">
+        <input id="newProfileName" class="field" type="text" placeholder="Имя нового профиля">
+        <button class="btn btn-primary" onclick="createProfile()">Создать профиль</button>
+      </div>
     </div>
   </div>
-</div>
 
-  <script src=\"https://cdn.plot.ly/plotly-2.35.2.min.js\"></script>
-  <script src=\"/static/dashboard.js?v=4.0\"></script>
+  <!-- Modal: Strategies -->
+  <div id="modalStrategies" class="modal hidden">
+    <div class="modal-box">
+      <div class="row between">
+        <h2>Стратегии</h2>
+        <button class="btn btn-danger" onclick="closeStrategiesModal()">Закрыть</button>
+      </div>
+      <div id="strategiesModalBody"></div>
+      <div class="row" style="margin-top:12px;">
+        <input id="newStrategyName" class="field" type="text" placeholder="Имя новой стратегии">
+        <button class="btn btn-primary" onclick="createStrategy()">Создать стратегию</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+  <script src="/static/dashboard.js?v=4.2"></script>
 </body>
 </html>""")
 
+
+# ── dashboard data endpoints ───────────────────────────────────────────────────
 
 @app.get("/api/dashboard/summary")
 def api_dashboard_summary():
@@ -381,15 +338,23 @@ def api_dashboard_summary():
 
 @app.get("/api/dashboard/main")
 def api_dashboard_main():
+    s = get_all_settings()
+    active_strategy_id = (s.get("active_strategy_id", "") or "").strip()
     market_map = get_instrument_market_state_map()
+
+    if active_strategy_id:
+        instruments = list_strategy_instruments(int(active_strategy_id))
+    else:
+        instruments = []
+
     return JSONResponse({
-        "instruments": [market_row(i, market_map) for i in list_instruments()],
+        "instruments": [strategy_instrument_row(i, market_map) for i in instruments],
         "positions": [{
             **dict(p),
-            "entry_price_ui": fmt_money(p.get("entryprice", 0)),
-            "current_price_ui": fmt_money(p.get("currentprice", 0)),
-            "unrealized_pnl_ui": fmt_money(p.get("unrealizedpnl", 0)),
-            "opened_at": p.get("openedat", ""),
+            "entry_price_ui": fmt_money(p.get("entry_price", 0)),
+            "current_price_ui": fmt_money(p.get("current_price", 0)),
+            "unrealized_pnl_ui": fmt_money(p.get("unrealized_pnl", 0)),
+            "opened_at": p.get("opened_at", ""),
         } for p in get_open_positions()],
         "trades": [{
             **dict(t),
@@ -403,7 +368,12 @@ def api_dashboard_main():
 @app.get("/api/dashboard/quotes")
 def api_dashboard_quotes():
     rows = get_instrument_market_state()
-    return JSONResponse([{"figi": r.get("figi", ""), "ticker": r.get("ticker", ""), "last_price_ui": fmt_money(r.get("lastprice", 0)), "price_time": r.get("pricetime", "-")} for r in rows])
+    return JSONResponse([{
+        "figi": r.get("figi", ""),
+        "ticker": r.get("ticker", ""),
+        "last_price_ui": fmt_money(r.get("last_price", 0)),
+        "price_time": r.get("price_time", "-"),
+    } for r in rows])
 
 
 @app.get("/api/dashboard/portfolio")
@@ -413,16 +383,20 @@ def api_dashboard_portfolio():
     return JSONResponse({
         "portfolio_positions": [{
             "ticker": p.get("ticker", ""), "figi": p.get("figi", ""), "instrument_type": "share",
-            "quantity_ui": str(p.get("qty", 0)), "average_position_price_ui": fmt_money(p.get("entryprice", 0)),
-            "current_price_ui": fmt_money(p.get("currentprice", 0)), "expected_yield_ui": fmt_money(p.get("unrealizedpnl", 0))
+            "quantity_ui": str(p.get("qty", 0)),
+            "average_position_price_ui": fmt_money(p.get("entry_price", 0)),
+            "current_price_ui": fmt_money(p.get("current_price", 0)),
+            "expected_yield_ui": fmt_money(p.get("unrealized_pnl", 0)),
         } for p in all_positions],
         "bot_positions": [{
             "ticker": p.get("ticker", ""), "figi": p.get("figi", ""), "direction": p.get("direction", ""),
-            "qty": p.get("qty", 0), "entry_price_ui": fmt_money(p.get("entryprice", 0)),
-            "entry_price_raw": str(p.get("entryprice", 0)), "current_price_ui": fmt_money(p.get("currentprice", 0)),
-            "unrealized_pnl_ui": fmt_money(p.get("unrealizedpnl", 0))
+            "qty": p.get("qty", 0),
+            "entry_price_ui": fmt_money(p.get("entry_price", 0)),
+            "entry_price_raw": str(p.get("entry_price", 0)),
+            "current_price_ui": fmt_money(p.get("current_price", 0)),
+            "unrealized_pnl_ui": fmt_money(p.get("unrealized_pnl", 0)),
         } for p in bot_positions],
-        "stop_orders": []
+        "stop_orders": [],
     })
 
 
@@ -433,20 +407,19 @@ def api_dashboard_stop_orders():
         return {"ok": True, "items": items}
     except Exception as e:
         return {"ok": False, "items": [], "message": str(e)}
-    
+
 
 @app.get("/api/dashboard/runtime")
 def api_dashboard_runtime():
     settings_map = get_all_settings()
     runtime_map = get_all_runtime()
-
     return {
-        "botenabled": settings_map.get("botenabled", "1"),
+        "botenabled": settings_map.get("bot_enabled", "1"),
         "tinvestusesandbox": settings_map.get("tinvestusesandbox", "true"),
-        "activeprofilename": settings_map.get("activeprofilename", ""),
-        "activestrategyname": settings_map.get("activestrategyname", ""),
-        "lasterror": settings_map.get("lasterror", ""),
-        "status": settings_map.get("status", "INIT"),
+        "activeprofilename": settings_map.get("active_profile_name", ""),
+        "activestrategyname": settings_map.get("active_strategy_name", ""),
+        "lasterror": settings_map.get("last_error", ""),
+        "status": runtime_map.get("status", settings_map.get("status", "INIT")),
         "runtime": runtime_map,
     }
 
@@ -454,87 +427,109 @@ def api_dashboard_runtime():
 @app.get("/api/dashboard/bot-explain")
 def api_dashboard_bot_explain():
     settings_map = get_all_settings()
-    instruments = list_instruments(enabled_only=True)
+    active_strategy_id = (settings_map.get("active_strategy_id", "") or "").strip()
+    if active_strategy_id:
+        instruments = list_strategy_instruments(int(active_strategy_id))
+        enabled_instruments = [x for x in instruments if str(x.get("enabled", 0)) in ("1", "true")]
+    else:
+        enabled_instruments = []
     open_positions = get_open_positions()
 
     reasons = []
-
-    if str(settings_map.get("botenabled", "1")) != "1":
+    if str(settings_map.get("bot_enabled", "1")) != "1":
         reasons.append("Бот выключен в настройках")
-
-    if not instruments:
-        reasons.append("Нет активных инструментов")
-
-    if str(settings_map.get("tradeonlysession", "0")) == "1":
+    if not active_strategy_id:
+        reasons.append("Не выбрана стратегия")
+    elif not enabled_instruments:
+        reasons.append("Нет активных инструментов в стратегии")
+    if str(settings_map.get("trade_only_session", "0")) == "1":
         reasons.append("Торговля ограничена торговой сессией")
-
-    if int(str(settings_map.get("maxopenpositions", "2"))) <= len(open_positions):
+    if int(str(settings_map.get("max_open_positions", "2"))) <= len(open_positions):
         reasons.append("Достигнут лимит открытых позиций")
-
-    if int(str(settings_map.get("maxtradesperday", "15"))) <= int(str(settings_map.get("tradestoday", "0"))):
+    if int(str(settings_map.get("max_trades_per_day", "15"))) <= int(str(settings_map.get("trades_today", "0"))):
         reasons.append("Достигнут лимит сделок за день")
-
     if not reasons:
         reasons.append("Бот готов искать сигнал")
+    return {"ok": True, "reasons": reasons}
 
-    return {
-        "ok": True,
-        "reasons": reasons,
-    }
-
-@app.post("/api/stop-orders/create-bundle")
-def api_create_stop_bundle(
-    figi: str = Form(...),
-    qty: int = Form(...),
-    entry_price: str = Form(...),
-    side: str = Form(...),
-    stop_pct: str = Form(...),
-    take_pct: str = Form(...),
-):
-    result = post_stop_bundle(
-        figi=figi,
-        quantity=int(qty),
-        entry_price=Decimal(entry_price),
-        side=side,
-        stop_pct=Decimal(stop_pct),
-        take_pct=Decimal(take_pct),
-    )
-    log_event("STOP_BUNDLE", f"bundle created figi={figi}", ticker=figi)
-    return {"ok": True, **result}
-
-@app.get("/api/dashboard/stop-orders")
-def api_dashboard_stop_orders():
-    return {"items": get_active_stop_orders()}
 
 @app.get("/api/dashboard/settings")
-def api_dashboard_settings():
+def api_dashboard_settings(profile_id: Optional[int] = None):
+    s = get_all_settings()
     market_map = get_instrument_market_state_map()
+
+    active_profile_id_str = (s.get("active_profile_id", "") or "").strip()
+    view_id = profile_id or (int(active_profile_id_str) if active_profile_id_str else None)
+
+    profile = get_profile(view_id) if view_id else {}
+    prof_settings = get_profile_settings(view_id) if view_id else {}
+
+    strategy_id = profile.get("strategy_id")
+    strategy = get_strategy(strategy_id) if strategy_id else {}
+    strat_settings = get_strategy_settings(strategy_id) if strategy_id else {}
+    strat_instruments = list_strategy_instruments(strategy_id) if strategy_id else []
+
+    def ps(key, default=""):
+        return prof_settings.get(key, default)
+
+    def ss(key, default=""):
+        return strat_settings.get(key, default)
+
     return JSONResponse({
-        "settings": settings_payload(),
-        "profiles": [
-            {
-                "profile_name": x.get("profile_name", ""),
-                "is_active": x.get("is_active", 0),
-                "created_at": x.get("created_at", ""),
-            }
-            for x in list_settings_profiles()
-        ],
-        "strategies": [
-            {
-                "strategy_name": x.get("strategy_name", ""),
-                "is_active": x.get("is_active", 0),
-                "created_at": x.get("created_at", ""),
-            }
-            for x in list_strategy_profiles()
-        ],
-        "instruments": [market_row(i, market_map) for i in list_instruments()],
+        "active_profile_id": active_profile_id_str,
+        "active_profile_name": s.get("active_profile_name", ""),
+        "active_strategy_id": s.get("active_strategy_id", ""),
+        "active_strategy_name": s.get("active_strategy_name", ""),
+        "view_profile": {
+            "id": profile.get("id"),
+            "name": profile.get("name", ""),
+            "is_active": profile.get("is_active", 0),
+            "strategy_id": profile.get("strategy_id"),
+            "strategy_name": profile.get("strategy_name", ""),
+            "settings": {
+                "bot_enabled": ps("bot_enabled", "1"),
+                "telegram_errors_only": ps("telegram_errors_only", "0"),
+                "auto_reload_settings": ps("auto_reload_settings", "1"),
+                "tinvestusesandbox": ps("tinvestusesandbox", "true"),
+            },
+        },
+        "view_strategy": {
+            "id": strategy.get("id"),
+            "name": strategy.get("name", ""),
+            "settings": {
+                "max_trades_per_day": ss("max_trades_per_day", "15"),
+                "max_daily_loss_rub": ss("max_daily_loss_rub", "200"),
+                "max_daily_loss_rub_ui": fmt_money(ss("max_daily_loss_rub", "200")),
+                "max_open_positions": ss("max_open_positions", "2"),
+                "check_interval_sec": ss("check_interval_sec", "5"),
+                "default_stop_loss_pct_ui": fmt_pct_fraction(ss("default_stop_loss_pct", "0.0025")),
+                "default_take_profit_pct_ui": fmt_pct_fraction(ss("default_take_profit_pct", "0.005")),
+                "estimated_commission_pct_ui": fmt_pct_fraction(ss("estimated_commission_pct", "0.0004")),
+                "allow_long_global": ss("allow_long_global", "1"),
+                "allow_short_global": ss("allow_short_global", "1"),
+                "trade_only_session": ss("trade_only_session", "0"),
+                "pause_after_error_sec": ss("pause_after_error_sec", "10"),
+                "tradingmode": ss("tradingmode", "trend"),
+                "errorseriespausecount": ss("errorseriespausecount", "3"),
+                "stopseriespausecount": ss("stopseriespausecount", "3"),
+            },
+        },
+        "profiles": list_profiles(),
+        "strategies": list_strategies(),
+        "instruments": [strategy_instrument_row(i, market_map) for i in strat_instruments],
     })
 
 
 @app.get("/api/dashboard/history")
 def api_dashboard_history():
-    def norm(x: Dict[str, Any]) -> Dict[str, Any]:
-        return {"event_time": x.get("eventtime", ""), "event_type": x.get("eventtype", ""), "ticker": x.get("ticker", ""), "level": x.get("level", ""), "message": x.get("message", "")}
+    def norm(x):
+        return {
+            "event_time": x.get("event_time", ""),
+            "event_type": x.get("event_type", ""),
+            "ticker": x.get("ticker", ""),
+            "level": x.get("level", ""),
+            "message": x.get("message", ""),
+        }
     return JSONResponse({
         "trades": [{
             **dict(t),
@@ -552,38 +547,29 @@ def api_dashboard_history():
 
 @app.get("/api/dashboard/chart")
 def api_dashboard_chart(figi: str = "", interval: str = "1min"):
-    from app.db import get_setting
     instruments = list_instruments()
     available = [{"figi": i["figi"], "ticker": i["ticker"], "name": i.get("name", "")} for i in instruments]
-
-    selected_figi = figi
-    if not selected_figi and available:
-        selected_figi = available[0]["figi"]
-
+    selected_figi = figi or (available[0]["figi"] if available else "")
     candles = []
     if selected_figi:
         try:
             candles = get_candles(selected_figi, interval_name=interval, hours=8)
         except Exception as e:
             log_event("BOT_ERROR", f"chart candles error: {e}", level="ERROR")
-
     signal = {"action": "HOLD", "score": 0, "reasons": ["Нет данных"]}
     if candles:
         try:
-            mode = get_setting("trading_mode", "trend")
+            mode = get_setting("tradingmode", "trend")
             signal = evaluate_signal(selected_figi, candles, mode=mode)
         except Exception:
             pass
-
     return {
-        "figi": selected_figi,
-        "interval": interval,
-        "candles": candles,
-        "signal": signal,
-        "available_instruments": available,
-        "selected_figi": selected_figi,
+        "figi": selected_figi, "interval": interval, "candles": candles,
+        "signal": signal, "available_instruments": available, "selected_figi": selected_figi,
     }
 
+
+# ── control ───────────────────────────────────────────────────────────────────
 
 @app.post("/api/control/{action}")
 def api_control(action: str):
@@ -595,16 +581,76 @@ def api_health():
     return dashboard_health()
 
 
-@app.post("/api/settings/system")
-def api_settings_system(bot_enabled: str = Form("1"), telegram_errors_only: str = Form("0"), auto_reload_settings: str = Form("1")):
-    set_setting("botenabled", bool01(bot_enabled))
-    set_setting("telegramerrorsonly", bool01(telegram_errors_only))
-    set_setting("autoreloadsettings", bool01(auto_reload_settings))
+# ── profiles API ──────────────────────────────────────────────────────────────
+
+@app.post("/api/profiles/create")
+def api_profiles_create(name: str = Form(...)):
+    try:
+        profile_id = create_profile(name.strip())
+        return JSONResponse({"ok": True, "id": profile_id})
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/profiles/{profile_id}/activate")
+def api_profiles_activate(profile_id: int):
+    try:
+        activate_profile(profile_id)
+        return JSONResponse({"ok": True})
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/profiles/{profile_id}/set-strategy")
+def api_profiles_set_strategy(profile_id: int, strategy_id: int = Form(...)):
+    try:
+        set_profile_strategy(profile_id, strategy_id)
+        return JSONResponse({"ok": True})
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/profiles/{profile_id}/settings")
+def api_profiles_save_settings(
+    profile_id: int,
+    bot_enabled: str = Form("1"),
+    telegram_errors_only: str = Form("0"),
+    auto_reload_settings: str = Form("1"),
+    runtime_mode: str = Form("sandbox"),
+):
+    use_sandbox = "true" if runtime_mode == "sandbox" else "false"
+    update_profile_settings(profile_id, {
+        "bot_enabled": bool01(bot_enabled),
+        "telegram_errors_only": bool01(telegram_errors_only),
+        "auto_reload_settings": bool01(auto_reload_settings),
+        "tinvestusesandbox": use_sandbox,
+    })
     return JSONResponse({"ok": True})
 
 
-@app.post("/api/settings/strategy")
-def api_settings_strategy(
+@app.post("/api/profiles/{profile_id}/delete")
+def api_profiles_delete(profile_id: int):
+    try:
+        delete_profile(profile_id)
+        return JSONResponse({"ok": True})
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# ── strategies API ────────────────────────────────────────────────────────────
+
+@app.post("/api/strategies/create")
+def api_strategies_create(name: str = Form(...)):
+    try:
+        strategy_id = create_strategy(name.strip())
+        return JSONResponse({"ok": True, "id": strategy_id})
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/strategies/{strategy_id}/settings")
+def api_strategies_save_settings(
+    strategy_id: int,
     max_trades_per_day: str = Form("15"),
     max_daily_loss_rub: str = Form("200"),
     max_open_positions: str = Form("2"),
@@ -615,87 +661,114 @@ def api_settings_strategy(
     allow_long_global: str = Form("1"),
     allow_short_global: str = Form("1"),
     trade_only_session: str = Form("0"),
-    tradingmode: str = Form("trend"),
     pause_after_error_sec: str = Form("10"),
+    tradingmode: str = Form("trend"),
+    errorseriespausecount: str = Form("3"),
+    stopseriespausecount: str = Form("3"),
 ):
-    set_setting("maxtradesperday", max_trades_per_day)
-    set_setting("maxdailylossrub", max_daily_loss_rub)
-    set_setting("maxopenpositions", max_open_positions)
-    set_setting("checkintervalsec", check_interval_sec)
-    set_setting("defaultstoplosspct", str(safe_decimal(default_stop_loss_pct) / Decimal("100")))
-    set_setting("defaulttakeprofitpct", str(safe_decimal(default_take_profit_pct) / Decimal("100")))
-    set_setting("estimatedcommissionpct", str(safe_decimal(estimated_commission_pct) / Decimal("100")))
-    set_setting("allowlongglobal", bool01(allow_long_global))
-    set_setting("allowshortglobal", bool01(allow_short_global))
-    set_setting("tradeonlysession", bool01(trade_only_session))
-    set_setting("pauseaftererrorsec", pause_after_error_sec)
-    set_setting("tradingmode", tradingmode)
+    update_strategy_settings(strategy_id, {
+        "max_trades_per_day": max_trades_per_day,
+        "max_daily_loss_rub": max_daily_loss_rub,
+        "max_open_positions": max_open_positions,
+        "check_interval_sec": check_interval_sec,
+        "default_stop_loss_pct": str(safe_decimal(default_stop_loss_pct) / Decimal("100")),
+        "default_take_profit_pct": str(safe_decimal(default_take_profit_pct) / Decimal("100")),
+        "estimated_commission_pct": str(safe_decimal(estimated_commission_pct) / Decimal("100")),
+        "allow_long_global": bool01(allow_long_global),
+        "allow_short_global": bool01(allow_short_global),
+        "trade_only_session": bool01(trade_only_session),
+        "pause_after_error_sec": pause_after_error_sec,
+        "tradingmode": tradingmode,
+        "errorseriespausecount": errorseriespausecount,
+        "stopseriespausecount": stopseriespausecount,
+    })
     return JSONResponse({"ok": True})
 
 
-@app.post("/api/settings/runtime-mode")
-def api_runtime_mode(mode: str = Form(...)):
-    mode = (mode or "sandbox").strip().lower()
-    use_sandbox = "true" if mode == "sandbox" else "false"
-    set_setting("tinvestusesandbox", use_sandbox)
-    log_event("RUNTIME_MODE", f"mode switched to {mode}")
-    return {"ok": True, "mode": mode, "tinvest_use_sandbox": use_sandbox}
-
-
-@app.post("/api/профили/создать")
-def api_create_profile(profile_name: str = Form(...)):
-    name = profile_name.strip()
+@app.post("/api/strategies/{strategy_id}/delete")
+def api_strategies_delete(strategy_id: int):
     try:
-        create_settings_profile(name)
+        delete_strategy(strategy_id)
         return JSONResponse({"ok": True})
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@app.post("/api/профили/активировать")
-def api_activate_profile(profile_name: str = Form(...)):
+# ── strategy instruments API ──────────────────────────────────────────────────
+
+@app.post("/api/strategies/{strategy_id}/instruments/add")
+async def api_strategy_instruments_add(strategy_id: int, request: Request):
     try:
-        activate_settings_profile(profile_name.strip())
-        return JSONResponse({"ok": True})
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "Invalid JSON"}, status_code=400)
+
+    items = payload if isinstance(payload, list) else payload.get("items", [])
+    added = 0
+    for item in items:
+        figi = (item.get("figi") or "").strip()
+        if not figi:
+            continue
+        inst = {
+            "ticker": (item.get("ticker") or "").strip(),
+            "figi": figi,
+            "name": item.get("name", ""),
+            "class_code": item.get("class_code", item.get("classcode", "")),
+            "instrument_type": item.get("instrument_type", item.get("instrumenttype", "share")),
+            "currency": item.get("currency", "RUB"),
+            "lot": int(item.get("lot") or 1),
+            "min_price_increment": str(item.get("min_price_increment", item.get("minpriceincrement", "0.01")) or "0.01"),
+            "lots_override": int(item.get("lots_override", 1) or 1),
+            "stop_loss_pct": str(item.get("stop_loss_pct", "0.0025") or "0.0025"),
+            "take_profit_pct": str(item.get("take_profit_pct", "0.005") or "0.005"),
+            "max_spread_pct": str(item.get("max_spread_pct", "0") or "0"),
+            "min_volume": int(item.get("min_volume", 0) or 0),
+            "allow_long": int(item.get("allow_long", 1) or 1),
+            "allow_short": int(item.get("allow_short", 1) or 1),
+            "priority": int(item.get("priority", 100) or 100),
+            "enabled": 1,
+        }
+        add_strategy_instrument(strategy_id, inst)
+        add_instrument(inst)  # keep catalog up to date for market data
+        added += 1
+    return JSONResponse({"ok": True, "добавлено": added})
 
 
-@app.post("/api/профили/удалить")
-def api_delete_profile(profile_name: str = Form(...)):
-    try:
-        delete_settings_profile(profile_name.strip())
-        return {"ok": True}
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+@app.post("/api/strategies/{strategy_id}/instruments/update")
+def api_strategy_instruments_update(
+    strategy_id: int,
+    figi: str = Form(...),
+    lots_override: str = Form("1"),
+    stop_loss_pct: str = Form("0.25"),
+    take_profit_pct: str = Form("0.50"),
+    max_spread_pct: str = Form("0"),
+    min_volume: str = Form("0"),
+    allow_long: str = Form("1"),
+    allow_short: str = Form("1"),
+    priority: str = Form("100"),
+    enabled: str = Form("1"),
+):
+    update_strategy_instrument(strategy_id, figi, {
+        "lots_override": lots_override,
+        "stop_loss_pct": str(safe_decimal(stop_loss_pct) / Decimal("100")),
+        "take_profit_pct": str(safe_decimal(take_profit_pct) / Decimal("100")),
+        "max_spread_pct": str(safe_decimal(max_spread_pct) / Decimal("100")),
+        "min_volume": min_volume,
+        "allow_long": int(bool01(allow_long)),
+        "allow_short": int(bool01(allow_short)),
+        "priority": priority,
+        "enabled": int(bool01(enabled)),
+    })
+    return JSONResponse({"ok": True})
 
 
-@app.post("/api/стратегии/активировать")
-def api_activate_strategy(strategy_name: str = Form(...)):
-    try:
-        activate_strategy_profile(strategy_name.strip())
-        return JSONResponse({"ok": True})
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+@app.post("/api/strategies/{strategy_id}/instruments/delete")
+def api_strategy_instruments_delete(strategy_id: int, figi: str = Form(...)):
+    delete_strategy_instrument(strategy_id, figi)
+    return JSONResponse({"ok": True})
 
 
-@app.post("/api/стратегии/удалить")
-def api_delete_strategy(strategy_name: str = Form(...)):
-    try:
-        delete_strategy_profile(strategy_name.strip())
-        return {"ok": True}
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-
-@app.post("/api/стратегии/сохранить")
-def api_save_strategy(strategy_name: str = Form(...)):
-    try:
-        save_current_settings_to_strategy(strategy_name.strip())
-        return JSONResponse({"ok": True})
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
+# ── instrument search ─────────────────────────────────────────────────────────
 
 @app.get("/api/instruments/search")
 async def api_instruments_search(q: str, kind: str = "shares"):
@@ -703,10 +776,8 @@ async def api_instruments_search(q: str, kind: str = "shares"):
         query = (q or "").strip()
         if not query:
             return []
-
         with Client(settings.TINVEST_TOKEN) as client:
             resp = client.instruments.find_instrument(query=query)
-
         raw_items = []
         for inst in getattr(resp, "instruments", []):
             raw_items.append({
@@ -716,7 +787,6 @@ async def api_instruments_search(q: str, kind: str = "shares"):
                 "class_code": getattr(inst, "class_code", "") or "",
                 "instrument_type": str(getattr(inst, "instrument_type", "") or ""),
                 "uid": getattr(inst, "uid", "") or "",
-                "position_uid": getattr(inst, "position_uid", "") or "",
                 "currency": str(getattr(inst, "currency", "") or "").upper(),
                 "lot": getattr(inst, "lot", None),
                 "min_price_increment": quotation_to_decimal(getattr(inst, "min_price_increment", None)) if getattr(inst, "min_price_increment", None) else None,
@@ -724,7 +794,6 @@ async def api_instruments_search(q: str, kind: str = "shares"):
                 "for_qual_investor_flag": bool(getattr(inst, "for_qual_investor_flag", False)),
                 "liquidity_flag": bool(getattr(inst, "liquidity_flag", False)),
             })
-
         if kind == "shares":
             raw_items = [x for x in raw_items if x["instrument_type"] == "share"]
         elif kind == "futures":
@@ -751,12 +820,8 @@ async def api_instruments_search(q: str, kind: str = "shares"):
                 score += 300
             elif q_upper in x["name"].upper():
                 score += 100
-
             if x["instrument_type"] == "share":
                 score += 200
-            elif x["instrument_type"] == "futures":
-                score += 50
-
             if x["class_code"] == "TQBR":
                 score += 500
             elif x["class_code"] == "TQTF":
@@ -765,34 +830,29 @@ async def api_instruments_search(q: str, kind: str = "shares"):
                 score += 100
             elif x["class_code"] in ("SMAL", "SPEQ", "BEB", "RDL"):
                 score -= 50
-
             if x.get("api_trade_available_flag"):
                 score += 100
             if x.get("liquidity_flag"):
                 score += 80
             if x.get("for_qual_investor_flag"):
                 score -= 500
-
             return score
 
         items.sort(key=lambda x: (-score_item(x), x["ticker"], x["name"]))
-
         selected = items[:20]
         price_map = {}
         figis = [x["figi"] for x in selected if x.get("figi")]
-
         if figis:
             try:
                 with Client(settings.TINVEST_TOKEN) as client:
                     prices_resp = client.market_data.get_last_prices(figi=figis)
-
                 for p in getattr(prices_resp, "last_prices", []):
                     price_map[getattr(p, "figi", "")] = {
                         "last_price": money_value_to_text(getattr(p, "price", None)),
                         "price_time": str(getattr(p, "time", "") or "")[:19].replace("T", " "),
                     }
             except Exception:
-                logger.exception("Ошибка получения last_prices для поиска инструментов")
+                logger.exception("Ошибка получения last_prices для поиска")
 
         result = []
         for x in selected:
@@ -804,19 +864,17 @@ async def api_instruments_search(q: str, kind: str = "shares"):
             row["last_price"] = price_map.get(row.get("figi", ""), {}).get("last_price", "")
             row["price_time"] = price_map.get(row.get("figi", ""), {}).get("price_time", "")
             result.append(row)
-
         return result
-
     except Exception as e:
         logger.exception("Ошибка поиска инструментов")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.get("/api/instruments/top")
 async def api_instruments_top(limit: int = 20):
     try:
         with Client(settings.TINVEST_TOKEN) as client:
             resp = client.instruments.shares()
-
         items = []
         for inst in getattr(resp, "instruments", []):
             item = {
@@ -825,8 +883,7 @@ async def api_instruments_top(limit: int = 20):
                 "name": getattr(inst, "name", "") or "",
                 "class_code": getattr(inst, "class_code", "") or "",
                 "classcode": getattr(inst, "class_code", "") or "",
-                "instrument_type": "share",
-                "instrumenttype": "share",
+                "instrument_type": "share", "instrumenttype": "share",
                 "currency": str(getattr(inst, "currency", "") or "").upper(),
                 "lot": getattr(inst, "lot", None),
                 "min_price_increment": quotation_to_decimal(getattr(inst, "min_price_increment", None)) if getattr(inst, "min_price_increment", None) else None,
@@ -834,18 +891,15 @@ async def api_instruments_top(limit: int = 20):
                 "api_trade_available_flag": bool(getattr(inst, "api_trade_available_flag", False)),
                 "for_qual_investor_flag": bool(getattr(inst, "for_qual_investor_flag", False)),
                 "liquidity_flag": bool(getattr(inst, "liquidity_flag", False)),
-                "last_price": "",
-                "price_time": "",
+                "last_price": "", "price_time": "",
             }
             items.append(item)
 
         filtered = [
             x for x in items
-            if x["api_trade_available_flag"]
-            and not x["for_qual_investor_flag"]
+            if x["api_trade_available_flag"] and not x["for_qual_investor_flag"]
             and x["class_code"] in ("TQBR", "TQTF", "TQTD", "TQTE")
         ]
-
         priority_tickers = [
             "SBER", "SBERP", "GAZP", "LKOH", "ROSN", "NVTK", "GMKN", "TATN",
             "YDEX", "VTBR", "T", "MOEX", "SNGS", "SNGSP", "MAGN", "CHMF",
@@ -866,23 +920,20 @@ async def api_instruments_top(limit: int = 20):
             return score
 
         filtered.sort(key=lambda x: (-top_score(x), x["ticker"], x["name"]))
-
         selected = filtered[:limit]
         price_map = {}
         figis = [x["figi"] for x in selected if x.get("figi")]
-
         if figis:
             try:
                 with Client(settings.TINVEST_TOKEN) as client:
                     prices_resp = client.market_data.get_last_prices(figi=figis)
-
                 for p in getattr(prices_resp, "last_prices", []):
                     price_map[getattr(p, "figi", "")] = {
                         "last_price": money_value_to_text(getattr(p, "price", None)),
                         "price_time": str(getattr(p, "time", "") or "")[:19].replace("T", " "),
                     }
             except Exception:
-                logger.exception("Ошибка получения last_prices для top инструментов")
+                logger.exception("Ошибка получения last_prices для top")
 
         result = []
         for x in selected:
@@ -891,101 +942,13 @@ async def api_instruments_top(limit: int = 20):
             row["last_price"] = price_map.get(row.get("figi", ""), {}).get("last_price", "")
             row["price_time"] = price_map.get(row.get("figi", ""), {}).get("price_time", "")
             result.append(row)
-
         return result
-
     except Exception as e:
         logger.exception("Ошибка top-20 инструментов")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/instruments/add")
-async def api_instruments_add(request: Request):
-    try:
-        payload = await request.json()
-    except Exception:
-        return JSONResponse({"ok": False, "error": "Invalid JSON"}, status_code=400)
 
-    items = payload if isinstance(payload, list) else payload.get("items", [])
-    added = 0
-
-    # Читаем активный профиль ДО цикла — один раз
-    with db_cursor() as cur:
-        cur.execute("SELECT value FROM bot_settings WHERE key = 'active_profile_name'")
-        row = cur.fetchone()
-        active_profile = (row["value"] if row and row["value"] else "").strip() or "Основной"
-
-    for item in items:
-        figi = (item.get("figi") or "").strip()
-        if not figi:
-            continue
-
-        add_instrument({
-            "ticker":              (item.get("ticker") or "").strip(),
-            "figi":                figi,
-            "name":                item.get("name", ""),
-            "class_code":          item.get("class_code", item.get("classcode", "")),
-            "instrument_type":     item.get("instrument_type", item.get("instrumenttype", "share")),
-            "currency":            item.get("currency", "rub"),
-            "lot":                 int(item.get("lot") or 1),
-            "min_price_increment": str(item.get("min_price_increment", item.get("minpriceincrement", "0.01")) or "0.01"),
-            "lots_override":       int(item.get("lots_override", item.get("lotsoverride", 1)) or 1),
-            "stop_loss_pct":       str(item.get("stop_loss_pct", item.get("stoplosspct", "0.0025")) or "0.0025"),
-            "take_profit_pct":     str(item.get("take_profit_pct", item.get("takeprofitpct", "0.005")) or "0.005"),
-            "max_spread_pct":      str(item.get("max_spread_pct", item.get("maxspreadpct", "0")) or "0"),
-            "min_volume":          int(item.get("min_volume", item.get("minvolume", 0)) or 0),
-            "allow_long":          int(item.get("allow_long", item.get("allowlong", 1)) or 1),
-            "allow_short":         int(item.get("allow_short", item.get("allowshort", 1)) or 1),
-            "priority":            int(item.get("priority", 100) or 100),
-            "enabled":             1,  # всегда включаем при добавлении
-        })
-
-        with db_cursor() as cur:
-            cur.execute("""
-                INSERT OR IGNORE INTO profile_instruments(profile_name, figi)
-                VALUES (?, ?)
-            """, (active_profile, figi))
-
-        added += 1
-
-    return JSONResponse({"ok": True, "добавлено": added})
-@app.post("/api/instruments/update")
-def api_instruments_update(
-    figi: str = Form(...), lots_override: str = Form("1"), stop_loss_pct: str = Form("0.25"), take_profit_pct: str = Form("0.50"),
-    max_spread_pct: str = Form("0"), min_volume: str = Form("0"), allow_long: str = Form("1"), allow_short: str = Form("1"),
-    priority: str = Form("100"), enabled: str = Form("1"),
-):
-    update_instrument(figi, {
-        "lotsoverride": lots_override,
-        "stoplosspct": str(safe_decimal(stop_loss_pct) / Decimal("100")),
-        "takeprofitpct": str(safe_decimal(take_profit_pct) / Decimal("100")),
-        "maxspreadpct": str(safe_decimal(max_spread_pct) / Decimal("100")),
-        "minvolume": min_volume,
-        "allowlong": int(bool01(allow_long)),
-        "allowshort": int(bool01(allow_short)),
-        "priority": priority,
-        "enabled": int(bool01(enabled)),
-    })
-    return JSONResponse({"ok": True})
-
-
-@app.post("/api/health/telegram-test")
-def api_health_telegram_test():
-    health = dashboard_health()
-    text = health_snapshot(
-        dashboard_ok=(health.get("status") == "ok"),
-        broker_ok=True,
-        target="runtime",
-        extra="manual test"
-    )
-    result = send_telegram(text)
-    return {"ok": True, "telegram": result}
-
-
-@app.post("/api/instruments/delete")
-def api_instruments_delete(figi: str = Form(...)):
-    delete_instrument(figi)
-    return JSONResponse({"ok": True})
-
+# ── positions ─────────────────────────────────────────────────────────────────
 
 @app.post("/api/позиции/закрыть")
 def api_close_position(figi: str = Form(...), qty: int = Form(...), direction: str = Form(...)):
@@ -994,25 +957,6 @@ def api_close_position(figi: str = Form(...), qty: int = Form(...), direction: s
     log_event("POSITION_CLOSE", f"close order posted figi={figi} qty={qty} direction={close_direction}", ticker=figi)
     return {"ok": True, "message": "close order posted", "order_id": getattr(result, "order_id", "")}
 
-@app.post("/api/stop-orders/create-bundle")
-def api_create_stop_bundle(
-    figi: str = Form(...),
-    qty: int = Form(...),
-    entry_price: str = Form(...),
-    side: str = Form(...),
-    stop_pct: str = Form(...),
-    take_pct: str = Form(...),
-):
-    result = post_stop_bundle(
-        figi=figi,
-        quantity=int(qty),
-        entry_price=Decimal(entry_price),
-        side=side,
-        stop_pct=Decimal(stop_pct),
-        take_pct=Decimal(take_pct),
-    )
-    log_event("STOP_BUNDLE", f"bundle created figi={figi}", ticker=figi)
-    return {"ok": True, **result}
 
 @app.post("/api/позиции/закрыть-все")
 def api_close_all_positions():
@@ -1035,47 +979,48 @@ def api_close_all_positions():
     return JSONResponse({"ok": True, "closed": closed, "errors": errors})
 
 
-@app.post("/api/стоп-заявки/создать")
-def api_create_stop_orders(figi: str = Form(...), qty: str = Form(...), side: str = Form(...), base_price: str = Form(...), stop_loss_pct: str = Form("0.25"), take_profit_pct: str = Form("0.50")):
-    return JSONResponse({"ok": True, "message": f"stops create requested for {figi}", "figi": figi, "qty": qty, "side": side, "base_price": base_price, "stop_loss_pct": stop_loss_pct, "take_profit_pct": take_profit_pct})
+# ── stop orders ───────────────────────────────────────────────────────────────
+
+@app.post("/api/stop-orders/create-bundle")
+def api_create_stop_bundle(
+    figi: str = Form(...), qty: int = Form(...), entry_price: str = Form(...),
+    side: str = Form(...), stop_pct: str = Form(...), take_pct: str = Form(...),
+):
+    result = post_stop_bundle(
+        figi=figi, quantity=int(qty), entry_price=Decimal(entry_price),
+        side=side, stop_pct=Decimal(stop_pct), take_pct=Decimal(take_pct),
+    )
+    log_event("STOP_BUNDLE", f"bundle created figi={figi}", ticker=figi)
+    return {"ok": True, **result}
 
 
-@app.post("/api/стоп-заявки/отменить")
-def api_cancel_stop_order(stop_order_id: str = Form(...)):
-    return JSONResponse({"ok": True, "message": f"stop cancel requested: {stop_order_id}"})
+# ── health / telegram ─────────────────────────────────────────────────────────
+
+@app.post("/api/health/telegram-test")
+def api_health_telegram_test():
+    health = dashboard_health()
+    text = health_snapshot(
+        dashboard_ok=(health.get("status") == "ok"),
+        broker_ok=True, target="runtime", extra="manual test"
+    )
+    result = send_telegram(text)
+    return {"ok": True, "telegram": result}
 
 
 @app.get("/api/debug/search")
 def api_debug_search(q: str = "SBER"):
     import traceback
-    from app.config import settings
-    from t_tech.invest import Client
     from t_tech.invest.sandbox.client import SandboxClient
-
     client_cls = SandboxClient if settings.TINVEST_USE_SANDBOX else Client
     try:
         with client_cls(settings.TINVEST_TOKEN) as client:
             resp = client.instruments.find_instrument(query=q)
             instruments = getattr(resp, "instruments", [])
-            # Показываем все инструменты с их типами
-            all_items = []
-            for x in instruments:
-                all_items.append({
-                    "ticker": getattr(x, "ticker", ""),
-                    "figi": getattr(x, "figi", ""),
-                    "name": getattr(x, "name", ""),
-                    "instrument_type": str(getattr(x, "instrument_type", "")),
-                    "instrument_kind": str(getattr(x, "instrument_kind", "")),
-                    "api_trade_available": getattr(x, "api_trade_available_flag", False),
-                })
             return {
-                "ok": True,
-                "count": len(instruments),
-                "items": all_items,
+                "ok": True, "count": len(instruments),
+                "items": [{"ticker": getattr(x, "ticker", ""), "figi": getattr(x, "figi", ""),
+                           "name": getattr(x, "name", ""), "instrument_type": str(getattr(x, "instrument_type", ""))}
+                          for x in instruments],
             }
     except Exception as e:
-        return {
-            "ok": False,
-            "error": str(e),
-            "traceback": traceback.format_exc(),
-        }
+        return {"ok": False, "error": str(e), "traceback": traceback.format_exc()}

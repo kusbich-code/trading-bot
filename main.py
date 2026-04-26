@@ -24,7 +24,7 @@ from app.db import (
     set_runtime,
     get_runtime,
     get_setting,
-    list_instruments,
+    list_active_strategy_instruments,
     add_trade,
     log_event,
     upsert_position,
@@ -270,7 +270,7 @@ def get_money_balance(client) -> float:
 
 
 def load_enabled_instruments(client):
-    items = list_instruments(enabled_only=True)
+    items = list_active_strategy_instruments()
     state.instrument_meta = {}
 
     for item in items:
