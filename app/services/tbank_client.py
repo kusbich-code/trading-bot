@@ -159,21 +159,32 @@ def get_candles(figi: str, interval_name: str = "1min", hours: int = 8) -> List[
 
 
 def post_market_close(figi: str, quantity: int, direction: str):
+    import uuid as _uuid
     dir_map = {
         "BUY": OrderDirection.ORDER_DIRECTION_BUY,
         "SELL": OrderDirection.ORDER_DIRECTION_SELL,
         "LONG_CLOSE": OrderDirection.ORDER_DIRECTION_SELL,
         "SHORT_CLOSE": OrderDirection.ORDER_DIRECTION_BUY,
     }
+    if direction not in dir_map:
+        raise ValueError(f"Неизвестное направление: {direction}")
+    order_direction = dir_map[direction]
+    order_id = str(_uuid.uuid4())
     with with_client() as client:
-        return client.orders.post_order(
+        resp = client.orders.post_order(
             figi=figi,
             quantity=int(quantity),
-            direction=dir_map[direction],
+            direction=order_direction,
             account_id=_account_id(),
             order_type=OrderType.ORDER_TYPE_MARKET,
-            order_id=f"close-{figi}-{int(datetime.utcnow().timestamp())}",
+            order_id=order_id,
         )
+        log_event(
+            "ORDER_CLOSE",
+            f"market close posted figi={figi} qty={quantity} dir={direction} order_id={order_id}",
+            ticker=figi,
+        )
+        return resp
 
 
 def post_stop_bundle(figi: str, quantity: int, entry_price: Decimal, side: str, stop_pct: Decimal, take_pct: Decimal) -> Dict[str, Optional[str]]:
@@ -254,6 +265,147 @@ def _money_value_to_decimal(item) -> Decimal:
     return Decimal(units) + (Decimal(nano) / Decimal("1000000000"))
 
 
+def get_operations_today() -> Dict[str, Any]:
+    """Fetch today's executed operations from T-Bank API and calculate real PnL."""
+    from datetime import timezone
+    now = datetime.now(timezone.utc)
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    operations: List[Dict[str, Any]] = []
+    total_pnl = Decimal("0")
+    total_commission = Decimal("0")
+    trade_count = 0
+
+    with with_client() as client:
+        resp = client.operations.get_operations(
+            account_id=_account_id(),
+            from_=today_start,
+            to=now,
+        )
+
+        for op in getattr(resp, "operations", []):
+            state_str = str(getattr(op, "state", "") or "")
+            if "EXECUTED" not in state_str:
+                continue
+
+            op_type = str(
+                getattr(op, "operation_type", "")
+                or getattr(op, "type", "")
+                or ""
+            )
+            payment = _money_value_to_decimal(getattr(op, "payment", None))
+            price = _money_value_to_decimal(getattr(op, "price", None))
+            quantity = getattr(op, "quantity", 0) or 0
+            figi = getattr(op, "figi", "") or ""
+            date_val = getattr(op, "date", None)
+            date_str = ""
+            if date_val:
+                try:
+                    date_str = date_val.strftime("%Y-%m-%d %H:%M:%S")
+                except Exception:
+                    date_str = str(date_val)[:19].replace("T", " ")
+
+            is_fee = any(x in op_type for x in ("FEE", "COMMISSION", "SERVICE_FEE", "MARGIN_FEE"))
+            is_trade = any(x in op_type for x in ("BUY", "SELL")) and not is_fee
+
+            total_pnl += payment
+            if is_fee:
+                total_commission += payment
+
+            if is_trade or is_fee:
+                direction = "SELL" if "SELL" in op_type else ("BUY" if "BUY" in op_type else "")
+                # When API returns price=0, derive from payment/quantity (common for market orders)
+                if price == 0 and quantity > 0 and payment != 0:
+                    price = abs(payment) / Decimal(str(quantity))
+                price_ui = f"{price:.2f}" if price else "—"
+                operations.append({
+                    "figi": figi,
+                    "op_type": op_type,
+                    "direction": direction,
+                    "payment": str(payment),
+                    "payment_ui": f"{payment:.2f}",
+                    "price": str(price),
+                    "price_ui": price_ui,
+                    "quantity": quantity,
+                    "date": date_str,
+                    "is_fee": is_fee,
+                })
+                if is_trade:
+                    trade_count += 1
+
+    return {
+        "pnl": total_pnl,
+        "pnl_ui": f"{total_pnl:.2f}",
+        "total_commission": total_commission,
+        "total_commission_ui": f"{total_commission:.2f}",
+        "trades_count": trade_count,
+        "operations": operations,
+    }
+
+
+def get_positions_detailed() -> Dict[str, Any]:
+    """GetPositions: exact cash per currency + securities held in the account."""
+    with with_client() as client:
+        resp = client.operations.get_positions(account_id=_account_id())
+        money = []
+        for m in getattr(resp, "money", []):
+            v = _money_value_to_decimal(m)
+            money.append({
+                "currency": (getattr(m, "currency", "") or "").upper(),
+                "value": str(v),
+                "value_ui": f"{v:.2f}",
+            })
+        blocked_money = []
+        for b in getattr(resp, "blocked", []):
+            v = _money_value_to_decimal(b)
+            blocked_money.append({
+                "currency": (getattr(b, "currency", "") or "").upper(),
+                "value": str(v),
+                "value_ui": f"{v:.2f}",
+            })
+        securities = []
+        for sec in getattr(resp, "securities", []):
+            figi = getattr(sec, "figi", "") or ""
+            balance = int(getattr(sec, "balance", 0) or 0)  # units (shares), not lots
+            blocked_qty = int(getattr(sec, "blocked", 0) or 0)
+            if figi and abs(balance) > 0:
+                securities.append({
+                    "figi": figi,
+                    "balance": balance,
+                    "blocked": blocked_qty,
+                })
+        return {"money": money, "blocked": blocked_money, "securities": securities}
+
+
+def get_broker_positions() -> List[Dict[str, Any]]:
+    """Return actual open positions from T-Bank broker API."""
+    with with_client() as client:
+        portfolio = client.operations.get_portfolio(account_id=_account_id())
+        result = []
+        for pos in getattr(portfolio, "positions", []):
+            figi = getattr(pos, "figi", "") or ""
+            if not figi:
+                continue
+            quantity = quotation_to_decimal_safe(getattr(pos, "quantity", None))
+            quantity_lots = quotation_to_decimal_safe(getattr(pos, "quantity_lots", None))
+            avg_price = _money_value_to_decimal(getattr(pos, "average_position_price", None))
+            current_price = _money_value_to_decimal(getattr(pos, "current_price", None))
+            expected_yield = quotation_to_decimal_safe(getattr(pos, "expected_yield", None))
+            instrument_type = str(getattr(pos, "instrument_type", "") or "")
+            direction = "SELL" if quantity < 0 else "BUY"
+            lots = int(abs(quantity_lots)) if quantity_lots else int(abs(quantity))
+            result.append({
+                "figi": figi,
+                "instrument_type": instrument_type,
+                "direction": direction,
+                "qty": lots,
+                "avg_price": avg_price,
+                "current_price": current_price,
+                "expected_yield": expected_yield,
+            })
+        return result
+
+
 def get_portfolio_snapshot() -> Dict[str, Any]:
     with with_client() as client:
         portfolio = client.operations.get_portfolio(account_id=_account_id())
@@ -307,6 +459,11 @@ def get_portfolio_snapshot() -> Dict[str, Any]:
 
         cash_total = sum((x["total"] for x in money), Decimal("0"))
 
+        # Unrealized P&L: sum of expected_yield across all open positions
+        unrealized_pnl = Decimal("0")
+        for pos in getattr(portfolio, "positions", []):
+            unrealized_pnl += quotation_to_decimal_safe(getattr(pos, "expected_yield", None))
+
         return {
             "total_assets": total_amount_portfolio,
             "positions_value": (
@@ -323,6 +480,7 @@ def get_portfolio_snapshot() -> Dict[str, Any]:
             "etf": total_amount_etf,
             "futures": total_amount_futures,
             "options": total_amount_options,
+            "unrealized_pnl": unrealized_pnl,
             "money_by_currency": [
                 {
                     "currency": x["currency"],

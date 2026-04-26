@@ -1,10 +1,12 @@
 import logging
 import os
+import queue as _queue
 import time
 import uuid
 from datetime import datetime, timezone, timedelta, date
 from decimal import Decimal
 from threading import Thread
+from typing import Dict
 
 from dotenv import load_dotenv
 
@@ -77,6 +79,32 @@ class BotState:
 
 
 state = BotState()
+
+# ── Orders stream (Priority-1) ────────────────────────────────────────────────
+# Maps response_order_id → Queue; place_order_checked() blocks on the queue,
+# _orders_stream_worker() puts the OrderTrades object when fill arrives.
+_pending_orders: Dict[str, _queue.Queue] = {}
+_bot_client_cls = None  # set by main() before the stream thread starts
+
+
+def _orders_stream_worker():
+    """Background thread: subscribes to order trade events via OrdersStream."""
+    account_id = settings.TINVEST_ACCOUNT_ID
+    while True:
+        try:
+            with _bot_client_cls(settings.TINVEST_TOKEN) as sc:
+                log.info("OrdersStream: подключён")
+                for resp in sc.orders_stream.trade_stream(accounts=[account_id]):
+                    ot = getattr(resp, "order_trades", None)
+                    if ot is None:
+                        continue  # ping frame
+                    order_id = str(getattr(ot, "order_id", "") or "")
+                    q = _pending_orders.get(order_id)
+                    if q is not None:
+                        q.put(ot)
+        except Exception as exc:
+            log.warning("OrdersStream: ошибка %s, переподключение через 5 с", exc)
+            time.sleep(5)
 
 
 def quotation_from_decimal(price: Decimal) -> Quotation:
@@ -339,28 +367,50 @@ def place_order_checked(client, ticker: str, figi: str, lots: int, raw_price: De
         avg_price = rounded_price
         lots_executed = lots
 
-        for attempt in range(1, 4):
-            try:
-                time.sleep(1)
-                order_state = client.orders.get_order_state(
-                    account_id=settings.TINVEST_ACCOUNT_ID,
-                    order_id=response_order_id,
-                )
-                execution_report_status = str(getattr(order_state, "execution_report_status", "UNKNOWN"))
-                executed_order_price = getattr(order_state, "executed_order_price", None)
-                lots_executed_raw = getattr(order_state, "lots_executed", None)
-
-                if executed_order_price:
-                    avg_price = quotation_to_decimal(executed_order_price)
-
-                if lots_executed_raw is not None:
-                    lots_executed = int(lots_executed_raw)
-
-                break
-            except Exception as e:
-                msg = str(e)
-                if "50005" in msg or "Order not found" in msg:
-                    continue
+        # Fast path: wait for OrdersStream fill notification (up to 6 s)
+        result_q: _queue.Queue = _queue.Queue()
+        _pending_orders[response_order_id] = result_q
+        try:
+            order_trades = result_q.get(timeout=6)
+            trades = getattr(order_trades, "trades", []) or []
+            if trades:
+                total_filled = sum(int(getattr(t, "quantity", 0)) for t in trades)
+                if total_filled > 0:
+                    weighted = sum(
+                        quotation_to_decimal(getattr(t, "price")) * int(getattr(t, "quantity", 0))
+                        for t in trades
+                    )
+                    _ep = weighted / Decimal(str(total_filled))
+                    if _ep > 0:
+                        avg_price = _ep
+                    lots_executed = total_filled
+            execution_report_status = "ORDER_STATE_FILL"
+            log_event("ORDER_FILL", f"stream fill: {ticker} qty={lots_executed} price={avg_price}", ticker=ticker)
+        except _queue.Empty:
+            # Fallback: poll get_order_state (stream may not be connected yet)
+            for _ in range(4):
+                try:
+                    time.sleep(1)
+                    order_state = client.orders.get_order_state(
+                        account_id=settings.TINVEST_ACCOUNT_ID,
+                        order_id=response_order_id,
+                    )
+                    execution_report_status = str(getattr(order_state, "execution_report_status", "UNKNOWN"))
+                    executed_order_price = getattr(order_state, "executed_order_price", None)
+                    lots_executed_raw = getattr(order_state, "lots_executed", None)
+                    if executed_order_price:
+                        _ep = quotation_to_decimal(executed_order_price)
+                        if _ep > 0:
+                            avg_price = _ep
+                    if lots_executed_raw is not None:
+                        lots_executed = int(lots_executed_raw)
+                    break
+                except Exception as e:
+                    msg = str(e)
+                    if "50005" in msg or "Order not found" in msg:
+                        continue
+        finally:
+            _pending_orders.pop(response_order_id, None)
 
         return {
             "response_order_id": response_order_id,
@@ -607,7 +657,7 @@ def process_instrument(client, item):
 
 def main():
 
-    log.info("=== Bot v4.2 started  610 line ===")
+    log.info("=== Bot v4.3 started  610 line ===")
     log_event("BOT_START", "Bot started")
 
     if settings.TELEGRAM_ENABLED and settings.TELEGRAM_POLLING_ENABLED:
@@ -617,6 +667,11 @@ def main():
     state.sync_runtime()
 
     client_cls = SandboxClient if settings.TINVEST_USE_SANDBOX else Client
+
+    global _bot_client_cls
+    _bot_client_cls = client_cls
+    Thread(target=_orders_stream_worker, daemon=True, name="orders-stream").start()
+    log.info("OrdersStream worker started")
 
     with client_cls(settings.TINVEST_TOKEN) as client:
         state.session_balance_start = get_money_balance(client)

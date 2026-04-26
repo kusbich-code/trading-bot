@@ -1,5 +1,5 @@
 [Unit]
-Description=Trading Bot V3.3
+Description=Trading Bot V4.3
 After=network-online.target
 Wants=network-online.target
 

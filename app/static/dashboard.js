@@ -158,7 +158,8 @@ async function renderSummaryCards() {
     ${summaryCard("Статус", s.status)}
     ${summaryCard("Торговля", s.trading_status)}
     ${summaryCard("Сделки", s.trades_today)}
-    ${summaryCard("ПнЛ день", s.daily_pnl_ui)}
+    ${summaryCard("Реализованный ПнЛ", s.daily_pnl_ui)}
+    ${summaryCard("Нереализованный ПнЛ", s.unrealized_pnl_ui || "0.00")}
     ${summaryCard("Комиссия", s.total_commission_ui)}
     ${summaryCard("Деньги", s.cash_rub_ui)}
     ${summaryCard("Позиции", s.positions_value_rub_ui)}
@@ -272,8 +273,11 @@ async function renderMainData() {
     `).join("")
   );
 
+  const displayTrades = (data.api_trades && data.api_trades.length > 0)
+    ? data.api_trades
+    : (data.trades || []);
   diffTbody(document.getElementById("mainTradesBody"),
-    (data.trades || []).map((t) => `
+    displayTrades.map((t) => `
       <tr>
         <td>${esc(t.time)}</td><td>${esc(t.ticker)}</td><td>${esc(t.direction)}</td>
         <td>${esc(t.entry_ui)}</td><td>${esc(t.exit_ui)}</td>
@@ -911,18 +915,48 @@ async function renderPortfolioTab() {
       "Кнопка 'Закрыть все' отправляет команду на закрытие всех позиций бота.",
     ])}
     <section class="block">
-      <div class="row between"><h2>Портфель счёта</h2></div>
+      <div class="row between">
+        <h2>Деньги на счёте <span class="note">(GetPositions)</span></h2>
+      </div>
+      ${(data.account_money || []).length === 0
+        ? '<p class="note">Нет данных</p>'
+        : `<div class="row" style="gap:16px;flex-wrap:wrap;margin-bottom:6px;">
+            ${(data.account_money || []).map(m => `
+              <div class="card" style="min-width:140px;padding:12px;">
+                <div class="label">${esc(m.currency)}</div>
+                <div class="value">${esc(m.value_ui)}</div>
+              </div>`).join("")}
+           </div>`}
+    </section>
+    <section class="block">
+      <div class="row between"><h2>Портфель счёта <span class="note">(API брокера)</span></h2></div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Тикер</th><th>FIGI</th><th>Тип</th><th>Кол-во</th><th>Средняя</th><th>Текущая</th><th>Доход</th></tr></thead>
+          <thead><tr><th>Тикер</th><th>FIGI</th><th>Тип</th><th>Направление</th><th>Кол-во</th><th>Средняя</th><th>Текущая</th><th>Доход</th><th>Действие</th></tr></thead>
           <tbody>
-            ${(data.portfolio_positions || []).map((p) => `
-              <tr>
-                <td>${esc(p.ticker)}</td><td>${esc(p.figi)}</td><td>${esc(p.instrument_type)}</td>
-                <td>${esc(p.quantity_ui)}</td><td>${esc(p.average_position_price_ui)}</td>
-                <td>${esc(p.current_price_ui)}</td><td>${esc(p.expected_yield_ui)}</td>
-              </tr>
-            `).join("")}
+            ${(data.portfolio_positions || []).map((p) => {
+              const dir = String(p.direction || "").toUpperCase();
+              const dirBadge = dir === "BUY"
+                ? '<span class="badge" style="background:rgba(47,163,107,.2);color:#2fa36b;border:1px solid #2fa36b">Лонг</span>'
+                : dir === "SELL"
+                  ? '<span class="badge" style="background:rgba(191,77,90,.2);color:#ff7b7b;border:1px solid #bf4d5a">Шорт</span>'
+                  : "—";
+              return `
+                <tr>
+                  <td>${esc(p.ticker)}</td><td>${esc(p.figi)}</td><td>${esc(p.instrument_type)}</td>
+                  <td>${dirBadge}</td>
+                  <td>${esc(p.quantity_ui)}</td><td>${esc(p.average_position_price_ui)}</td>
+                  <td>${esc(p.current_price_ui)}</td><td>${esc(p.expected_yield_ui)}</td>
+                  <td>
+                    ${p.figi && p.qty && p.direction ? `
+                      <button class="btn btn-danger" data-close-portfolio
+                        data-figi="${esc(p.figi)}" data-qty="${esc(p.qty)}" data-direction="${esc(p.direction)}">
+                        Закрыть
+                      </button>` : "—"}
+                  </td>
+                </tr>
+              `;
+            }).join("")}
           </tbody>
         </table>
       </div>
@@ -939,7 +973,10 @@ async function renderPortfolioTab() {
     <section class="block">
       <div class="row between">
         <h2>Позиции бота</h2>
-        <button class="btn btn-danger" id="btnCloseAllPositions">Закрыть все</button>
+        <div class="row">
+          <button class="btn btn-danger" id="btnCloseAllPositions">Закрыть все</button>
+          <button class="btn" id="btnClearLocalPositions" title="Удалить мусорные локальные записи (брокера не трогает)">Очистить записи</button>
+        </div>
       </div>
       <div class="table-wrap">
         <table>
@@ -965,9 +1002,17 @@ async function renderPortfolioTab() {
   `;
 
   document.getElementById("btnCloseAllPositions")?.addEventListener("click", closeAllPositionsConfirm);
+  document.getElementById("btnClearLocalPositions")?.addEventListener("click", clearLocalPositions);
   host.querySelectorAll("[data-close-one]").forEach((btn) => {
     btn.addEventListener("click", () => closeOnePosition(btn.dataset.figi, btn.dataset.qty, btn.dataset.direction));
   });
+  host.querySelectorAll("[data-close-portfolio]").forEach((btn) => {
+    btn.addEventListener("click", () => closeOnePosition(btn.dataset.figi, btn.dataset.qty, btn.dataset.direction));
+  });
+
+  if (data.broker_error) {
+    showToast(`Портфель: данные из локальной БД (ошибка API: ${data.broker_error.slice(0, 80)})`, "error", 6000);
+  }
 
   try {
     const stopData = await apiGet("/api/dashboard/stop-orders");
@@ -990,10 +1035,23 @@ async function renderPortfolioTab() {
 }
 
 async function closeOnePosition(figi, qty, direction) {
-  if (!confirm("Закрыть эту позицию?")) return;
+  if (!confirm(`Закрыть позицию ${figi} (${qty} лот)?`)) return;
   try {
-    await apiPostForm("/api/позиции/закрыть", { figi, qty, direction });
-    showToast("Позиция отправлена на закрытие", "success");
+    const res = await apiPostForm("/api/позиции/закрыть", { figi, qty, direction });
+    showToast(`Заявка отправлена брокеру: ${res.order_id || "ok"}`, "success");
+    await renderPortfolioTab();
+    await renderMainData();
+    await renderSummaryCards();
+  } catch (e) {
+    showToast(`Ошибка закрытия: ${e.message}`, "error", 8000);
+  }
+}
+
+async function clearLocalPositions() {
+  if (!confirm("Удалить все локальные записи позиций бота?\nБрокера это не затрагивает — только локальная БД.")) return;
+  try {
+    await apiPostForm("/api/позиции/очистить-локальные", {});
+    showToast("Локальные записи позиций очищены", "success");
     await renderPortfolioTab();
     await renderMainData();
     await renderSummaryCards();
