@@ -9,7 +9,8 @@
 .tabs{display:flex;gap:10px;flex-wrap:wrap;margin:0 0 18px}.tab-link{text-decoration:none;color:var(--text);padding:12px 16px;border-radius:999px;border:1px solid var(--line);background:rgba(16,29,53,.88)}.tab-link.active{background:linear-gradient(180deg,var(--blue) 0%,var(--blue2) 100%);border-color:#6ba1ff}
 .summary-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;margin-bottom:18px}.card,.block,.help-card{background:linear-gradient(180deg,rgba(17,32,60,.97),rgba(14,27,52,.97));border:1px solid var(--line);border-radius:18px;box-shadow:0 12px 28px rgba(0,0,0,.18)}
 .card{padding:16px}.card .label{color:var(--muted);font-size:13px;margin-bottom:8px}.card .value{font-size:24px;font-weight:800;line-height:1.2}
-.block,.help-card{padding:18px;margin-bottom:18px}.help-card{border-color:#40679f;background:linear-gradient(180deg,rgba(18,35,66,.97),rgba(14,29,57,.97))}.help-card h2,.block h2{margin:0 0 10px}.help-card p,.help-card li{color:#dbe8ff}.help-card ul{margin:0;padding-left:18px}
+.block,.help-card{padding:18px;margin-bottom:18px;display:flex;flex-direction:column}
+.two-cols .block{height:100%}.help-card{border-color:#40679f;background:linear-gradient(180deg,rgba(18,35,66,.97),rgba(14,29,57,.97))}.help-card h2,.block h2{margin:0 0 10px}.help-card p,.help-card li{color:#dbe8ff}.help-card ul{margin:0;padding-left:18px}
 .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.between{justify-content:space-between}.row-buttons{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
 .btn{border:1px solid var(--line);background:rgba(22,41,77,.95);color:var(--text);padding:10px 14px;border-radius:12px;cursor:pointer}.btn-primary{background:linear-gradient(180deg,var(--blue) 0%,var(--blue2) 100%);border-color:#6ba1ff}.btn-danger{background:linear-gradient(180deg,#c65a69 0%,#a63f4f 100%);border-color:#d36d7a}
 .field{width:100%;padding:11px 12px;border-radius:12px;border:1px solid var(--line);background:rgba(10,20,38,.95);color:var(--text)}
@@ -19,6 +20,7 @@
   overflow:auto;
   border:1px solid rgba(41,68,109,.6);
   border-radius:14px;
+  flex:1;
 }
 
 table{
@@ -53,7 +55,7 @@ td:nth-child(4){
   padding:7px 10px;
   border-radius:10px;
 }
-.two-cols{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+.two-cols{display:grid;grid-template-columns:1fr 1fr;gap:18px;align-items:start}
 .hidden{display:none!important}
 .note{color:var(--muted);font-size:13px}
 .toast-host{position:fixed;top:16px;right:16px;display:flex;flex-direction:column;gap:10px;z-index:50;width:min(360px,calc(100vw - 32px))}

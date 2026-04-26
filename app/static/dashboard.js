@@ -220,24 +220,22 @@ async function renderMainShell() {
         </table>
       </div>
     </section>
-    <section class="two-cols">
-      <div class="block">
-        <div class="row between"><h2>Позиции</h2></div>
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>Тикер</th><th>Напр.</th><th>Кол-во</th><th>Вход</th><th>Тек.</th><th>ПнЛ</th><th>Открыта</th></tr></thead>
-            <tbody id="mainPositionsBody"></tbody>
-          </table>
-        </div>
+    <section class="block">
+      <div class="row between"><h2>Позиции</h2></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Тикер</th><th>Напр.</th><th>Кол-во</th><th>Вход</th><th>Тек.</th><th>ПнЛ</th><th>Открыта</th></tr></thead>
+          <tbody id="mainPositionsBody"></tbody>
+        </table>
       </div>
-      <div class="block">
-        <div class="row between"><h2>Сделки</h2><div class="note">Последние</div></div>
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>Время</th><th>Тикер</th><th>Напр.</th><th>Вход</th><th>Выход</th><th>Кол-во</th><th>ПнЛ</th><th>Причина</th></tr></thead>
-            <tbody id="mainTradesBody"></tbody>
-          </table>
-        </div>
+    </section>
+    <section class="block">
+      <div class="row between"><h2>Сделки</h2><div class="note">Последние</div></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Время</th><th>Тикер</th><th>Напр.</th><th>Вход</th><th>Выход</th><th>Кол-во</th><th>ПнЛ</th><th>Причина</th></tr></thead>
+          <tbody id="mainTradesBody"></tbody>
+        </table>
       </div>
     </section>
   `;

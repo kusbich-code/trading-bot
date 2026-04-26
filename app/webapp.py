@@ -431,9 +431,12 @@ def api_dashboard_bot_explain():
     if active_strategy_id:
         instruments = list_strategy_instruments(int(active_strategy_id))
         enabled_instruments = [x for x in instruments if str(x.get("enabled", 0)) in ("1", "true")]
+        strategy = get_strategy(int(active_strategy_id))
+        strat_settings = get_strategy_settings(int(active_strategy_id)) if strategy else {}
     else:
         enabled_instruments = []
-    open_positions = get_open_positions()
+        strat_settings = {}
+    open_positions = get_open_positions(source="BOT")
 
     reasons = []
     if str(settings_map.get("bot_enabled", "1")) != "1":
@@ -442,11 +445,11 @@ def api_dashboard_bot_explain():
         reasons.append("Не выбрана стратегия")
     elif not enabled_instruments:
         reasons.append("Нет активных инструментов в стратегии")
-    if str(settings_map.get("trade_only_session", "0")) == "1":
+    if str(strat_settings.get("trade_only_session", "0")) == "1":
         reasons.append("Торговля ограничена торговой сессией")
-    if int(str(settings_map.get("max_open_positions", "2"))) <= len(open_positions):
-        reasons.append("Достигнут лимит открытых позиций")
-    if int(str(settings_map.get("max_trades_per_day", "15"))) <= int(str(settings_map.get("trades_today", "0"))):
+    if len(open_positions) >= int(str(strat_settings.get("max_open_positions", "10"))):
+        reasons.append(f"Достигнут лимит открытых позиций: {len(open_positions)} >= {int(str(strat_settings.get('max_open_positions', '10')))}")
+    if int(str(strat_settings.get("max_trades_per_day", "15"))) <= int(str(settings_map.get("trades_today", "0"))):
         reasons.append("Достигнут лимит сделок за день")
     if not reasons:
         reasons.append("Бот готов искать сигнал")
