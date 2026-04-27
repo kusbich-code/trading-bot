@@ -55,6 +55,7 @@ from app.db import (
 )
 
 from app.config import settings
+from app.version import __version__ as BOT_VERSION
 from app.services.tbank_client import (
     get_candles,
     get_candles_range,
@@ -74,7 +75,7 @@ from app.services.healthcheck import dashboard_health
 from decimal import Decimal
 from app.telegram_health import send_telegram, health_snapshot
 
-app = FastAPI(title="Trading Bot Dashboard v4.3.5")
+app = FastAPI(title=f"Trading Bot Dashboard v{BOT_VERSION}")
 
 if os.path.isdir("app/static"):
     app.mount("/static", StaticFiles(directory="app/static"), name="static")
@@ -325,19 +326,20 @@ def _purge_bad_positions():
 
 @app.get("/dashboard/", response_class=HTMLResponse)
 def dashboard_page():
-    return HTMLResponse("""<!doctype html>
+    v = BOT_VERSION
+    return HTMLResponse(f"""<!doctype html>
 <html lang="ru">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Панель управления торговым ботом v4.3.5</title>
-  <link rel="stylesheet" href="/static/dashboard.css?v=4.3.5">
+  <title>Панель управления торговым ботом v{v}</title>
+  <link rel="stylesheet" href="/static/dashboard.css?v={v}">
 </head>
 <body>
   <div class="app">
     <header class="topbar">
       <div>
-        <h1>Панель управления торговым ботом v4.3.5</h1>
+        <h1>Панель управления торговым ботом v{v}</h1>
         <p class="sub">Профили содержат общие настройки и выбор стратегии. Стратегия содержит параметры риска и инструменты.</p>
       </div>
       <div id="routeDebugBadge" class="route-badge">Вкладка: главное</div>
@@ -421,7 +423,7 @@ def dashboard_page():
   </div>
 
   <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
-  <script src="/static/dashboard.js?v=4.3.5"></script>
+  <script src="/static/dashboard.js?v={v}"></script>
 </body>
 </html>""")
 

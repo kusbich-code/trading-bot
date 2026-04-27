@@ -35,6 +35,7 @@ except Exception:
     _STREAM_IMPORTS_OK = False
 
 from app.config import settings
+from app.version import __version__ as BOT_VERSION
 from app.db import (
     init_db,
     set_runtime,
@@ -924,7 +925,7 @@ def process_instrument(client, item):
 
 def main():
 
-    log.info("=== Bot v4.3.5 started ===")
+    log.info("=== Bot v%s started ===", BOT_VERSION)
     log_event("BOT_START", "Bot started")
 
     if settings.TELEGRAM_ENABLED and settings.TELEGRAM_POLLING_ENABLED:

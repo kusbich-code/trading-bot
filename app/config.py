@@ -1,6 +1,7 @@
 import os
 from decimal import Decimal
 from dotenv import load_dotenv
+from app.version import __version__  # noqa: F401  re-exported for convenience
 
 load_dotenv()
 
