@@ -201,6 +201,24 @@ async function renderMainShell() {
       "<b>Позиции:</b> открытые позиции из локальной БД (записывает сам бот при открытии сделки).",
       "<b>Сделки:</b> последние операции из T-Bank API (GetOperations за сегодня) — реальные исполненные BUY/SELL. Fallback на локальную БД если API недоступен. Суммы в колонке ПнЛ — фактический денежный поток по операции.",
     ])}
+    <section class="block" id="sandboxBlock" style="display:none">
+      <div class="row between">
+        <div class="row">
+          <h2>Sandbox</h2>
+          <span class="badge" style="background:rgba(76,141,255,.2);color:#4c8dff;border:1px solid #4c8dff">Тестовый режим</span>
+        </div>
+        <div class="row">
+          <select id="sandboxAmount" class="field" style="width:140px">
+            <option value="50000">50 000 ₽</option>
+            <option value="100000" selected>100 000 ₽</option>
+            <option value="500000">500 000 ₽</option>
+            <option value="1000000">1 000 000 ₽</option>
+          </select>
+          <button class="btn btn-primary" id="btnSandboxPayIn">Пополнить счёт</button>
+        </div>
+      </div>
+    </section>
+    <div id="balanceWarningsBox"></div>
     <section class="block">
       <div class="row between"><h2>Runtime</h2><div class="note">Текущее состояние бота</div></div>
       <div id="runtimeBox">Загрузка...</div>
@@ -249,6 +267,7 @@ async function renderMainShell() {
   document.getElementById("btnStartService")?.addEventListener("click", () => serviceAction("start"));
   document.getElementById("btnStopService")?.addEventListener("click", () => serviceAction("stop"));
   document.getElementById("btnRestartService")?.addEventListener("click", () => serviceAction("restart"));
+  document.getElementById("btnSandboxPayIn")?.addEventListener("click", sandboxPayIn);
 }
 
 async function renderMainData() {
@@ -290,6 +309,37 @@ async function renderMainData() {
       </tr>
     `).join("")
   );
+
+  // Balance check + sandbox visibility
+  try {
+    const bc = await apiGet("/api/dashboard/balance-check");
+
+    // Show/hide sandbox block
+    const sandboxBlock = document.getElementById("sandboxBlock");
+    if (sandboxBlock) sandboxBlock.style.display = bc.is_sandbox ? "block" : "none";
+
+    // Balance warnings
+    const warnBox = document.getElementById("balanceWarningsBox");
+    if (warnBox) {
+      const blocked = (bc.checks || []).filter(c => !c.can_trade && c.has_price);
+      if (blocked.length > 0) {
+        warnBox.innerHTML = blocked.map(c => `
+          <div class="banner-warning" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+            <div>
+              <strong>${esc(c.ticker)}</strong> — недостаточно средств для открытия позиции.
+              Нужно: <strong>${esc(c.required_ui)} ₽</strong>
+              (${esc(c.lots)} лот × ${esc(c.lot_size)} шт × ${esc(c.price_ui)} ₽ + комиссия).
+              Свободно: <strong>${esc(bc.cash_ui)} ₽</strong>.
+              SL ${esc(c.sl_pct)}% / TP ${esc(c.tp_pct)}%.
+            </div>
+            ${bc.is_sandbox ? `<button class="btn btn-primary" onclick="sandboxPayIn()">Пополнить Sandbox</button>` : ""}
+          </div>
+        `).join("");
+      } else {
+        warnBox.innerHTML = "";
+      }
+    }
+  } catch (e) { /* balance check non-critical */ }
 
   try {
     const runtime = await apiGet("/api/dashboard/runtime");
@@ -1346,6 +1396,21 @@ function renderCandlesAndScore(data) {
     font: { color: "#eef4ff" }, margin: { t: 10, r: 20, b: 40, l: 40 },
     xaxis: { rangeslider: { visible: false } },
   }, { displayModeBar: false, responsive: true });
+}
+
+// ── Sandbox pay-in ────────────────────────────────────────────────────────────
+
+async function sandboxPayIn() {
+  const select = document.getElementById("sandboxAmount");
+  const amount = select ? parseInt(select.value) : 100000;
+  try {
+    const res = await apiPostForm("/api/sandbox/pay-in", { amount });
+    showToast(`Sandbox пополнен. Новый баланс: ${res.balance_ui} ₽`, "success", 4000);
+    await renderSummaryCards();
+    await renderMainData();
+  } catch (e) {
+    showToast(`Ошибка пополнения: ${e.message}`, "error", 6000);
+  }
 }
 
 // ── Service control ───────────────────────────────────────────────────────────

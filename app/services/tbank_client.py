@@ -343,6 +343,27 @@ def get_operations_today() -> Dict[str, Any]:
     }
 
 
+def sandbox_pay_in(amount_rub: int = 100_000) -> Decimal:
+    """
+    Пополнение виртуального счёта в Sandbox.
+    Возвращает новый баланс (RUB).
+    Работает только когда TINVEST_USE_SANDBOX=true.
+    """
+    try:
+        from t_tech.invest import MoneyValue
+        amount = MoneyValue(currency="RUB", units=int(amount_rub), nano=0)
+    except Exception:
+        amount = None
+
+    with with_client() as client:
+        if amount is not None:
+            resp = client.sandbox.sandbox_pay_in(account_id=_account_id(), amount=amount)
+        else:
+            resp = client.sandbox.sandbox_pay_in(account_id=_account_id(), amount=amount_rub)
+        balance = getattr(resp, "balance", None)
+        return _money_value_to_decimal(balance) if balance else Decimal("0")
+
+
 def get_operations_by_cursor(
     from_dt=None,
     to_dt=None,

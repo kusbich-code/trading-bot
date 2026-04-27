@@ -65,6 +65,7 @@ from app.services.tbank_client import (
     get_broker_positions,
     get_positions_detailed,
     get_operations_by_cursor,
+    sandbox_pay_in,
 )
 from app.services.strategy_engine import evaluate_signal
 from app.services.healthcheck import dashboard_health
@@ -543,6 +544,79 @@ def api_dashboard_runtime():
         "status": runtime_map.get("status", settings_map.get("status", "INIT")),
         "runtime": runtime_map,
     }
+
+
+@app.post("/api/sandbox/pay-in")
+def api_sandbox_pay_in(amount: int = Form(100_000)):
+    s = get_all_settings()
+    if str(s.get("tinvestusesandbox", "true")).lower() != "true":
+        raise HTTPException(status_code=400, detail="Только для Sandbox режима")
+    try:
+        new_balance = sandbox_pay_in(amount)
+        log_event("SERVICE_CONTROL", f"Sandbox пополнение {amount} ₽, новый баланс: {new_balance:.0f} ₽")
+        return JSONResponse({"ok": True, "balance_ui": fmt_money(new_balance)})
+    except Exception as e:
+        logger.exception("sandbox pay-in error")
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/dashboard/balance-check")
+def api_balance_check():
+    """Проверка достаточности баланса для каждого инструмента активной стратегии."""
+    s = get_all_settings()
+    active_strategy_id = (s.get("active_strategy_id", "") or "").strip()
+    is_sandbox = str(s.get("tinvestusesandbox", "true")).lower() == "true"
+    commission_pct = safe_decimal(s.get("estimated_commission_pct", "0.0004"))
+    market_map = get_instrument_market_state_map()
+
+    instruments = list_strategy_instruments(int(active_strategy_id)) if active_strategy_id else []
+    enabled = [x for x in instruments if str(x.get("enabled", 0)) in ("1", "true")]
+
+    # Получаем свободный кэш
+    cash = Decimal("0")
+    try:
+        portfolio = get_portfolio_snapshot()
+        cash = safe_decimal(portfolio.get("cash", 0))
+    except Exception:
+        pass
+
+    checks = []
+    for inst in enabled:
+        figi = inst["figi"]
+        ticker = inst["ticker"]
+        lots_override = int(inst.get("lots_override", 1))
+        lot_size = int(inst.get("lot", 1))
+        last_price = safe_decimal(market_map.get(figi, {}).get("last_price", 0))
+        sl_pct = safe_decimal(inst.get("stop_loss_pct", "0.0025")) * 100
+        tp_pct = safe_decimal(inst.get("take_profit_pct", "0.005")) * 100
+
+        if last_price > 0:
+            position_cost = Decimal(str(lots_override)) * Decimal(str(lot_size)) * last_price
+            required = position_cost * (1 + commission_pct)
+        else:
+            position_cost = Decimal("0")
+            required = Decimal("0")
+
+        can_trade = (cash >= required) and required > 0
+        checks.append({
+            "ticker": ticker,
+            "lots": lots_override,
+            "lot_size": lot_size,
+            "price_ui": fmt_price(last_price),
+            "position_cost_ui": fmt_money(position_cost),
+            "required_ui": fmt_money(required),
+            "sl_pct": str(sl_pct),
+            "tp_pct": str(tp_pct),
+            "can_trade": can_trade,
+            "has_price": last_price > 0,
+        })
+
+    return JSONResponse({
+        "cash_ui": fmt_money(cash),
+        "is_sandbox": is_sandbox,
+        "checks": checks,
+        "any_blocked": any(not c["can_trade"] and c["has_price"] for c in checks),
+    })
 
 
 @app.get("/api/dashboard/bot-explain")

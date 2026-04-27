@@ -793,6 +793,22 @@ def process_instrument(client, item):
             log_event("SIGNAL_SKIP", f"{ticker} SELL пропущен: аналитики BUY", ticker=ticker)
             return
 
+    # ── Balance check before order ───────────────────────────────────────────
+    if sig == "BUY":
+        lot_size = item.get("lot", 1)
+        commission_pct = Decimal(get_setting("estimated_commission_pct", "0.0004"))
+        required = Decimal(str(lot)) * Decimal(str(lot_size)) * price * (1 + commission_pct)
+        available = Decimal(str(state.session_balance_current))
+        if available < required:
+            log_event(
+                "BALANCE_WARNING",
+                f"{ticker}: сигнал BUY, требуется ≈{float(required):.0f} ₽ "
+                f"({lot} лот × {lot_size} шт × {float(price):.2f} ₽), "
+                f"доступно {float(available):.0f} ₽ — пропуск",
+                ticker=ticker,
+            )
+            return
+
     # ── Order-book pressure filter (only when stream data available) ──────────
     total_vol = bid_vol + ask_vol
     if total_vol > 0:
