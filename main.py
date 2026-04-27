@@ -511,8 +511,21 @@ def place_order_checked(client, ticker: str, figi: str, lots: int, raw_price: De
         log_event("ORDER_OPEN", f"post_order success request={request_order_id} response={response_order_id}", ticker=ticker)
 
         execution_report_status = "ORDER_STATE_PENDING"
-        avg_price = rounded_price
+        avg_price = rounded_price   # always per-share; used as fallback
         lots_executed = lots
+
+        def _accept_fill_price(ep: Decimal) -> bool:
+            """
+            Sandbox returns executed_order_price in price-per-LOT (not per-share).
+            E.g. SBER lot=10, price=323.7 → sandbox returns 3237.
+            A real limit-order fill deviates ≤ 5% from the limit price.
+            If the returned price diverges more, it is a per-lot value — reject it
+            so we keep the correct per-share rounded_price.
+            """
+            if ep <= 0 or rounded_price <= 0:
+                return False
+            ratio = ep / rounded_price
+            return Decimal("0.95") <= ratio <= Decimal("1.05")
 
         # Fast path: wait for OrdersStream fill notification (up to 6 s)
         result_q: _queue.Queue = _queue.Queue()
@@ -528,13 +541,17 @@ def place_order_checked(client, ticker: str, figi: str, lots: int, raw_price: De
                         for t in trades
                     )
                     _ep = weighted / Decimal(str(total_filled))
-                    if _ep > 0:
+                    if _accept_fill_price(_ep):
                         avg_price = _ep
+                    elif _ep > 0:
+                        log_event("ORDER_FILL",
+                            f"{ticker} stream price {_ep} отклонён (≠ per-share limit {rounded_price}), используем limit",
+                            ticker=ticker)
                     lots_executed = total_filled
             execution_report_status = "ORDER_STATE_FILL"
             log_event("ORDER_FILL", f"stream fill: {ticker} qty={lots_executed} price={avg_price}", ticker=ticker)
         except _queue.Empty:
-            # Fallback: poll get_order_state (stream may not be connected yet)
+            # Fallback: poll get_order_state
             for _ in range(4):
                 try:
                     time.sleep(1)
@@ -547,8 +564,12 @@ def place_order_checked(client, ticker: str, figi: str, lots: int, raw_price: De
                     lots_executed_raw = getattr(order_state, "lots_executed", None)
                     if executed_order_price:
                         _ep = quotation_to_decimal(executed_order_price)
-                        if _ep > 0:
+                        if _accept_fill_price(_ep):
                             avg_price = _ep
+                        elif _ep > 0:
+                            log_event("ORDER_FILL",
+                                f"{ticker} poll price {_ep} отклонён (≠ per-share limit {rounded_price}), используем limit",
+                                ticker=ticker)
                     if lots_executed_raw is not None:
                         lots_executed = int(lots_executed_raw)
                     break
@@ -653,6 +674,13 @@ def process_instrument(client, item):
         entry_price = Decimal(str(pos["entry_price"]))
         direction = pos["direction"]
         qty = int(pos["qty"])
+
+        # Guard: if entry_price is per-lot (sandbox legacy), normalize to per-share.
+        # Detect: entry_price should be in the same range as current price (within 5×).
+        lot_size = item.get("lot", 1)
+        if lot_size > 1 and price > 0 and entry_price > price * Decimal("5"):
+            entry_price = entry_price / Decimal(str(lot_size))
+            pos["entry_price"] = float(entry_price)  # fix in-memory too
 
         unrealized_pnl = Decimal("0")
         if direction == "BUY":

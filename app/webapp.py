@@ -286,8 +286,39 @@ def summary_payload() -> Dict[str, Any]:
 @app.on_event("startup")
 def startup_event():
     init_db()
+    _purge_bad_positions()
     threading.Thread(target=_portfolio_stream_worker, daemon=True, name="portfolio-stream").start()
     logger.info("PortfolioStream worker started")
+
+
+def _purge_bad_positions():
+    """
+    Remove BOT positions whose entry_price is a per-lot value (sandbox bug).
+    Detected when entry_price is ≥ 5× the instrument's last known market price.
+    """
+    from app.db import get_open_positions, clear_open_positions, get_instrument_market_state_map
+    mmap = get_instrument_market_state_map()
+    positions = get_open_positions(source="BOT")
+    bad = []
+    for p in positions:
+        figi = p.get("figi", "")
+        entry = float(p.get("entry_price", 0) or 0)
+        last = float(mmap.get(figi, {}).get("last_price", 0) or 0)
+        if last > 0 and entry > last * 5:
+            bad.append(figi)
+            logger.warning(
+                "purge_bad_positions: %s entry=%.2f last=%.2f (per-lot price detected, removing)",
+                p.get("ticker", figi), entry, last,
+            )
+    if bad:
+        from app.db import db_cursor
+        with db_cursor() as cur:
+            for figi in bad:
+                cur.execute(
+                    "UPDATE positions SET status='CLOSED' WHERE figi=? AND status='OPEN' AND source='BOT'",
+                    (figi,)
+                )
+        log_event("SERVICE_CONTROL", f"Удалено {len(bad)} позиций с некорректными ценами входа (per-lot bug)")
 
 
 @app.get("/dashboard/", response_class=HTMLResponse)
