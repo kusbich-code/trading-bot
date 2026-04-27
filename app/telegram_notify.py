@@ -1,9 +1,19 @@
-import httpx
 import logging
+import requests
 
 from app.config import settings
 
 log = logging.getLogger("telegram")
+
+
+def _proxies():
+    """Build requests proxy dict from config. Respects TELEGRAM_PROXY or HTTPS_PROXY."""
+    proxy = settings.TELEGRAM_PROXY
+    if not proxy:
+        # requests reads HTTPS_PROXY / HTTP_PROXY from os.environ automatically,
+        # so returning None lets it use those if set.
+        return None
+    return {"http": proxy, "https": proxy}
 
 
 class TelegramNotifier:
@@ -22,18 +32,22 @@ class TelegramNotifier:
             return
 
         url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
-        payload = {"chat_id": self.chat_id, "text": text, "parse_mode": "HTML"}
+        payload = {"chat_id": self.chat_id, "text": text}
+        proxies = _proxies()
 
         try:
-            with httpx.Client(timeout=10.0) as client:
-                resp = client.post(url, json=payload)
-            if resp.is_success:
+            resp = requests.post(url, json=payload, timeout=10, proxies=proxies)
+            if resp.ok:
                 log.debug(f"Telegram: отправлено ✓ chat_id={self.chat_id}")
             else:
-                log.warning(
-                    f"Telegram API error {resp.status_code}: {resp.text[:300]}"
-                )
-        except httpx.TimeoutException:
-            log.warning("Telegram: таймаут подключения (10 с)")
+                log.warning(f"Telegram API error {resp.status_code}: {resp.text[:300]}")
+        except requests.exceptions.ConnectTimeout:
+            log.warning(
+                "Telegram: таймаут подключения к api.telegram.org. "
+                "Проверьте сеть или задайте TELEGRAM_PROXY в .env "
+                "(например: socks5://127.0.0.1:1080)"
+            )
+        except requests.exceptions.ProxyError as e:
+            log.warning(f"Telegram: ошибка прокси — {e}")
         except Exception as e:
             log.warning(f"Telegram: ошибка отправки — {e}")
