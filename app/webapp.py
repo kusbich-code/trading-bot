@@ -57,6 +57,7 @@ from app.db import (
 from app.config import settings
 from app.services.tbank_client import (
     get_candles,
+    get_candles_range,
     get_active_stop_orders,
     post_market_close,
     post_stop_bundle,
@@ -68,6 +69,7 @@ from app.services.tbank_client import (
     sandbox_pay_in,
 )
 from app.services.strategy_engine import evaluate_signal
+from app.services.backtest_engine import run_backtest, result_to_dict
 from app.services.healthcheck import dashboard_health
 from decimal import Decimal
 from app.telegram_health import send_telegram, health_snapshot
@@ -347,6 +349,7 @@ def dashboard_page():
       <a href="#/настройки" class="tab-link" data-tab-link="настройки">Настройки</a>
       <a href="#/история" class="tab-link" data-tab-link="история">История</a>
       <a href="#/график" class="tab-link" data-tab-link="график">График</a>
+      <a href="#/бэктест" class="tab-link" data-tab-link="бэктест">Бэктест</a>
     </nav>
 
     <section id="summaryCards" class="summary-grid"></section>
@@ -356,6 +359,7 @@ def dashboard_page():
     <section id="view-settings" data-view="настройки" class="hidden"></section>
     <section id="view-history" data-view="история" class="hidden"></section>
     <section id="view-chart" data-view="график" class="hidden"></section>
+    <section id="view-backtest" data-view="бэктест" class="hidden"></section>
   </div>
 
   <div id="toastHost" class="toast-host"></div>
@@ -882,6 +886,111 @@ def api_dashboard_chart(figi: str = "", interval: str = "1min"):
     return {
         "figi": selected_figi, "interval": interval, "candles": candles,
         "signal": signal, "available_instruments": available, "selected_figi": selected_figi,
+    }
+
+
+# ── backtest ──────────────────────────────────────────────────────────────────
+
+@app.get("/api/backtest/instruments")
+def api_backtest_instruments():
+    """All instruments known to the bot, for the backtest instrument picker."""
+    rows = list_instruments()
+    return [{"figi": r["figi"], "ticker": r.get("ticker", ""), "name": r.get("name", "")} for r in rows if r.get("figi")]
+
+
+@app.get("/api/backtest/strategies")
+def api_backtest_strategies():
+    """Return all strategies with their key backtest-relevant settings."""
+    strategies = list_strategies()
+    out = []
+    for s in strategies:
+        sid = s["id"]
+        cfg = get_strategy_settings(sid)
+        # Fetch instruments assigned to this strategy
+        instr = list_strategy_instruments(sid)
+        out.append({
+            "id": sid,
+            "name": s.get("name", f"Стратегия {sid}"),
+            "tradingmode": cfg.get("tradingmode", "trend"),
+            "stop_loss_pct": cfg.get("default_stop_loss_pct", "0.0025"),
+            "take_profit_pct": cfg.get("default_take_profit_pct", "0.005"),
+            "commission_pct": cfg.get("estimated_commission_pct", "0.0004"),
+            "trailing_stop_enabled": cfg.get("trailing_stop_enabled", "0"),
+            "instruments": [
+                {"figi": i["figi"], "ticker": i.get("ticker", ""), "name": i.get("name", "")}
+                for i in instr if i.get("figi")
+            ],
+        })
+    return out
+
+
+@app.post("/api/backtest/run")
+async def api_backtest_run(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Некорректный JSON")
+
+    figi = str(body.get("figi", "")).strip()
+    interval = str(body.get("interval", "5min")).strip()
+    days = max(1, min(int(body.get("days", 7)), 30))
+
+    # strategy_ids: list of strategy IDs to compare; falls back to legacy modes list
+    strategy_ids = body.get("strategy_ids") or []
+    if not figi:
+        raise HTTPException(status_code=400, detail="Укажите figi")
+    if not strategy_ids:
+        raise HTTPException(status_code=400, detail="Выберите хотя бы одну стратегию")
+
+    try:
+        candles = get_candles_range(figi=figi, interval_name=interval, days=days)
+    except Exception as e:
+        log_event("BOT_ERROR", f"backtest candles error: {e}", level="ERROR")
+        raise HTTPException(status_code=502, detail=f"Ошибка загрузки свечей: {e}")
+
+    if len(candles) < 30:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Недостаточно свечей: загружено {len(candles)}, нужно минимум 30. "
+                   "Увеличьте период или выберите другой интервал.",
+        )
+
+    results = {}
+    for sid in strategy_ids:
+        sid = int(sid)
+        strat = get_strategy(sid)
+        if not strat:
+            results[str(sid)] = {"error": f"Стратегия {sid} не найдена"}
+            continue
+        cfg = get_strategy_settings(sid)
+        mode = cfg.get("tradingmode", "trend")
+        sl_pct = float(cfg.get("default_stop_loss_pct", "0.0025"))
+        tp_pct = float(cfg.get("default_take_profit_pct", "0.005"))
+        comm_pct = float(cfg.get("estimated_commission_pct", "0.0004"))
+        strat_name = strat.get("name", f"Стратегия {sid}")
+        try:
+            res = run_backtest(
+                candles=candles,
+                mode=mode,
+                stop_loss_pct=sl_pct,
+                take_profit_pct=tp_pct,
+                commission_pct=comm_pct,
+            )
+            d = result_to_dict(res, candles)
+            d["strategy_name"] = strat_name
+            d["mode"] = mode
+            d["sl_pct_ui"] = f"{sl_pct * 100:.3f}%"
+            d["tp_pct_ui"] = f"{tp_pct * 100:.3f}%"
+            results[str(sid)] = d
+        except Exception as e:
+            results[str(sid)] = {"error": str(e), "strategy_name": strat_name}
+
+    return {
+        "figi": figi,
+        "interval": interval,
+        "days": days,
+        "candles_loaded": len(candles),
+        "results": results,
     }
 
 

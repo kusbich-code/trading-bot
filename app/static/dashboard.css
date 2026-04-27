@@ -235,3 +235,53 @@ td:nth-child(4){
   height: 16px;
   cursor: pointer;
 }
+
+/* ── shared utility classes ── */
+.pnl-pos { color: #2ecc71; }
+.pnl-neg { color: #ff5c5c; }
+
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+.badge-buy {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  background: rgba(47, 163, 107, 0.18);
+  color: #2fa36b;
+  border: 1px solid #2fa36b;
+}
+
+.badge-sell {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  background: rgba(191, 77, 90, 0.18);
+  color: #ff5c5c;
+  border: 1px solid #ff5c5c;
+}
+
+.field-label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.btn-small {
+  padding: 4px 12px;
+  font-size: 12px;
+  border-radius: 6px;
+  border: 1px solid var(--blue);
+  background: transparent;
+  color: var(--blue);
+  cursor: pointer;
+}
+
+.btn-small:hover {
+  background: rgba(76, 141, 255, 0.12);
+}

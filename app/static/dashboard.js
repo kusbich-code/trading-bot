@@ -8,7 +8,7 @@ let refreshTimersStarted = false;
 // Viewed profile in settings tab (may differ from active profile)
 let viewedProfileId = null;
 
-const ALLOWED_TABS = new Set(["главное", "портфель", "настройки", "история", "график"]);
+const ALLOWED_TABS = new Set(["главное", "портфель", "настройки", "история", "график", "бэктест"]);
 
 function esc(v) {
   return String(v ?? "");
@@ -119,7 +119,7 @@ function diffTbody(tbody, rowsHtml) {
 }
 
 function ensureViewsExist() {
-  const required = ["главное", "портфель", "настройки", "история", "график"];
+  const required = ["главное", "портфель", "настройки", "история", "график", "бэктест"];
   const root = document.querySelector(".app") || document.body;
   required.forEach((tab) => {
     if (!document.querySelector(`[data-view="${tab}"]`)) {
@@ -1494,6 +1494,307 @@ async function serviceAction(action) {
   }
 }
 
+// ── Backtesting tab ───────────────────────────────────────────────────────────
+
+let _backtestInstruments = [];
+let _backtestStrategies  = [];
+let _backtestLastResult  = null;
+
+const _BT_MODE_LABELS = {
+  trend: "Trend (SMA9/21)", mean_reversion: "Mean Reversion", breakout: "Breakout",
+};
+
+async function renderBacktestTab() {
+  const host = document.getElementById("view-backtest");
+  if (!host) return;
+
+  if (host.dataset.initialized !== "1") {
+    host.innerHTML = `<div class="note" style="padding:24px">Загрузка стратегий…</div>`;
+    await _btReloadForm(host);
+    host.dataset.initialized = "1";
+  }
+}
+
+async function _btReloadForm(host) {
+  try {
+    [_backtestInstruments, _backtestStrategies] = await Promise.all([
+      apiGet("/api/backtest/instruments"),
+      apiGet("/api/backtest/strategies"),
+    ]);
+  } catch {
+    _backtestInstruments = [];
+    _backtestStrategies = [];
+  }
+
+  const instrOptions = _backtestInstruments.length
+    ? _backtestInstruments.map(i =>
+        `<option value="${esc(i.figi)}">${esc(i.ticker)} — ${esc(i.name)}</option>`
+      ).join("")
+    : `<option value="">Нет инструментов (добавьте в Настройках)</option>`;
+
+  const modeHints = { trend: "Trend", mean_reversion: "MeanRev", breakout: "Breakout" };
+  const stratCards = _backtestStrategies.length
+    ? _backtestStrategies.map(s => {
+        const sl  = (parseFloat(s.stop_loss_pct)  * 100).toFixed(3);
+        const tp  = (parseFloat(s.take_profit_pct) * 100).toFixed(3);
+        const com = (parseFloat(s.commission_pct)  * 100).toFixed(4);
+        const modeLabel = modeHints[s.tradingmode] || s.tradingmode;
+        return `
+          <label class="bt-strat-card" style="display:flex;align-items:flex-start;gap:10px;padding:10px 14px;
+            border:1px solid rgba(76,141,255,.3);border-radius:10px;cursor:pointer;
+            background:rgba(76,141,255,.04);margin-bottom:8px">
+            <input type="checkbox" class="bt-strat-cb" value="${s.id}" checked style="margin-top:3px;cursor:pointer">
+            <div>
+              <div style="font-weight:600;color:#eef4ff">${esc(s.name)}</div>
+              <div class="note" style="margin-top:2px">
+                Режим: <b>${esc(modeLabel)}</b> &nbsp;·&nbsp;
+                SL: <b>${sl}%</b> &nbsp;·&nbsp;
+                TP: <b>${tp}%</b> &nbsp;·&nbsp;
+                Комиссия: <b>${com}%</b>
+              </div>
+              ${s.instruments.length ? `<div class="note" style="margin-top:2px">
+                Инструменты: ${s.instruments.map(i => `<span class="badge badge-active" style="margin-right:4px;font-size:11px">${esc(i.ticker)}</span>`).join("")}
+              </div>` : ""}
+            </div>
+          </label>`;
+      }).join("")
+    : `<div class="note">Нет стратегий. Создайте хотя бы одну в разделе Настройки.</div>`;
+
+  host.innerHTML = `
+    ${helpCard("Бэктест", [
+      "<b>Бэктестинг</b> — прогон ваших реальных стратегий на исторических OHLCV-данных T-Bank API. SL/TP/комиссия берутся из настроек каждой стратегии.",
+      "<b>Режимы торговли:</b> Trend — SMA9/SMA21 + моментум; Mean Reversion — Z-score ±1.8; Breakout — пробой 20-барного экстремума с объёмом. Задаются в настройках стратегии.",
+      "<b>Метрики:</b> Win Rate — % прибыльных сделок; Profit Factor — брутто-прибыль / убыток; Max Drawdown — макс. просадка от пика; R-Multiple — PnL / риск (SL); Sharpe — доходность / волатильность.",
+      "<b>Логика:</b> одна позиция за раз, на каждой свече проверяется SL/TP по High/Low, вход — по цене Close при срабатывании сигнала. Комиссия списывается на входе и выходе.",
+      "<b>Ограничения:</b> нет учёта проскальзывания и стакана; период до 30 дней; минимум 30 свечей для расчёта сигнала.",
+    ])}
+
+    <div class="block" style="margin-bottom:16px">
+      <h2>Параметры бэктеста</h2>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;margin-bottom:20px">
+        <label class="field-label">
+          Инструмент
+          <select id="btFigi" class="field" style="width:100%">${instrOptions}</select>
+        </label>
+        <label class="field-label">
+          Интервал свечей
+          <select id="btInterval" class="field" style="width:100%">
+            <option value="5min">5 минут</option>
+            <option value="15min" selected>15 минут</option>
+            <option value="hour">1 час</option>
+          </select>
+        </label>
+        <label class="field-label">
+          Период (дней)
+          <select id="btDays" class="field" style="width:100%">
+            <option value="1">1 день</option>
+            <option value="3">3 дня</option>
+            <option value="7" selected>7 дней</option>
+            <option value="14">14 дней</option>
+            <option value="30">30 дней</option>
+          </select>
+        </label>
+      </div>
+
+      <div style="margin-bottom:16px">
+        <div style="font-weight:600;margin-bottom:10px;color:#eef4ff">
+          Стратегии для сравнения
+          <span class="note" style="font-weight:400;margin-left:8px">SL, TP и режим берутся из настроек каждой стратегии</span>
+        </div>
+        <div id="btStratList">${stratCards}</div>
+      </div>
+
+      <button class="btn btn-primary" onclick="runBacktest()">▶ Запустить бэктест</button>
+      <span id="btStatus" class="note" style="margin-left:12px"></span>
+    </div>
+
+    <div id="btResults" style="display:none">
+      <div class="block" style="margin-bottom:16px">
+        <h2>Сравнение стратегий</h2>
+        <div style="overflow-x:auto">
+          <table class="table">
+            <thead><tr id="btCompareHead"><th>Метрика</th></tr></thead>
+            <tbody id="btCompareTbody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="block" style="margin-bottom:16px">
+        <h2>Кривая капитала</h2>
+        <div id="btEquityChart" style="height:280px"></div>
+      </div>
+
+      <div class="block">
+        <h2>Сделки — <span id="btTradesStratName" style="color:#a8c8ff"></span></h2>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px" id="btStratButtons"></div>
+        <div style="overflow-x:auto">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>Вход</th><th>Выход</th><th>Направление</th>
+                <th>Цена входа</th><th>Цена выхода</th><th>Причина</th>
+                <th>PnL ₽</th><th>Комиссия ₽</th>
+              </tr>
+            </thead>
+            <tbody id="btTradesTbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+async function runBacktest() {
+  const figi     = (document.getElementById("btFigi")     || {}).value || "";
+  const interval = (document.getElementById("btInterval") || {}).value || "15min";
+  const days     = parseInt((document.getElementById("btDays") || {}).value || "7");
+
+  const strategyIds = Array.from(
+    document.querySelectorAll(".bt-strat-cb:checked")
+  ).map(cb => parseInt(cb.value));
+
+  if (!figi)               { showToast("Выберите инструмент", "error"); return; }
+  if (!strategyIds.length) { showToast("Отметьте хотя бы одну стратегию", "error"); return; }
+
+  const status  = document.getElementById("btStatus");
+  const results = document.getElementById("btResults");
+  if (status)  status.textContent = "Загружаю свечи и прогоняю стратегии…";
+  if (results) results.style.display = "none";
+
+  try {
+    const data = await apiPostJson("/api/backtest/run", { figi, interval, days, strategy_ids: strategyIds });
+    _backtestLastResult = data;
+    const n = data.candles_loaded;
+    if (status) status.textContent = `Готово. Свечей: ${n}, период: ${data.days} дн.`;
+    _renderBacktestResults(data);
+    if (results) results.style.display = "block";
+  } catch (e) {
+    if (status) status.textContent = "";
+    showToast(`Ошибка бэктеста: ${e.message}`, "error", 8000);
+  }
+}
+
+function _renderBacktestResults(data) {
+  const results = data.results || {};
+  const sids    = Object.keys(results);
+
+  // ── Header row ──
+  const head = document.getElementById("btCompareHead");
+  if (head) {
+    head.innerHTML = `<th>Метрика</th>` + sids.map(sid => {
+      const r = results[sid];
+      const name = r.strategy_name || `Стратегия ${sid}`;
+      const mode = r.mode ? `<div class="note" style="font-weight:400;font-size:11px">${esc(r.mode)} · SL ${esc(r.sl_pct_ui || "")} · TP ${esc(r.tp_pct_ui || "")}</div>` : "";
+      return `<th style="min-width:140px">${esc(name)}${mode}</th>`;
+    }).join("");
+  }
+
+  // ── Metrics rows ──
+  const metrics = [
+    ["Свечей",              r => String(r.candles_tested ?? "—")],
+    ["Сделок",              r => String(r.total_trades ?? "—")],
+    ["Прибыл. / убыт.",     r => `${r.win_trades ?? 0} / ${r.loss_trades ?? 0}`],
+    ["Win Rate",            r => r.win_rate    != null ? `${r.win_rate.toFixed(1)}%` : "—"],
+    ["Profit Factor",       r => r.profit_factor != null ? r.profit_factor.toFixed(2) : "—"],
+    ["Чистый PnL (₽)",     r => {
+      if (r.net_pnl == null) return "—";
+      return `<span class="${r.net_pnl >= 0 ? "pnl-pos" : "pnl-neg"}">${r.net_pnl.toFixed(2)}</span>`;
+    }],
+    ["Брутто-прибыль (₽)", r => r.gross_profit != null ? r.gross_profit.toFixed(2) : "—"],
+    ["Брутто-убыток (₽)",  r => r.gross_loss   != null ? r.gross_loss.toFixed(2) : "—"],
+    ["Max Drawdown (₽)",   r => r.max_drawdown  != null ? r.max_drawdown.toFixed(2) : "—"],
+    ["Max Drawdown (%)",   r => r.max_drawdown_pct != null ? `${r.max_drawdown_pct.toFixed(2)}%` : "—"],
+    ["Avg R-Multiple",     r => r.avg_r_multiple != null ? r.avg_r_multiple.toFixed(2) : "—"],
+    ["Sharpe Ratio",       r => r.sharpe_ratio != null ? r.sharpe_ratio.toFixed(2) : "—"],
+    ["Комиссии (₽)",       r => r.total_commission != null ? r.total_commission.toFixed(2) : "—"],
+  ];
+
+  const tbody = document.getElementById("btCompareTbody");
+  if (tbody) {
+    tbody.innerHTML = metrics.map(([label, fn]) => `
+      <tr>
+        <td><b>${label}</b></td>
+        ${sids.map(sid => {
+          const r = results[sid];
+          if (!r || r.error) return `<td style="color:#ff5c5c;font-size:12px">${esc(r?.error || "Ошибка")}</td>`;
+          return `<td>${fn(r)}</td>`;
+        }).join("")}
+      </tr>`).join("");
+  }
+
+  // ── Equity chart ──
+  if (window.Plotly) {
+    const traces = sids
+      .filter(sid => results[sid] && !results[sid].error && results[sid].equity_curve)
+      .map(sid => ({
+        y: results[sid].equity_curve,
+        mode: "lines",
+        name: results[sid].strategy_name || `#${sid}`,
+        line: { width: 2 },
+      }));
+    Plotly.newPlot("btEquityChart", traces, {
+      paper_bgcolor: "rgba(0,0,0,0)", plot_bgcolor: "rgba(0,0,0,0)",
+      font: { color: "#eef4ff" }, margin: { t: 10, r: 20, b: 40, l: 60 },
+      yaxis: { title: "Капитал (₽)" }, xaxis: { title: "Бар" },
+      legend: { orientation: "h", y: -0.15 },
+    }, { displayModeBar: false, responsive: true });
+  }
+
+  // ── Strategy selector buttons for trade list ──
+  const btns = document.getElementById("btStratButtons");
+  if (btns) {
+    btns.innerHTML = sids.map(sid =>
+      `<button class="btn btn-small" onclick="_showBacktestTrades('${sid}')">${
+        esc(results[sid]?.strategy_name || `Стратегия ${sid}`)
+      }</button>`
+    ).join("");
+  }
+
+  if (sids.length > 0) _showBacktestTrades(sids[0]);
+}
+
+function _showBacktestTrades(sid) {
+  const nameEl = document.getElementById("btTradesStratName");
+  const tbody  = document.getElementById("btTradesTbody");
+  if (!tbody || !_backtestLastResult) return;
+
+  const result = (_backtestLastResult.results || {})[sid];
+  const label  = result?.strategy_name || `Стратегия ${sid}`;
+  if (nameEl) nameEl.textContent = label;
+
+  if (!result || result.error || !result.trades) {
+    tbody.innerHTML = `<tr><td colspan="8" class="note">${esc(result?.error || "Нет данных")}</td></tr>`;
+    return;
+  }
+
+  const trades = result.trades;
+  if (!trades.length) {
+    tbody.innerHTML = `<tr><td colspan="8" class="note">Сделок нет — сигналы не сработали на этом периоде.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = trades.map(t => {
+    const pnlCls   = t.pnl >= 0 ? "pnl-pos" : "pnl-neg";
+    const dirBadge = t.direction === "BUY"
+      ? `<span class="badge badge-buy">Лонг</span>`
+      : `<span class="badge badge-sell">Шорт</span>`;
+    const exitHtml = t.exit_reason === "SL"  ? `<span style="color:#ff5c5c">SL</span>`
+      : t.exit_reason === "TP"  ? `<span style="color:#2ecc71">TP</span>`
+      : t.exit_reason === "END" ? `<span style="color:#aaa">Конец</span>`
+      : esc(t.exit_reason);
+    return `<tr>
+      <td class="mono">${esc((t.entry_time || "").slice(0,19).replace("T"," "))}</td>
+      <td class="mono">${esc((t.exit_time  || "").slice(0,19).replace("T"," "))}</td>
+      <td>${dirBadge}</td>
+      <td class="mono">${t.entry_price?.toFixed(4) ?? "—"}</td>
+      <td class="mono">${t.exit_price?.toFixed(4)  ?? "—"}</td>
+      <td>${exitHtml}</td>
+      <td class="mono ${pnlCls}">${t.pnl?.toFixed(2) ?? "—"}</td>
+      <td class="mono">${t.commission?.toFixed(2) ?? "—"}</td>
+    </tr>`;
+  }).join("");
+}
+
 // ── Router ────────────────────────────────────────────────────────────────────
 
 async function applyRoute() {
@@ -1514,6 +1815,8 @@ async function applyRoute() {
       await renderHistoryTab();
     } else if (tab === "график") {
       await renderChartTab();
+    } else if (tab === "бэктест") {
+      await renderBacktestTab();
     }
   } catch (e) {
     console.error("[tabs] route error", e);
@@ -1560,6 +1863,8 @@ async function bootstrapDashboard() {
   await applyRoute();
   startRefreshLoops();
 
+  window.runBacktest = runBacktest;
+  window._showBacktestTrades = _showBacktestTrades;
   window.searchInstruments = searchInstruments;
   window.loadTopVolumeInstruments = loadTopVolumeInstruments;
   window.acceptSelectedInstruments = acceptSelectedInstruments;

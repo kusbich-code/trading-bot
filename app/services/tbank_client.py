@@ -131,6 +131,81 @@ def search_instruments(query: str = "", limit: int = 20) -> List[Dict[str, Any]]
     return items[:limit]
 
 
+def get_candles_range(
+    figi: str,
+    interval_name: str = "5min",
+    from_dt: Optional[datetime] = None,
+    to_dt: Optional[datetime] = None,
+    days: int = 7,
+) -> List[Dict[str, Any]]:
+    """
+    Fetch candles over a date range, automatically splitting into chunks
+    accepted by the T-Bank API (1 day for minute intervals, 7 days for hour).
+    Returns candles sorted ascending by time.
+    """
+    interval_map = {
+        "1min": CandleInterval.CANDLE_INTERVAL_1_MIN,
+        "5min": CandleInterval.CANDLE_INTERVAL_5_MIN,
+        "15min": CandleInterval.CANDLE_INTERVAL_15_MIN,
+        "hour": CandleInterval.CANDLE_INTERVAL_HOUR,
+        "day": CandleInterval.CANDLE_INTERVAL_DAY,
+    }
+    interval = interval_map.get(interval_name, CandleInterval.CANDLE_INTERVAL_5_MIN)
+
+    # Chunk size: minutes intervals → 1 day, hour → 7 days, day → 365 days
+    if interval_name in ("1min", "5min", "15min"):
+        chunk_hours = 24
+    elif interval_name == "hour":
+        chunk_hours = 24 * 7
+    else:
+        chunk_hours = 24 * 365
+
+    from datetime import timezone as _tz
+    now = datetime.now(_tz.utc).replace(tzinfo=None)
+    if to_dt is None:
+        to_dt = now
+    if from_dt is None:
+        from_dt = now - timedelta(days=days)
+
+    chunks: List[Tuple[datetime, datetime]] = []
+    cur = from_dt
+    while cur < to_dt:
+        end = min(cur + timedelta(hours=chunk_hours), to_dt)
+        chunks.append((cur, end))
+        cur = end
+
+    out: List[Dict[str, Any]] = []
+    seen_times: set = set()
+    with with_client() as client:
+        for chunk_from, chunk_to in chunks:
+            try:
+                resp = client.market_data.get_candles(
+                    figi=figi,
+                    from_=chunk_from,
+                    to=chunk_to,
+                    interval=interval,
+                ).candles
+            except Exception:
+                continue
+            for c in resp:
+                t = c.time.isoformat() if getattr(c, "time", None) else ""
+                if t in seen_times:
+                    continue
+                seen_times.add(t)
+                out.append({
+                    "time": t,
+                    "open": float(quotation_to_decimal_safe(c.open)),
+                    "high": float(quotation_to_decimal_safe(c.high)),
+                    "low": float(quotation_to_decimal_safe(c.low)),
+                    "close": float(quotation_to_decimal_safe(c.close)),
+                    "volume": getattr(c, "volume", 0),
+                    "is_complete": getattr(c, "is_complete", True),
+                })
+
+    out.sort(key=lambda x: x["time"])
+    return out
+
+
 def get_candles(figi: str, interval_name: str = "1min", hours: int = 8) -> List[Dict[str, Any]]:
     interval_map = {
         "1min": CandleInterval.CANDLE_INTERVAL_1_MIN,
