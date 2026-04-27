@@ -220,8 +220,12 @@ async function renderMainShell() {
     </section>
     <div id="balanceWarningsBox"></div>
     <section class="block">
-      <div class="row between"><h2>Runtime</h2><div class="note">Текущее состояние бота</div></div>
+      <div class="row between">
+        <h2>Runtime</h2>
+        <button class="btn" id="btnTelegramDiag" title="Проверить настройки Telegram и отправить тестовое сообщение">Тест Telegram</button>
+      </div>
       <div id="runtimeBox">Загрузка...</div>
+      <div id="telegramDiagBox"></div>
     </section>
     <section class="block">
       <div class="row between"><h2>Почему бот сейчас не торгует</h2></div>
@@ -268,6 +272,7 @@ async function renderMainShell() {
   document.getElementById("btnStopService")?.addEventListener("click", () => serviceAction("stop"));
   document.getElementById("btnRestartService")?.addEventListener("click", () => serviceAction("restart"));
   document.getElementById("btnSandboxPayIn")?.addEventListener("click", sandboxPayIn);
+  document.getElementById("btnTelegramDiag")?.addEventListener("click", telegramDiag);
 }
 
 async function renderMainData() {
@@ -1399,6 +1404,47 @@ function renderCandlesAndScore(data) {
 }
 
 // ── Sandbox pay-in ────────────────────────────────────────────────────────────
+
+async function telegramDiag() {
+  const box = document.getElementById("telegramDiagBox");
+  if (box) box.innerHTML = '<span class="note">Проверяю...</span>';
+  try {
+    const status = await apiGet("/api/telegram/status");
+    const problems = status.problems || [];
+    let html = "";
+    if (problems.length > 0) {
+      html = problems.map(p =>
+        `<div class="banner-warning" style="margin-top:8px;padding:8px 12px">${esc(p)}</div>`
+      ).join("");
+    } else {
+      // Send a real test message
+      try {
+        const res = await fetch("/api/health/telegram-test", { method: "POST", credentials: "same-origin" });
+        const data = await res.json();
+        const tg = data.telegram || {};
+        if (tg.ok) {
+          html = `<div style="margin-top:8px;padding:8px 12px;border-radius:8px;background:rgba(47,163,107,.15);border:1px solid #2fa36b;color:#2fa36b">
+            Тестовое сообщение отправлено ✓ (chat_id: ${esc(status.chat_id)})
+          </div>`;
+        } else {
+          html = `<div class="banner-warning" style="margin-top:8px">
+            Telegram API вернул ошибку: ${esc(JSON.stringify(tg))}<br>
+            Проверь: бот добавлен в чат? Токен верный? Chat ID верный?
+          </div>`;
+        }
+      } catch (e) {
+        html = `<div class="banner-warning" style="margin-top:8px">Ошибка теста: ${esc(e.message)}</div>`;
+      }
+    }
+    html += `<div class="note" style="margin-top:6px">
+      Токен: ${esc(status.token_preview)} · Chat ID: ${esc(status.chat_id)} ·
+      Только ошибки: ${status.telegram_errors_only === "1" ? "<b>Да</b>" : "Нет"}
+    </div>`;
+    if (box) box.innerHTML = html;
+  } catch (e) {
+    if (box) box.innerHTML = `<div class="banner-warning" style="margin-top:8px">Ошибка: ${esc(e.message)}</div>`;
+  }
+}
 
 async function sandboxPayIn() {
   const select = document.getElementById("sandboxAmount");

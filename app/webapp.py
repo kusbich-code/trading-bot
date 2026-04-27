@@ -1228,6 +1228,39 @@ def api_create_stop_bundle(
 
 # ── health / telegram ─────────────────────────────────────────────────────────
 
+@app.get("/api/telegram/status")
+def api_telegram_status():
+    """Диагностика настроек Telegram без отправки сообщения."""
+    from app.config import settings as _cfg
+    s = get_all_settings()
+    token = (_cfg.TELEGRAM_BOT_TOKEN or "").strip()
+    chat_id = (_cfg.TELEGRAM_CHAT_ID or "").strip()
+    enabled = _cfg.TELEGRAM_ENABLED
+    errors_only = get_setting("telegram_errors_only", "0")
+
+    problems = []
+    if not enabled:
+        problems.append("TELEGRAM_ENABLED=false в .env — уведомления выключены")
+    if not token:
+        problems.append("TELEGRAM_BOT_TOKEN не задан в .env")
+    elif len(token) < 30:
+        problems.append(f"TELEGRAM_BOT_TOKEN подозрительно короткий ({len(token)} символов)")
+    if not chat_id:
+        problems.append("TELEGRAM_CHAT_ID не задан в .env")
+    if errors_only == "1":
+        problems.append("telegram_errors_only=1 в настройках профиля — отправляются только ошибки, торговые уведомления заблокированы")
+
+    return JSONResponse({
+        "enabled": enabled,
+        "token_set": bool(token),
+        "token_preview": f"{token[:8]}...{token[-4:]}" if len(token) > 12 else "—",
+        "chat_id": chat_id,
+        "telegram_errors_only": errors_only,
+        "problems": problems,
+        "ok": len(problems) == 0,
+    })
+
+
 @app.post("/api/health/telegram-test")
 def api_health_telegram_test():
     health = dashboard_health()
