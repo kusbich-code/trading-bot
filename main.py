@@ -312,6 +312,7 @@ def notify(message: str, is_error: bool = False):
 
 
 def sync_portfolio_positions(client):
+    """Sync PORTFOLIO positions from broker API into local DB (source=PORTFOLIO)."""
     try:
         clear_open_positions(source="PORTFOLIO")
 
@@ -321,43 +322,47 @@ def sync_portfolio_positions(client):
         for p in positions:
             figi = getattr(p, "figi", "") or ""
             instrument_type = str(getattr(p, "instrument_type", "") or "").lower()
-            ticker = getattr(p, "ticker", "") or figi
+            ticker = getattr(p, "ticker", "") or figi[:8]
 
-            if not figi:
+            if not figi or "currency" in instrument_type or ticker.upper().startswith("RUB"):
                 continue
 
-            if "currency" in instrument_type:
-                continue
-
-            if ticker.upper().startswith("RUB"):
-                continue
-
-            qty_obj = getattr(p, "quantity", None)
+            # qty in LOTS (quantity_lots), not shares (quantity)
+            qty_lots_obj = getattr(p, "quantity_lots", None)
+            qty_shares_obj = getattr(p, "quantity", None)
             avg_obj = getattr(p, "average_position_price", None)
             cur_obj = getattr(p, "current_price", None)
+            yield_obj = getattr(p, "expected_yield", None)
 
-            qty = 0
+            qty_lots = 0
+            qty_shares = 0
             try:
-                qty = int(quotation_to_decimal(qty_obj)) if qty_obj else 0
+                if qty_lots_obj is not None:
+                    qty_lots = int(quotation_to_decimal(qty_lots_obj))
+                if qty_shares_obj is not None:
+                    qty_shares = int(quotation_to_decimal(qty_shares_obj))
             except Exception:
-                qty = 0
+                pass
 
+            # Prefer lots; fall back to shares if quantity_lots unavailable
+            qty = qty_lots if qty_lots != 0 else qty_shares
             if qty == 0:
                 continue
 
             avg_price = float(quotation_to_decimal(avg_obj)) if avg_obj else 0.0
             current_price = float(quotation_to_decimal(cur_obj)) if cur_obj else 0.0
+            expected_yield = float(quotation_to_decimal(yield_obj)) if yield_obj else 0.0
 
-            direction = "LONG"
-            if qty < 0:
-                direction = "SHORT"
+            # Consistent with BOT: BUY = long, SELL = short
+            direction = "SELL" if qty < 0 else "BUY"
 
-            unrealized_pnl = 0.0
-            if avg_price and current_price:
-                if qty > 0:
-                    unrealized_pnl = (current_price - avg_price) * qty
+            # Compute unrealized PnL if broker returned 0 (common in sandbox)
+            if expected_yield == 0.0 and avg_price > 0 and current_price > 0:
+                lots = abs(qty)
+                if direction == "BUY":
+                    expected_yield = (current_price - avg_price) * lots
                 else:
-                    unrealized_pnl = (avg_price - current_price) * abs(qty)
+                    expected_yield = (avg_price - current_price) * lots
 
             upsert_position({
                 "ticker": ticker,
@@ -366,13 +371,13 @@ def sync_portfolio_positions(client):
                 "qty": abs(qty),
                 "entry_price": avg_price,
                 "current_price": current_price,
-                "unrealized_pnl": unrealized_pnl,
+                "unrealized_pnl": expected_yield,
                 "opened_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "status": "OPEN",
                 "source": "PORTFOLIO",
             })
     except Exception as e:
-        log.warning(f"Не удалось синхронизировать позиции портфеля: {e}")
+        log.warning(f"sync_portfolio_positions error: {e}")
 
 def get_candles(client, figi: str, n=20):
     now = datetime.now(timezone.utc)

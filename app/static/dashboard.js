@@ -249,10 +249,10 @@ async function renderMainShell() {
       </div>
     </section>
     <section class="block">
-      <div class="row between"><h2>Позиции</h2></div>
+      <div class="row between"><h2>Позиции <span class="note">(API брокера)</span></h2></div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Тикер</th><th>Напр.</th><th>Кол-во</th><th>Вход</th><th>Тек.</th><th>ПнЛ</th><th>Открыта</th></tr></thead>
+          <thead><tr><th>Тикер</th><th>Направление</th><th>Лотов</th><th>Вход</th><th>Тек.</th><th>ПнЛ</th><th>Действие</th></tr></thead>
           <tbody id="mainPositionsBody"></tbody>
         </table>
       </div>
@@ -293,14 +293,35 @@ async function renderMainData() {
   );
 
   diffTbody(document.getElementById("mainPositionsBody"),
-    (data.positions || []).map((p) => `
-      <tr>
-        <td>${esc(p.ticker)}</td><td>${esc(p.direction)}</td><td>${esc(p.qty)}</td>
-        <td>${esc(p.entry_price_ui)}</td><td>${esc(p.current_price_ui)}</td>
-        <td>${esc(p.unrealized_pnl_ui)}</td><td>${esc(p.opened_at)}</td>
-      </tr>
-    `).join("")
+    (data.positions || []).map((p) => {
+      const dir = String(p.direction || "").toUpperCase();
+      const dirBadge = dir === "BUY"
+        ? '<span class="badge" style="background:rgba(47,163,107,.2);color:#2fa36b;border:1px solid #2fa36b">Лонг</span>'
+        : dir === "SELL"
+          ? '<span class="badge" style="background:rgba(191,77,90,.2);color:#ff7b7b;border:1px solid #bf4d5a">Шорт</span>'
+          : esc(dir);
+      const pnlClass = parseFloat(p.unrealized_pnl_ui) >= 0 ? "color:#2fa36b" : "color:#ff7b7b";
+      return `<tr>
+        <td><b>${esc(p.ticker)}</b></td>
+        <td>${dirBadge}</td>
+        <td>${esc(p.qty)}</td>
+        <td>${esc(p.entry_price_ui)}</td>
+        <td>${esc(p.current_price_ui)}</td>
+        <td style="${pnlClass}">${esc(p.unrealized_pnl_ui)}</td>
+        <td>${p.figi && p.qty && p.direction ? `
+          <button class="btn btn-danger" style="padding:5px 10px"
+            data-close-main-pos data-figi="${esc(p.figi)}"
+            data-qty="${esc(p.qty)}" data-direction="${esc(p.direction)}">
+            Закрыть
+          </button>` : "—"}</td>
+      </tr>`;
+    }).join("")
   );
+
+  // Bind close buttons in main positions
+  document.querySelectorAll("[data-close-main-pos]").forEach((btn) => {
+    btn.addEventListener("click", () => closeOnePosition(btn.dataset.figi, btn.dataset.qty, btn.dataset.direction));
+  });
 
   const displayTrades = (data.api_trades && data.api_trades.length > 0)
     ? data.api_trades

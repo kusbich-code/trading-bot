@@ -434,27 +434,93 @@ def api_dashboard_main():
     s = get_all_settings()
     active_strategy_id = (s.get("active_strategy_id", "") or "").strip()
     market_map = get_instrument_market_state_map()
+    figi_ticker_map = {figi: info.get("ticker", "") for figi, info in market_map.items()}
 
     if active_strategy_id:
         instruments = list_strategy_instruments(int(active_strategy_id))
     else:
         instruments = []
 
+    # ── Positions: broker API (same source as portfolio tab) ──────────────────
+    # Priority: portfolio_stream cache → get_broker_positions() REST → BOT DB
+    def _fmt_pos(figi, direction, qty, avg, cur, pnl):
+        avg_d = safe_decimal(avg)
+        cur_d = safe_decimal(cur)
+        pnl_d = safe_decimal(pnl)
+        if pnl_d == 0 and avg_d > 0 and cur_d > 0:
+            pnl_d = (cur_d - avg_d) * qty if direction == "BUY" else (avg_d - cur_d) * qty
+        return {
+            "ticker": market_map.get(figi, {}).get("ticker", "") or figi[:8],
+            "figi": figi,
+            "direction": direction,
+            "qty": qty,
+            "entry_price_ui": fmt_price(avg_d),
+            "current_price_ui": fmt_price(cur_d),
+            "unrealized_pnl_ui": fmt_money(pnl_d),
+            "opened_at": "",
+        }
+
+    with _portfolio_cache_lock:
+        cached_pos = _portfolio_cache.get("positions")
+
+    positions = []
+    if cached_pos is not None:
+        for pos in cached_pos:
+            positions.append(_fmt_pos(
+                pos["figi"], pos["direction"], pos["qty"],
+                pos["avg_price"], pos["current_price"], pos["expected_yield"],
+            ))
+    else:
+        try:
+            for pos in get_broker_positions():
+                positions.append(_fmt_pos(
+                    pos["figi"], pos["direction"], pos["qty"],
+                    pos["avg_price"], pos["current_price"], pos["expected_yield"],
+                ))
+        except Exception:
+            for p in get_open_positions(source="BOT"):
+                positions.append({
+                    "ticker": p.get("ticker", ""), "figi": p.get("figi", ""),
+                    "direction": p.get("direction", ""), "qty": p.get("qty", 0),
+                    "entry_price_ui": fmt_price(p.get("entry_price", 0)),
+                    "current_price_ui": fmt_price(p.get("current_price", 0)),
+                    "unrealized_pnl_ui": fmt_money(p.get("unrealized_pnl", 0)),
+                    "opened_at": p.get("opened_at", ""),
+                })
+
+    # ── Trades: T-Bank operations API → local DB fallback ─────────────────────
+    api_trades: list = []
+    try:
+        ops_data = get_operations_today()
+        for op in ops_data.get("operations", []):
+            if op.get("is_fee"):
+                continue
+            figi = op.get("figi", "")
+            direction = op.get("direction", "")
+            price_ui = op.get("price_ui", "")
+            api_trades.append({
+                "time": op.get("date", ""), "ticker": figi_ticker_map.get(figi, figi[:8]),
+                "figi": figi, "direction": direction,
+                "entry_ui": price_ui if direction == "BUY" else "",
+                "exit_ui": price_ui if direction == "SELL" else "",
+                "qty": op.get("quantity", 0),
+                "pnl_ui": op.get("payment_ui", ""), "reason": "API",
+            })
+    except Exception:
+        pass
+
+    db_trades = [{
+        **dict(t),
+        "entry_ui": fmt_price(t.get("entry", 0)),
+        "exit_ui": fmt_price(t.get("exit", 0)),
+        "pnl_ui": fmt_money(t.get("pnl", 0)),
+    } for t in get_trades(limit=20)]
+
     return JSONResponse({
         "instruments": [strategy_instrument_row(i, market_map) for i in instruments],
-        "positions": [{
-            **dict(p),
-            "entry_price_ui": fmt_money(p.get("entry_price", 0)),
-            "current_price_ui": fmt_money(p.get("current_price", 0)),
-            "unrealized_pnl_ui": fmt_money(p.get("unrealized_pnl", 0)),
-            "opened_at": p.get("opened_at", ""),
-        } for p in get_open_positions()],
-        "trades": [{
-            **dict(t),
-            "entry_ui": fmt_money(t.get("entry", 0)),
-            "exit_ui": fmt_money(t.get("exit", 0)),
-            "pnl_ui": fmt_money(t.get("pnl", 0)),
-        } for t in get_trades(limit=20)],
+        "positions": positions,
+        "trades": db_trades,
+        "api_trades": api_trades,
     })
 
 
