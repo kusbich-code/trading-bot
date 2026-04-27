@@ -26,6 +26,7 @@ from app.db import (
     list_instruments,
     add_instrument,
     get_open_positions,
+    clear_open_positions,
     get_instrument_market_state,
     get_instrument_market_state_map,
     get_setting,
@@ -145,6 +146,12 @@ def quotation_to_decimal(q) -> Decimal:
 
 def fmt_money(value: Any) -> str:
     return f"{safe_decimal(value):.2f}"
+
+
+def fmt_price(value: Any) -> str:
+    """Like fmt_money but returns '—' for zero (missing fill price)."""
+    d = safe_decimal(value)
+    return f"{d:.2f}" if d else "—"
 
 
 def money_value_to_text(v) -> str:
@@ -1099,6 +1106,14 @@ def api_close_position(figi: str = Form(...), qty: int = Form(...), direction: s
     result = post_market_close(figi=figi, quantity=int(qty), direction=close_direction)
     log_event("POSITION_CLOSE", f"close order posted figi={figi} qty={qty} direction={close_direction}", ticker=figi)
     return {"ok": True, "message": "close order posted", "order_id": getattr(result, "order_id", "")}
+
+
+@app.post("/api/позиции/очистить-локальные")
+def api_clear_local_positions():
+    """Удалить мусорные локальные записи позиций (не трогает брокера)."""
+    clear_open_positions()
+    log_event("SERVICE_CONTROL", "Local position records cleared manually")
+    return JSONResponse({"ok": True})
 
 
 @app.post("/api/позиции/закрыть-все")
