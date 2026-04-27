@@ -5,8 +5,8 @@ import time
 import uuid
 from datetime import datetime, timezone, timedelta, date
 from decimal import Decimal
-from threading import Thread
-from typing import Dict
+from threading import Thread, Lock, Event
+from typing import Dict, Set
 
 from dotenv import load_dotenv
 
@@ -19,6 +19,20 @@ from t_tech.invest import (
 )
 from t_tech.invest.sandbox.client import SandboxClient
 from t_tech.invest.utils import quotation_to_decimal
+
+# MarketDataStream classes (optional — fallback to polling if unavailable)
+try:
+    from t_tech.invest import (
+        MarketDataRequest,
+        SubscribeLastPriceRequest,
+        LastPriceInstrument,
+        SubscribeOrderBookRequest,
+        OrderBookInstrument,
+        SubscriptionAction,
+    )
+    _STREAM_IMPORTS_OK = True
+except Exception:
+    _STREAM_IMPORTS_OK = False
 
 from app.config import settings
 from app.db import (
@@ -105,6 +119,127 @@ def _orders_stream_worker():
         except Exception as exc:
             log.warning("OrdersStream: ошибка %s, переподключение через 5 с", exc)
             time.sleep(5)
+
+
+# ── MarketDataStream (Priority-2) ─────────────────────────────────────────────
+# figi → {"price": Decimal, "orderbook": {...}}   — written by stream thread,
+# read by process_instrument() on the main thread.
+_md: Dict[str, dict] = {}
+_md_lock = Lock()
+_md_instruments: list = []           # list of {figi, instrument_uid} dicts
+_md_figis: Set[str] = set()          # set of figis for change detection
+_md_restart = Event()                 # set → worker reconnects with new instruments
+
+
+def _make_md_gen(instruments: list, stop_ev: Event):
+    """
+    Generator that sends MarketDataStream subscriptions then blocks until stop_ev.
+    instruments: list of dicts with 'figi' and optional 'instrument_uid'.
+    Uses instrument_uid (preferred) or figi (fallback) for each subscription.
+    """
+    if not instruments or not _STREAM_IMPORTS_OK:
+        stop_ev.wait()
+        return
+
+    def _lp_instr(m):
+        uid = m.get("instrument_uid", "")
+        return LastPriceInstrument(instrument_id=uid) if uid else LastPriceInstrument(figi=m["figi"])
+
+    def _ob_instr(m):
+        uid = m.get("instrument_uid", "")
+        return OrderBookInstrument(instrument_id=uid, depth=10) if uid else OrderBookInstrument(figi=m["figi"], depth=10)
+
+    yield MarketDataRequest(
+        subscribe_last_price_request=SubscribeLastPriceRequest(
+            subscription_action=SubscriptionAction.SUBSCRIPTION_ACTION_SUBSCRIBE,
+            instruments=[_lp_instr(m) for m in instruments],
+        )
+    )
+    yield MarketDataRequest(
+        subscribe_order_book_request=SubscribeOrderBookRequest(
+            subscription_action=SubscriptionAction.SUBSCRIPTION_ACTION_SUBSCRIBE,
+            instruments=[_ob_instr(m) for m in instruments],
+        )
+    )
+    stop_ev.wait()
+
+
+def _market_data_stream_worker():
+    """Background thread: real-time last prices + order book (depth=10)."""
+    if not _STREAM_IMPORTS_OK:
+        log.warning("MarketDataStream: импорты недоступны, используется поллинг")
+        return
+    while True:
+        if _bot_client_cls is None:
+            time.sleep(2)
+            continue
+        instruments = list(_md_instruments)
+        if not instruments:
+            time.sleep(5)
+            continue
+        _md_restart.clear()
+        stop_ev = Event()
+
+        def _watcher():
+            _md_restart.wait()
+            stop_ev.set()
+        Thread(target=_watcher, daemon=True).start()
+
+        try:
+            with _bot_client_cls(settings.TINVEST_TOKEN) as sc:
+                log.info("MarketDataStream: подключён (%d инструментов)", len(instruments))
+                for resp in sc.market_data_stream.market_data_stream(
+                    _make_md_gen(instruments, stop_ev)
+                ):
+                    lp = getattr(resp, "last_price", None)
+                    if lp:
+                        figi = getattr(lp, "figi", "")
+                        price = quotation_to_decimal(getattr(lp, "price", None))
+                        if figi and price > 0:
+                            with _md_lock:
+                                _md.setdefault(figi, {})["price"] = Decimal(str(price))
+
+                    ob = getattr(resp, "orderbook", None)
+                    if ob:
+                        figi = getattr(ob, "figi", "")
+                        bids = list(getattr(ob, "bids", []) or [])
+                        asks = list(getattr(ob, "asks", []) or [])
+                        bid_vol = sum(int(getattr(b, "quantity", 0)) for b in bids)
+                        ask_vol = sum(int(getattr(a, "quantity", 0)) for a in asks)
+                        bp = Decimal(str(quotation_to_decimal(bids[0].price))) if bids else Decimal("0")
+                        ap = Decimal(str(quotation_to_decimal(asks[0].price))) if asks else Decimal("0")
+                        mid = (bp + ap) / 2
+                        spread = (ap - bp) / mid if mid > 0 else Decimal("0")
+                        with _md_lock:
+                            _md.setdefault(figi, {})["orderbook"] = {
+                                "bid_price": bp, "ask_price": ap,
+                                "bid_vol": bid_vol, "ask_vol": ask_vol,
+                                "spread_pct": spread,
+                            }
+
+                    if stop_ev.is_set():
+                        break
+        except Exception as exc:
+            log.warning("MarketDataStream: ошибка %s, переподключение через 5 с", exc)
+            stop_ev.set()
+            time.sleep(5)
+
+
+def get_ma_signal(candles, short_period: int = 20, long_period: int = 100):
+    """Dual moving-average crossover. Returns 'BUY', 'SELL', or None."""
+    if len(candles) < long_period + 1:
+        return None
+    closes = [float(quotation_to_decimal(c.close)) for c in candles]
+    def _ma(data, n): return sum(data[-n:]) / n
+    short_now  = _ma(closes,       short_period)
+    long_now   = _ma(closes,       long_period)
+    short_prev = _ma(closes[:-1],  short_period)
+    long_prev  = _ma(closes[:-1],  long_period)
+    if short_prev <= long_prev and short_now > long_now:
+        return "BUY"
+    if short_prev >= long_prev and short_now < long_now:
+        return "SELL"
+    return None
 
 
 def quotation_from_decimal(price: Decimal) -> Quotation:
@@ -309,6 +444,7 @@ def load_enabled_instruments(client):
 
         state.instrument_meta[item["ticker"]] = {
             "figi": item["figi"],
+            "instrument_uid": item.get("instrument_uid", "") or "",
             "ticker": item["ticker"],
             "lot": item["lot"],
             "name": item["name"],
@@ -325,6 +461,17 @@ def load_enabled_instruments(client):
             "allow_short": int(item.get("allow_short", 1)),
             "priority": int(item.get("priority", 100)),
         }
+
+    new_figis = {v["figi"] for v in state.instrument_meta.values()}
+    if new_figis != _md_figis:
+        _md_figis.clear()
+        _md_figis.update(new_figis)
+        _md_instruments.clear()
+        _md_instruments.extend(
+            {"figi": v["figi"], "instrument_uid": v.get("instrument_uid", "")}
+            for v in state.instrument_meta.values()
+        )
+        _md_restart.set()
 
     return list(state.instrument_meta.values())
 
@@ -449,11 +596,32 @@ def process_instrument(client, item):
     if not is_tradable(trading_status):
         return
 
+    tradingmode = get_setting("tradingmode", "trend")
+    trailing_stop_enabled = get_setting("trailing_stop_enabled", "0") == "1"
+    use_signal_service    = get_setting("use_signal_service", "0") == "1"
+
     try:
-        price = get_last_price(client, figi)
-        candles = get_candles(client, figi, n=20)
-        spread_pct = get_order_book_spread_pct(client, figi)
+        # ── Price: stream (fast) → REST fallback ──────────────────────────────
+        with _md_lock:
+            stream_md = _md.get(figi, {})
+        stream_price = stream_md.get("price")
+        price = stream_price if (stream_price and stream_price > 0) else get_last_price(client, figi)
+
+        # ── Candles: MA mode needs 120 bars, S/R mode needs 20 ───────────────
+        candle_n = 120 if tradingmode == "ma_crossover" else 20
+        candles = get_candles(client, figi, n=candle_n)
         last_volume = get_last_candle_volume(candles)
+
+        # ── Order book: stream depth=10 → REST depth=1 fallback ──────────────
+        ob_stream = stream_md.get("orderbook", {})
+        if ob_stream:
+            spread_pct = ob_stream["spread_pct"]
+            bid_vol: int = ob_stream["bid_vol"]
+            ask_vol: int = ob_stream["ask_vol"]
+        else:
+            spread_pct = get_order_book_spread_pct(client, figi)
+            bid_vol = ask_vol = 0
+
         upsert_instrument_market_state(
             figi=figi,
             ticker=ticker,
@@ -470,7 +638,7 @@ def process_instrument(client, item):
 
     if len(candles) < 5:
         return
-    
+
     last_volume = get_last_candle_volume(candles)
     min_volume = int(item.get("min_volume", 0))
     if min_volume > 0 and last_volume < min_volume:
@@ -479,7 +647,6 @@ def process_instrument(client, item):
     max_spread_pct = Decimal(str(item.get("max_spread_pct", "0")))
     if max_spread_pct > 0 and spread_pct > max_spread_pct:
         return
-    support, resistance = calc_support_resistance(candles)
 
     if ticker in state.open_positions:
         pos = state.open_positions[ticker]
@@ -506,11 +673,29 @@ def process_instrument(client, item):
             "source": "BOT",
         })
 
+        if trailing_stop_enabled:
+            # Trailing stop: moves with price, never against profit
+            if direction == "BUY":
+                new_ts = price * (Decimal("1") - stop_loss_pct)
+                cur_ts = Decimal(str(pos.get("trailing_stop") or 0))
+                trailing = max(cur_ts, new_ts)
+                pos["trailing_stop"] = float(trailing)
+                sl_price = trailing
+            else:
+                new_ts = price * (Decimal("1") + stop_loss_pct)
+                cur_ts = Decimal(str(pos.get("trailing_stop") or "999999"))
+                trailing = min(cur_ts, new_ts)
+                pos["trailing_stop"] = float(trailing)
+                sl_price = trailing
+        else:
+            if direction == "BUY":
+                sl_price = entry_price * (Decimal("1") - stop_loss_pct)
+            else:
+                sl_price = entry_price * (Decimal("1") + stop_loss_pct)
+
         if direction == "BUY":
-            sl_price = entry_price * (Decimal("1") - stop_loss_pct)
             tp_price = entry_price * (Decimal("1") + take_profit_pct)
         else:
-            sl_price = entry_price * (Decimal("1") + stop_loss_pct)
             tp_price = entry_price * (Decimal("1") - take_profit_pct)
 
         close_signal = False
@@ -585,11 +770,40 @@ def process_instrument(client, item):
     if len(state.open_positions) >= int(get_setting("max_open_positions", "2")):
         return
 
-    sig = get_signal(price, support, resistance)
+    # ── Signal selection by tradingmode ──────────────────────────────────────
+    if tradingmode == "ma_crossover":
+        sig = get_ma_signal(candles)
+    else:
+        support, resistance = calc_support_resistance(candles)
+        sig = get_signal(price, support, resistance)
+
     if not sig:
         return
 
-    log_event("SIGNAL", f"{sig} on {ticker}", ticker=ticker)
+    log_event("SIGNAL", f"{sig} [{tradingmode}] on {ticker}", ticker=ticker)
+
+    # ── T-Bank Signal Service filter ──────────────────────────────────────────
+    if use_signal_service:
+        from app.services.tbank_client import get_tbank_signals
+        analyst = get_tbank_signals([figi]).get(figi, "NEUTRAL")
+        if sig == "BUY" and analyst == "SELL":
+            log_event("SIGNAL_SKIP", f"{ticker} BUY пропущен: аналитики SELL", ticker=ticker)
+            return
+        if sig == "SELL" and analyst == "BUY":
+            log_event("SIGNAL_SKIP", f"{ticker} SELL пропущен: аналитики BUY", ticker=ticker)
+            return
+
+    # ── Order-book pressure filter (only when stream data available) ──────────
+    total_vol = bid_vol + ask_vol
+    if total_vol > 0:
+        buy_pressure = bid_vol / total_vol   # fraction of volume on bid side
+        sell_pressure = ask_vol / total_vol
+        if sig == "BUY" and buy_pressure < 0.40:
+            log_event("SIGNAL_SKIP", f"{ticker} BUY пропущен: давление покупателей {buy_pressure:.0%}", ticker=ticker)
+            return
+        if sig == "SELL" and sell_pressure < 0.40:
+            log_event("SIGNAL_SKIP", f"{ticker} SELL пропущен: давление продавцов {sell_pressure:.0%}", ticker=ticker)
+            return
 
     if sig == "BUY":
         if not allow_long_global or not allow_long:
@@ -598,14 +812,16 @@ def process_instrument(client, item):
         order_result = place_order_checked(client, ticker, figi, lot, price, OrderDirection.ORDER_DIRECTION_BUY)
         if not order_result:
             return
+        _ep = float(order_result["executed_price"])
         state.open_positions[ticker] = {
             "figi": figi,
             "direction": "BUY",
-            "entry_price": float(order_result["executed_price"]),
+            "entry_price": _ep,
             "qty": int(order_result["lots_executed"] or lot),
             "opened_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "open_order_id": order_result["response_order_id"],
             "execution_status": order_result["execution_status"],
+            "trailing_stop": _ep * (1 - float(stop_loss_pct)),
         }
 
         upsert_position({
@@ -630,14 +846,16 @@ def process_instrument(client, item):
         order_result = place_order_checked(client, ticker, figi, lot, price, OrderDirection.ORDER_DIRECTION_SELL)
         if not order_result:
             return
+        _ep = float(order_result["executed_price"])
         state.open_positions[ticker] = {
             "figi": figi,
             "direction": "SELL",
-            "entry_price": float(order_result["executed_price"]),
+            "entry_price": _ep,
             "qty": int(order_result["lots_executed"] or lot),
             "opened_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "open_order_id": order_result["response_order_id"],
             "execution_status": order_result["execution_status"],
+            "trailing_stop": _ep * (1 + float(stop_loss_pct)),
         }
 
         upsert_position({
@@ -657,7 +875,7 @@ def process_instrument(client, item):
 
 def main():
 
-    log.info("=== Bot v4.3 started  610 line ===")
+    log.info("=== Bot v4.3.5 started ===")
     log_event("BOT_START", "Bot started")
 
     if settings.TELEGRAM_ENABLED and settings.TELEGRAM_POLLING_ENABLED:
@@ -671,7 +889,8 @@ def main():
     global _bot_client_cls
     _bot_client_cls = client_cls
     Thread(target=_orders_stream_worker, daemon=True, name="orders-stream").start()
-    log.info("OrdersStream worker started")
+    Thread(target=_market_data_stream_worker, daemon=True, name="market-data-stream").start()
+    log.info("OrdersStream + MarketDataStream workers started")
 
     with client_cls(settings.TINVEST_TOKEN) as client:
         state.session_balance_start = get_money_balance(client)

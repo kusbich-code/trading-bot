@@ -12,6 +12,7 @@ STRATEGY_SETTING_KEYS = {
     "default_stop_loss_pct", "default_take_profit_pct", "estimated_commission_pct",
     "allow_long_global", "allow_short_global", "trade_only_session", "pause_after_error_sec",
     "tradingmode", "errorseriespausecount", "stopseriespausecount",
+    "trailing_stop_enabled", "use_signal_service",
 }
 
 
@@ -275,6 +276,8 @@ def _seed_default_profile_and_strategy(cur):
         "tradingmode": "trend",
         "errorseriespausecount": "3",
         "stopseriespausecount": "3",
+        "trailing_stop_enabled": "0",
+        "use_signal_service": "0",
     }
     PROF_DEFAULTS = {
         "bot_enabled": "1",
@@ -370,10 +373,16 @@ def ensure_instruments_columns(cur):
         "allow_long": "INTEGER DEFAULT 1",
         "allow_short": "INTEGER DEFAULT 1",
         "priority": "INTEGER DEFAULT 100",
+        "instrument_uid": "TEXT DEFAULT ''",
     }
     for col_name, col_def in needed.items():
         if col_name not in cols:
             cur.execute(f"ALTER TABLE instruments ADD COLUMN {col_name} {col_def}")
+
+    cur.execute("PRAGMA table_info(strategy_instruments)")
+    si_cols = {row[1] for row in cur.fetchall()}
+    if "instrument_uid" not in si_cols and si_cols:
+        cur.execute("ALTER TABLE strategy_instruments ADD COLUMN instrument_uid TEXT DEFAULT ''")
 
 
 # ── bot_settings ─────────────────────────────────────────────────────────────
@@ -537,12 +546,13 @@ def add_instrument(item: dict):
         INSERT INTO instruments(
             ticker, figi, name, class_code, instrument_type, currency,
             lot, min_price_increment, lots_override, stop_loss_pct, take_profit_pct,
-            max_spread_pct, min_volume, allow_long, allow_short, priority, enabled
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            max_spread_pct, min_volume, allow_long, allow_short, priority, enabled, instrument_uid
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(figi) DO UPDATE SET
             ticker=excluded.ticker, name=excluded.name, class_code=excluded.class_code,
             instrument_type=excluded.instrument_type, currency=excluded.currency,
-            lot=excluded.lot, min_price_increment=excluded.min_price_increment
+            lot=excluded.lot, min_price_increment=excluded.min_price_increment,
+            instrument_uid=excluded.instrument_uid
         """, (
             item["ticker"], item["figi"], item.get("name", ""),
             item.get("class_code", item.get("classcode", "")),
@@ -559,6 +569,7 @@ def add_instrument(item: dict):
             item.get("allow_short", 1),
             item.get("priority", 100),
             item.get("enabled", 1),
+            item.get("instrument_uid", item.get("uid", "")),
         ))
 
 
@@ -957,13 +968,14 @@ def add_strategy_instrument(strategy_id: int, item: dict):
         INSERT INTO strategy_instruments(
             strategy_id, ticker, figi, name, class_code, instrument_type, currency,
             lot, min_price_increment, lots_override, stop_loss_pct, take_profit_pct,
-            max_spread_pct, min_volume, allow_long, allow_short, priority, enabled
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            max_spread_pct, min_volume, allow_long, allow_short, priority, enabled, instrument_uid
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(strategy_id, figi) DO UPDATE SET
             ticker=excluded.ticker, name=excluded.name,
             class_code=excluded.class_code, instrument_type=excluded.instrument_type,
             currency=excluded.currency, lot=excluded.lot,
             min_price_increment=excluded.min_price_increment,
+            instrument_uid=excluded.instrument_uid,
             enabled=excluded.enabled
         """, (
             strategy_id,
@@ -981,6 +993,7 @@ def add_strategy_instrument(strategy_id: int, item: dict):
             int(item.get("allow_short", 1)),
             int(item.get("priority", 100)),
             int(item.get("enabled", 1)),
+            item.get("instrument_uid", item.get("uid", "")),
         ))
 
 

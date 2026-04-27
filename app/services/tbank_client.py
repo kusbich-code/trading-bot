@@ -343,6 +343,108 @@ def get_operations_today() -> Dict[str, Any]:
     }
 
 
+def get_operations_by_cursor(
+    from_dt=None,
+    to_dt=None,
+    limit: int = 50,
+    cursor: str = "",
+) -> Dict[str, Any]:
+    """
+    Paginated broker operations history via GetOperationsByCursor.
+    Returns executed BUY/SELL/FEE operations with fill prices.
+    """
+    from datetime import timezone, timedelta
+    now = datetime.now(timezone.utc)
+    if from_dt is None:
+        from_dt = now - timedelta(days=90)
+    if to_dt is None:
+        to_dt = now
+
+    with with_client() as client:
+        resp = client.operations.get_operations_by_cursor(
+            account_id=_account_id(),
+            from_=from_dt,
+            to=to_dt,
+            limit=limit,
+            cursor=cursor,
+        )
+        items = []
+        for op in getattr(resp, "items", []):
+            state_str = str(getattr(op, "state", "") or "")
+            if "EXECUTED" not in state_str:
+                continue
+            op_type = str(getattr(op, "type", "") or "")
+            payment    = _money_value_to_decimal(getattr(op, "payment", None))
+            price      = _money_value_to_decimal(getattr(op, "price", None))
+            commission = _money_value_to_decimal(getattr(op, "commission", None))
+            quantity   = int(getattr(op, "quantity", 0) or 0)
+            figi       = getattr(op, "figi", "") or ""
+            uid        = getattr(op, "instrument_uid", "") or ""
+            date_val   = getattr(op, "date", None)
+            date_str   = date_val.strftime("%Y-%m-%d %H:%M:%S") if date_val else ""
+            name       = getattr(op, "name", "") or ""
+
+            if price == Decimal("0") and quantity > 0 and payment != Decimal("0"):
+                price = abs(payment) / Decimal(str(quantity))
+
+            is_fee   = any(x in op_type for x in ("FEE", "COMMISSION", "SERVICE", "TAX"))
+            is_trade = any(x in op_type for x in ("BUY", "SELL")) and not is_fee
+            direction = "SELL" if "SELL" in op_type else ("BUY" if "BUY" in op_type else "")
+
+            items.append({
+                "date": date_str,
+                "type": op_type,
+                "name": name,
+                "direction": direction,
+                "figi": figi,
+                "instrument_uid": uid,
+                "quantity": quantity,
+                "payment_ui": f"{payment:.2f}",
+                "price_ui": f"{price:.2f}" if price else "—",
+                "commission_ui": f"{commission:.2f}",
+                "is_fee": is_fee,
+                "is_trade": is_trade,
+            })
+
+        return {
+            "items": items,
+            "has_next": bool(getattr(resp, "has_next", False)),
+            "next_cursor": str(getattr(resp, "next_cursor", "") or ""),
+        }
+
+
+def get_tbank_signals(figis: List[str]) -> Dict[str, str]:
+    """
+    Fetch analyst signals from T-Bank SignalService.
+    Returns figi → 'BUY' | 'SELL' | 'NEUTRAL'.
+    Returns {} silently on any error (service may be unavailable in sandbox).
+    """
+    if not figis:
+        return {}
+    try:
+        with with_client() as client:
+            resp = client.signal.get_signals(instrument_id=figis)
+            result: Dict[str, str] = {}
+            for s in getattr(resp, "signals", []):
+                figi = (
+                    getattr(s, "instrument_uid", "")
+                    or getattr(s, "figi", "")
+                    or ""
+                )
+                direction_raw = str(getattr(s, "direction", "") or "").upper()
+                if not figi:
+                    continue
+                if "BUY" in direction_raw:
+                    result[figi] = "BUY"
+                elif "SELL" in direction_raw:
+                    result[figi] = "SELL"
+                else:
+                    result[figi] = "NEUTRAL"
+            return result
+    except Exception:
+        return {}
+
+
 def get_positions_detailed() -> Dict[str, Any]:
     """GetPositions: exact cash per currency + securities held in the account."""
     with with_client() as client:

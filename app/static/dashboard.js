@@ -193,8 +193,13 @@ async function renderMainShell() {
   if (!host || host.dataset.initialized === "1") return;
   host.innerHTML = `
     ${helpCard("Главное", [
-      "Показывает текущее состояние бота, дневную статистику и быстрые действия.",
-      "Инструменты берутся из активной стратегии выбранного профиля.",
+      "<b>Карточки сверху:</b> Статус сервиса (Запущен/Остановлен), Торговля (Ведётся/Остановлена/Проблема), Сделки сегодня, Реализованный ПнЛ (чистый денежный поток из операций T-Bank за сегодня), Нереализованный ПнЛ (переоценка открытых позиций), Комиссия, баланс счёта и итого — всё берётся из T-Bank API.",
+      "<b>Runtime:</b> текущий статус бота, режим API (Sandbox / Боевой), активный профиль и стратегия, последняя ошибка.",
+      "<b>Почему бот не торгует:</b> диагностика — показывает причины паузы (выключен, лимит сделок/убытка, нет инструментов, нет позиций для открытия).",
+      "<b>Управление:</b> Запустить / Остановить / Перезапустить — отправляет команду systemd-сервису (Linux) или процессу main.py.",
+      "<b>Инструменты:</b> список из активной стратегии. Цены обновляются в реальном времени через MarketDataStream (или поллинг каждые 5 с как fallback). SL% и TP% — индивидуальные настройки инструмента.",
+      "<b>Позиции:</b> открытые позиции из локальной БД (записывает сам бот при открытии сделки).",
+      "<b>Сделки:</b> последние операции из T-Bank API (GetOperations за сегодня) — реальные исполненные BUY/SELL. Fallback на локальную БД если API недоступен. Суммы в колонке ПнЛ — фактический денежный поток по операции.",
     ])}
     <section class="block">
       <div class="row between"><h2>Runtime</h2><div class="note">Текущее состояние бота</div></div>
@@ -351,10 +356,13 @@ async function renderSettingsTab() {
 
   host.innerHTML = `
     ${helpCard("Настройки", [
-      "Профиль содержит общие настройки и выбор стратегии.",
-      "Стратегия содержит параметры риска, режим торговли и список инструментов с их настройками.",
-      "Инструменты хранятся только внутри стратегии — переключение стратегии меняет весь список.",
-      "Бот работает на настройках активного профиля и его стратегии.",
+      "<b>Профиль</b> — системный слой. Содержит: режим торговли (Sandbox/Боевой), включение бота, Telegram-режим (все уведомления или только ошибки), автоперечитка настроек. Профилей может быть несколько, активен один. «Изменить профиль» — открывает список всех профилей с действиями Открыть / Активировать / Удалить. При активации профиля его настройки и настройки его стратегии копируются в bot_settings — бот подхватывает их на следующем цикле.",
+      "<b>Стратегия</b> — торговый слой. Содержит параметры риска (максимум сделок/день, лимит убытка, максимум позиций, интервал проверки), глобальные разрешения (лонг/шорт, только сессия, пауза после ошибки). Стратегии глобальные — одна стратегия может быть привязана к нескольким профилям. «Изменить стратегию» — список всех стратегий, действия Выбрать для профиля / Удалить / Создать.",
+      "<b>Режим торговли</b> задаёт алгоритм сигнала: <i>Тренд</i> — вход у уровней поддержки/сопротивления (±0.15% от min/max последних 20 свечей); <i>MA Кроссовер</i> — BUY когда MA20 пробивает MA100 снизу, SELL — сверху (требует 120 свечей для расчёта); <i>Возврат к средней / Пробой</i> — режимы из strategy_engine (используются только для отображения на вкладке График).",
+      "<b>Трейлинг-стоп</b> — когда включён, стоп-уровень движется вслед за ценой в сторону прибыли: для Лонг — max(текущий_стоп, цена × (1−SL%)), для Шорт — min(текущий_стоп, цена × (1+SL%)). При выключенном — фиксированный стоп от цены входа.",
+      "<b>Фильтр аналитиков T-Bank</b> — при включении бот не открывает позицию если направление сигнала противоположно рекомендации аналитиков T-Bank (SignalService). Работает только если сервис доступен (недоступен в Sandbox).",
+      "<b>Инструменты стратегии</b> — список бумаг с индивидуальными настройками: лоты, SL%/TP%/спред (в %, конвертируются в доли при сохранении), объём, разрешение лонг/шорт, приоритет, вкл/выкл. Инструменты хранятся только в стратегии — при смене стратегии список меняется целиком.",
+      "<b>Добавить инструмент</b> — поиск по тикеру/названию с оценкой ликвидности (score), цены берутся из T-Bank API. После добавления instrument_uid сохраняется для использования в MarketDataStream.",
     ])}
 
     ${viewingBanner}
@@ -443,13 +451,26 @@ async function renderSettingsTab() {
         <label>Пауза после ошибки, сек<input class="field" name="pause_after_error_sec" value="${esc(stratSettings.pause_after_error_sec || 10)}"></label>
         <label>Режим торговли
           <select class="field" name="tradingmode">
-            <option value="trend" ${stratSettings.tradingmode === "trend" ? "selected" : ""}>Тренд</option>
+            <option value="trend" ${stratSettings.tradingmode === "trend" ? "selected" : ""}>Тренд (поддержка/сопротивление)</option>
+            <option value="ma_crossover" ${stratSettings.tradingmode === "ma_crossover" ? "selected" : ""}>MA Кроссовер (MA20/MA100)</option>
             <option value="mean_reversion" ${stratSettings.tradingmode === "mean_reversion" ? "selected" : ""}>Возврат к средней</option>
             <option value="breakout" ${stratSettings.tradingmode === "breakout" ? "selected" : ""}>Пробой</option>
           </select>
         </label>
         <label>Пауза после ошибок подряд<input class="field" name="errorseriespausecount" value="${esc(stratSettings.errorseriespausecount || 3)}"></label>
         <label>Пауза после стопов подряд<input class="field" name="stopseriespausecount" value="${esc(stratSettings.stopseriespausecount || 3)}"></label>
+        <label>Трейлинг-стоп
+          <select class="field" name="trailing_stop_enabled">
+            <option value="1" ${stratSettings.trailing_stop_enabled === "1" ? "selected" : ""}>Вкл — стоп двигается за ценой</option>
+            <option value="0" ${stratSettings.trailing_stop_enabled !== "1" ? "selected" : ""}>Выкл — фиксированный стоп</option>
+          </select>
+        </label>
+        <label>Фильтр аналитиков T-Bank
+          <select class="field" name="use_signal_service">
+            <option value="1" ${stratSettings.use_signal_service === "1" ? "selected" : ""}>Вкл — не входить против сигнала</option>
+            <option value="0" ${stratSettings.use_signal_service !== "1" ? "selected" : ""}>Выкл</option>
+          </select>
+        </label>
         <div class="row-buttons">
           <button type="button" class="btn btn-primary" id="btnSaveStrategySettings">Сохранить настройки стратегии</button>
         </div>
@@ -911,12 +932,16 @@ async function renderPortfolioTab() {
   const data = await apiGet("/api/dashboard/portfolio");
   host.innerHTML = `
     ${helpCard("Портфель", [
-      "Показаны позиции счёта, позиции бота и активные стоп-заявки.",
-      "Кнопка 'Закрыть все' отправляет команду на закрытие всех позиций бота.",
+      "<b>Деньги на счёте (GetPositions):</b> точный остаток по каждой валюте напрямую из T-Bank API — не расчётный, а фактический баланс счёта.",
+      "<b>Портфель счёта:</b> реальные открытые позиции из T-Bank. Источник данных (по приоритету): 1) PortfolioStream — обновляется мгновенно при любом изменении портфеля; 2) REST get_portfolio — одиночный запрос если стрим не подключён; 3) локальная БД как крайний fallback. Время последнего обновления стрима показано в заголовке блока. Каждая позиция имеет признак <b>Лонг / Шорт</b> и кнопку <b>Закрыть</b> — отправляет рыночный ордер на закрытие через T-Bank API.",
+      "<b>Активные stop orders:</b> стоп-заявки от T-Bank API (get_stop_orders). Кнопка «Отменить» удаляет заявку у брокера.",
+      "<b>Позиции бота:</b> позиции которые бот открыл сам (source=BOT в локальной БД). <b>Закрыть</b> — рыночный ордер на конкретную позицию. <b>Закрыть все</b> — рыночные ордера на все BOT-позиции. <b>Очистить записи</b> — удаляет локальные записи из БД без обращения к брокеру (нужно если записи устарели и брокер возвращает «Not enough balance»).",
+      "<b>Ошибка «30034 Not enough balance»:</b> локальная БД содержит записи о позициях, которых нет в реальном счёте. Нажмите «Очистить записи» для сброса локальных данных.",
     ])}
     <section class="block">
       <div class="row between">
         <h2>Деньги на счёте <span class="note">(GetPositions)</span></h2>
+        ${data.stream_updated_at ? `<span class="note">Портфель стрим: ${esc(data.stream_updated_at.slice(0,19).replace("T"," "))}</span>` : '<span class="note muted">PortfolioStream не подключён</span>'}
       </div>
       ${(data.account_money || []).length === 0
         ? '<p class="note">Нет данных</p>'
@@ -1089,9 +1114,33 @@ async function renderHistoryTab() {
 
   host.innerHTML = `
     ${helpCard("История", [
-      "Сделки, системные события, ошибки и общий журнал.",
-      "Используй фильтры для быстрого поиска.",
+      "<b>Операции брокера (GetOperationsByCursor):</b> реальные исполненные операции из T-Bank API с курсорной пагинацией. Выбери период (7/30/90 дней) → «Загрузить» → «Загрузить ещё» для следующей страницы. Показываются только торговые операции (BUY/SELL), комиссии скрыты. Цена вычисляется из суммы и количества если T-Bank не вернул цену (маркет-ордер). Это самый точный источник — данные от брокера, не из локальной БД.",
+      "<b>Сделки (локальная БД):</b> записи которые бот создаёт при закрытии позиции. Содержит: Вход и Выход (цены исполнения), Кол-во лотов, Комиссия (расчётная), ПнЛ, Причина закрытия (STOP_LOSS / TAKE_PROFIT / TRAILING_STOP). Если цена входа или выхода = «—» — ордер исполнился по нулевой цене (sandbox-артефакт), актуальные данные смотреть в «Операции брокера».",
+      "<b>Система:</b> ключевые события бота — BOT_START, BOT_STOP, BOT_ERROR, DAILY_RESET, CONFIG_CHANGED. Используй для диагностики перезапусков и сбоев.",
+      "<b>Ошибки:</b> только события уровня ERROR — ошибки API, неверные FIGI, проблемы с ордерами.",
+      "<b>Журнал:</b> полный лог всех событий (SIGNAL, ORDER_OPEN, ORDER_CLOSE, SIGNAL_SKIP, ORDER_FILL и т.д.). SIGNAL_SKIP — сигнал был, но не исполнен (фильтр давления стакана или фильтр аналитиков). ORDER_FILL — ордер исполнен через OrdersStream (не через поллинг).",
+      "<b>Фильтры:</b> живая фильтрация по тексту в каждом блоке — вводи тикер, тип события или ключевое слово.",
     ])}
+    <section class="block">
+      <div class="row between">
+        <h2>Операции брокера <span class="note">(GetOperationsByCursor)</span></h2>
+        <div class="row">
+          <select id="brokerOpsDays" class="field" style="width:auto">
+            <option value="7">7 дней</option>
+            <option value="30" selected>30 дней</option>
+            <option value="90">90 дней</option>
+          </select>
+          <button class="btn" id="btnLoadBrokerOps">Загрузить</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Дата</th><th>Тикер</th><th>Направление</th><th>Кол-во</th><th>Цена</th><th>Сумма</th><th>Комиссия</th><th>Тип</th></tr></thead>
+          <tbody id="brokerOpsBody"><tr><td colspan="8" class="note">Нажмите «Загрузить»</td></tr></tbody>
+        </table>
+      </div>
+      <div id="brokerOpsPager" class="row" style="margin-top:8px;"></div>
+    </section>
     <section class="block">
       <h2>Фильтры</h2>
       <div class="form-grid">
@@ -1147,6 +1196,47 @@ async function renderHistoryTab() {
     </section>
   `;
   attachTableFilters();
+
+  // Broker operations loader
+  let _brokerCursor = "";
+  async function _loadBrokerOps(cursor = "") {
+    const days = document.getElementById("brokerOpsDays")?.value || "30";
+    const body = document.getElementById("brokerOpsBody");
+    const pager = document.getElementById("brokerOpsPager");
+    if (!body) return;
+    body.innerHTML = `<tr><td colspan="8" class="note">Загрузка...</td></tr>`;
+    try {
+      const data = await apiGet(`/api/broker-operations?cursor=${encodeURIComponent(cursor)}&days=${days}&limit=50`);
+      const rows = (data.items || []).filter(x => !x.is_fee);
+      body.innerHTML = rows.length === 0
+        ? `<tr><td colspan="8" class="note">Нет операций</td></tr>`
+        : rows.map(op => `
+            <tr>
+              <td>${esc(op.date)}</td>
+              <td>${esc(op.ticker || op.figi)}</td>
+              <td>${op.direction === "BUY"
+                ? '<span class="badge" style="background:rgba(47,163,107,.2);color:#2fa36b">BUY</span>'
+                : op.direction === "SELL"
+                  ? '<span class="badge" style="background:rgba(191,77,90,.2);color:#ff7b7b">SELL</span>'
+                  : esc(op.direction)}</td>
+              <td>${esc(op.quantity)}</td>
+              <td>${esc(op.price_ui)}</td>
+              <td>${esc(op.payment_ui)}</td>
+              <td>${esc(op.commission_ui)}</td>
+              <td class="muted" style="font-size:11px">${esc(op.type)}</td>
+            </tr>`).join("");
+      _brokerCursor = data.next_cursor || "";
+      if (pager) {
+        pager.innerHTML = data.has_next
+          ? `<button class="btn" id="btnBrokerOpsNext">Загрузить ещё</button>`
+          : `<span class="note">Все операции загружены</span>`;
+        document.getElementById("btnBrokerOpsNext")?.addEventListener("click", () => _loadBrokerOps(_brokerCursor));
+      }
+    } catch (e) {
+      body.innerHTML = `<tr><td colspan="8" class="health-error">Ошибка: ${esc(e.message)}</td></tr>`;
+    }
+  }
+  document.getElementById("btnLoadBrokerOps")?.addEventListener("click", () => _loadBrokerOps(""));
 }
 
 function attachTableFilters() {
@@ -1177,8 +1267,10 @@ async function renderChartTab() {
     <section class="help-card">
       <h2>Справка: График</h2>
       <ul>
-        <li>Свечной график по выбранному инструменту из T-Bank API.</li>
-        <li>Показывается score сигнала и причины входа или пропуска сделки.</li>
+        <li><b>Свечной график (OHLCV):</b> данные из T-Bank API за последние 8 часов. Выбери инструмент из списка (все инструменты из каталога market data) и интервал: 1 мин / 5 мин / 15 мин / 1 час. Зелёные свечи — рост, красные — падение. «Обновить» — перезагружает данные.</li>
+        <li><b>Инструменты в списке:</b> все бумаги из таблицы instrument_market_state (наполняется ботом при работе и при добавлении инструментов в стратегию).</li>
+        <li><b>Score сигнала:</b> вычисляется strategy_engine на основе технических индикаторов (MA, RSI, Bollinger, объём). Используется только для отображения — реальная торговля идёт через logic в main.py (поддержка/сопротивление или MA-кроссовер в зависимости от tradingmode). Action: BUY / SELL / HOLD. Score выше 0 — бычий, ниже 0 — медвежий.</li>
+        <li><b>Причины сигнала:</b> список факторов за и против входа по каждому индикатору — удобно для ручного анализа перед добавлением инструмента в стратегию.</li>
       </ul>
     </section>
     <section class="block">

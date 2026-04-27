@@ -1,5 +1,6 @@
 import os
 import logging
+import threading
 logger = logging.getLogger(__name__)
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, Optional
@@ -8,9 +9,7 @@ from t_tech.invest import Client
 import platform
 import subprocess
 
-from pydantic import BaseModel
-
-from fastapi import FastAPI, Form, Query, Request, HTTPException
+from fastapi import FastAPI, Form, Request, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -56,24 +55,77 @@ from app.db import (
 
 from app.config import settings
 from app.services.tbank_client import (
-    search_instruments,
-    get_top_shares,
     get_candles,
     get_active_stop_orders,
-    cancel_stop_order,
     post_market_close,
     post_stop_bundle,
     get_portfolio_snapshot,
+    get_operations_today,
+    get_broker_positions,
+    get_positions_detailed,
+    get_operations_by_cursor,
 )
 from app.services.strategy_engine import evaluate_signal
 from app.services.healthcheck import dashboard_health
 from decimal import Decimal
 from app.telegram_health import send_telegram, health_snapshot
 
-app = FastAPI(title="Trading Bot Dashboard v4.3")
+app = FastAPI(title="Trading Bot Dashboard v4.3.5")
 
 if os.path.isdir("app/static"):
     app.mount("/static", StaticFiles(directory="app/static"), name="static")
+
+# ── Portfolio stream cache (Priority-2) ───────────────────────────────────────
+_portfolio_cache: Dict[str, Any] = {}   # last snapshot from OperationsStream
+_portfolio_cache_lock = threading.Lock()
+
+
+def _portfolio_stream_worker():
+    """Background thread: subscribes to T-Bank portfolio_stream and updates cache."""
+    from app.config import settings as _cfg
+    from app.services.tbank_client import with_client
+    while True:
+        try:
+            with with_client() as sc:
+                logger.info("PortfolioStream: подключён")
+                for resp in sc.operations_stream.portfolio_stream(accounts=[_cfg.TINVEST_ACCOUNT_ID]):
+                    pf = getattr(resp, "portfolio", None)
+                    if pf is None:
+                        continue  # ping
+                    positions = []
+                    for pos in getattr(pf, "positions", []):
+                        figi = getattr(pos, "figi", "") or ""
+                        instrument_type = str(getattr(pos, "instrument_type", "") or "")
+                        if not figi or "currency" in instrument_type.lower():
+                            continue
+                        from t_tech.invest.utils import quotation_to_decimal as _qtd
+                        from app.services.tbank_client import (
+                            quotation_to_decimal_safe as _qts,
+                            _money_value_to_decimal as _mvd,
+                        )
+                        qty_lots = _qts(getattr(pos, "quantity_lots", None))
+                        avg_p = _mvd(getattr(pos, "average_position_price", None))
+                        cur_p = _mvd(getattr(pos, "current_price", None))
+                        exp_y = _qts(getattr(pos, "expected_yield", None))
+                        direction = "SELL" if _qts(getattr(pos, "quantity", None)) < 0 else "BUY"
+                        positions.append({
+                            "figi": figi,
+                            "instrument_type": instrument_type,
+                            "direction": direction,
+                            "qty": int(abs(qty_lots)),
+                            "avg_price": str(avg_p),
+                            "current_price": str(cur_p),
+                            "expected_yield": str(exp_y),
+                        })
+                    total_assets = getattr(pf, "total_amount_portfolio", None)
+                    from app.services.tbank_client import quotation_to_decimal_safe as _qts2
+                    with _portfolio_cache_lock:
+                        _portfolio_cache["positions"] = positions
+                        _portfolio_cache["total_assets"] = str(_qts2(total_assets)) if total_assets else "0"
+                        _portfolio_cache["updated_at"] = __import__("datetime").datetime.now().isoformat()
+        except Exception as exc:
+            logger.warning("PortfolioStream: ошибка %s, переподключение через 10 с", exc)
+            import time; time.sleep(10)
 
 
 def safe_decimal(value: Any, default: Decimal = Decimal("0")) -> Decimal:
@@ -226,6 +278,8 @@ def summary_payload() -> Dict[str, Any]:
 @app.on_event("startup")
 def startup_event():
     init_db()
+    threading.Thread(target=_portfolio_stream_worker, daemon=True, name="portfolio-stream").start()
+    logger.info("PortfolioStream worker started")
 
 
 @app.get("/dashboard/", response_class=HTMLResponse)
@@ -235,14 +289,14 @@ def dashboard_page():
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Панель управления торговым ботом v4.3</title>
-  <link rel="stylesheet" href="/static/dashboard.css?v=4.3">
+  <title>Панель управления торговым ботом v4.3.5</title>
+  <link rel="stylesheet" href="/static/dashboard.css?v=4.3.5">
 </head>
 <body>
   <div class="app">
     <header class="topbar">
       <div>
-        <h1>Панель управления торговым ботом v4.3</h1>
+        <h1>Панель управления торговым ботом v4.3.5</h1>
         <p class="sub">Профили содержат общие настройки и выбор стратегии. Стратегия содержит параметры риска и инструменты.</p>
       </div>
       <div id="routeDebugBadge" class="route-badge">Вкладка: главное</div>
@@ -324,7 +378,7 @@ def dashboard_page():
   </div>
 
   <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
-  <script src="/static/dashboard.js?v=4.2"></script>
+  <script src="/static/dashboard.js?v=4.3.5"></script>
 </body>
 </html>""")
 
@@ -378,22 +432,82 @@ def api_dashboard_quotes():
 
 @app.get("/api/dashboard/portfolio")
 def api_dashboard_portfolio():
+    market_map = get_instrument_market_state_map()
+    broker_error = None
+    portfolio_positions = []
+
+    # 1. Приоритет: portfolio_stream кэш (реал-тайм, нет доп. запроса к API)
+    with _portfolio_cache_lock:
+        cached = _portfolio_cache.get("positions")
+        cache_ts = _portfolio_cache.get("updated_at", "")
+
+    if cached is not None:
+        for pos in cached:
+            figi = pos["figi"]
+            ticker = market_map.get(figi, {}).get("ticker", "") or figi[:12]
+            portfolio_positions.append({
+                "ticker": ticker, "figi": figi,
+                "instrument_type": pos["instrument_type"],
+                "direction": pos["direction"],
+                "qty": pos["qty"],
+                "quantity_ui": str(pos["qty"]),
+                "average_position_price_ui": fmt_price(pos["avg_price"]),
+                "current_price_ui": fmt_price(pos["current_price"]),
+                "expected_yield_ui": fmt_money(pos["expected_yield"]),
+            })
+    else:
+        # 2. Fallback: одиночный REST-вызов get_portfolio
+        try:
+            for pos in get_broker_positions():
+                figi = pos["figi"]
+                ticker = market_map.get(figi, {}).get("ticker", "") or figi[:12]
+                portfolio_positions.append({
+                    "ticker": ticker, "figi": figi,
+                    "instrument_type": pos["instrument_type"],
+                    "direction": pos["direction"],
+                    "qty": pos["qty"],
+                    "quantity_ui": str(pos["qty"]),
+                    "average_position_price_ui": fmt_price(pos["avg_price"]),
+                    "current_price_ui": fmt_price(pos["current_price"]),
+                    "expected_yield_ui": fmt_money(pos["expected_yield"]),
+                })
+        except Exception as e:
+            broker_error = str(e)
+            logger.exception("get_broker_positions failed, falling back to local DB")
+            for p in get_open_positions():
+                portfolio_positions.append({
+                    "ticker": p.get("ticker", ""), "figi": p.get("figi", ""),
+                    "instrument_type": "share",
+                    "direction": p.get("direction", ""),
+                    "qty": p.get("qty", 0),
+                    "quantity_ui": str(p.get("qty", 0)),
+                    "average_position_price_ui": fmt_price(p.get("entry_price", 0)),
+                    "current_price_ui": fmt_price(p.get("current_price", 0)),
+                    "expected_yield_ui": fmt_money(p.get("unrealized_pnl", 0)),
+                })
+
+    # Детализация счёта из GetPositions (деньги + бумаги)
+    account_detail: dict = {"money": [], "blocked": [], "securities": []}
+    try:
+        account_detail = get_positions_detailed()
+    except Exception:
+        logger.exception("get_positions_detailed failed")
+
     bot_positions = get_open_positions(source="BOT")
-    all_positions = get_open_positions()
     return JSONResponse({
-        "portfolio_positions": [{
-            "ticker": p.get("ticker", ""), "figi": p.get("figi", ""), "instrument_type": "share",
-            "quantity_ui": str(p.get("qty", 0)),
-            "average_position_price_ui": fmt_money(p.get("entry_price", 0)),
-            "current_price_ui": fmt_money(p.get("current_price", 0)),
-            "expected_yield_ui": fmt_money(p.get("unrealized_pnl", 0)),
-        } for p in all_positions],
+        "portfolio_positions": portfolio_positions,
+        "broker_error": broker_error,
+        "stream_updated_at": cache_ts,
+        "account_money": account_detail.get("money", []),
+        "account_blocked": account_detail.get("blocked", []),
+        "account_securities": account_detail.get("securities", []),
         "bot_positions": [{
-            "ticker": p.get("ticker", ""), "figi": p.get("figi", ""), "direction": p.get("direction", ""),
+            "ticker": p.get("ticker", ""), "figi": p.get("figi", ""),
+            "direction": p.get("direction", ""),
             "qty": p.get("qty", 0),
-            "entry_price_ui": fmt_money(p.get("entry_price", 0)),
+            "entry_price_ui": fmt_price(p.get("entry_price", 0)),
             "entry_price_raw": str(p.get("entry_price", 0)),
-            "current_price_ui": fmt_money(p.get("current_price", 0)),
+            "current_price_ui": fmt_price(p.get("current_price", 0)),
             "unrealized_pnl_ui": fmt_money(p.get("unrealized_pnl", 0)),
         } for p in bot_positions],
         "stop_orders": [],
@@ -512,6 +626,8 @@ def api_dashboard_settings(profile_id: Optional[int] = None):
                 "tradingmode": ss("tradingmode", "trend"),
                 "errorseriespausecount": ss("errorseriespausecount", "3"),
                 "stopseriespausecount": ss("stopseriespausecount", "3"),
+                "trailing_stop_enabled": ss("trailing_stop_enabled", "0"),
+                "use_signal_service": ss("use_signal_service", "0"),
             },
         },
         "profiles": list_profiles(),
@@ -543,6 +659,28 @@ def api_dashboard_history():
         "error_logs": [norm(x) for x in get_error_logs(limit=200)],
         "common_logs": [norm(x) for x in get_logs(limit=300)],
     })
+
+
+@app.get("/api/broker-operations")
+def api_broker_operations(cursor: str = "", days: int = 30, limit: int = 50):
+    """Paginated broker operations history from T-Bank GetOperationsByCursor."""
+    from datetime import timezone, timedelta
+    market_map = get_instrument_market_state_map()
+    try:
+        now = __import__("datetime").datetime.now(timezone.utc)
+        result = get_operations_by_cursor(
+            from_dt=now - timedelta(days=days),
+            to_dt=now,
+            limit=limit,
+            cursor=cursor,
+        )
+        for item in result["items"]:
+            figi = item.get("figi", "")
+            item["ticker"] = market_map.get(figi, {}).get("ticker", "") or figi[:8]
+        return JSONResponse(result)
+    except Exception as e:
+        logger.exception("broker-operations error")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/dashboard/chart")
@@ -665,6 +803,8 @@ def api_strategies_save_settings(
     tradingmode: str = Form("trend"),
     errorseriespausecount: str = Form("3"),
     stopseriespausecount: str = Form("3"),
+    trailing_stop_enabled: str = Form("0"),
+    use_signal_service: str = Form("0"),
 ):
     update_strategy_settings(strategy_id, {
         "max_trades_per_day": max_trades_per_day,
@@ -681,6 +821,8 @@ def api_strategies_save_settings(
         "tradingmode": tradingmode,
         "errorseriespausecount": errorseriespausecount,
         "stopseriespausecount": stopseriespausecount,
+        "trailing_stop_enabled": bool01(trailing_stop_enabled),
+        "use_signal_service": bool01(use_signal_service),
     })
     return JSONResponse({"ok": True})
 
@@ -712,6 +854,7 @@ async def api_strategy_instruments_add(strategy_id: int, request: Request):
         inst = {
             "ticker": (item.get("ticker") or "").strip(),
             "figi": figi,
+            "instrument_uid": (item.get("uid") or item.get("instrument_uid") or "").strip(),
             "name": item.get("name", ""),
             "class_code": item.get("class_code", item.get("classcode", "")),
             "instrument_type": item.get("instrument_type", item.get("instrumenttype", "share")),
