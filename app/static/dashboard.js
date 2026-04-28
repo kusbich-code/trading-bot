@@ -1683,7 +1683,8 @@ function _renderBacktestResults(data) {
     head.innerHTML = `<th>Метрика</th>` + sids.map(sid => {
       const r = results[sid];
       const name = r.strategy_name || `Стратегия ${sid}`;
-      const mode = r.mode ? `<div class="note" style="font-weight:400;font-size:11px">${esc(r.mode)} · SL ${esc(r.sl_pct_ui || "")} · TP ${esc(r.tp_pct_ui || "")}</div>` : "";
+      const lotsInfo = r.lots ? ` · ${r.lots} лот` : "";
+      const mode = r.mode ? `<div class="note" style="font-weight:400;font-size:11px">${esc(r.mode)} · SL ${esc(r.sl_pct_ui || "")} · TP ${esc(r.tp_pct_ui || "")}${lotsInfo}</div>` : "";
       return `<th style="min-width:140px">${esc(name)}${mode}</th>`;
     }).join("");
   }
@@ -1691,6 +1692,7 @@ function _renderBacktestResults(data) {
   // ── Metrics rows ──
   const metrics = [
     ["Свечей",              r => String(r.candles_tested ?? "—")],
+    ["Лотов в позиции",     r => r.lots != null ? String(r.lots) : "1"],
     ["Сделок",              r => String(r.total_trades ?? "—")],
     ["Прибыл. / убыт.",     r => `${r.win_trades ?? 0} / ${r.loss_trades ?? 0}`],
     ["Win Rate",            r => r.win_rate    != null ? `${r.win_rate.toFixed(1)}%` : "—"],
@@ -1873,7 +1875,7 @@ async function renderAnalystTab() {
               <thead>
                 <tr>
                   <th>Score</th><th>Инструмент</th><th>Режим</th>
-                  <th>SL / TP</th><th>Сделок</th><th>Win Rate</th>
+                  <th>SL / TP</th><th>Лотов</th><th>Сделок</th><th>Win Rate</th>
                   <th>PnL (₽)</th><th>Profit Factor</th><th>Drawdown</th>
                   <th></th>
                 </tr>
@@ -1982,11 +1984,15 @@ async function _analystLoadResults() {
       const saved = r.saved ? `<span class="badge badge-active">Сохранена</span>` : `<button class="btn btn-small" onclick="analystDetail(${r.id})">Подробнее</button>`;
       const scoreColor = r.score >= 30 ? "#2ecc71" : r.score >= 15 ? "#f0c04a" : "#aaa";
       const modeColor  = modeColors[r.mode] || "#eef4ff";
+      const lotsCalc   = (r.avg_price > 0 && r.budget_rub > 0)
+        ? Math.max(1, Math.floor(r.budget_rub * 0.95 / r.avg_price))
+        : "—";
       return `<tr>
         <td><b style="color:${scoreColor}">${r.score.toFixed(1)}</b></td>
         <td><b>${esc(r.ticker)}</b><div class="note" style="font-size:11px">${esc(r.instrument_name)}</div></td>
         <td style="color:${modeColor};font-size:12px">${esc(r.mode_label)}</td>
         <td class="mono" style="font-size:12px">${esc(r.sl_pct_ui)} / ${esc(r.tp_pct_ui)}</td>
+        <td class="mono">${lotsCalc}</td>
         <td>${r.total_trades}</td>
         <td class="${r.win_rate >= 50 ? "pnl-pos" : ""}">${r.win_rate.toFixed(1)}%</td>
         <td class="mono ${r.net_pnl >= 0 ? "pnl-pos" : "pnl-neg"}">${r.net_pnl.toFixed(2)}</td>

@@ -157,7 +157,15 @@ def _worker(budget_rub, min_win_rate, min_trades, days, interval, min_pnl):
             if len(candles) < 30:
                 continue
 
-            # ── Backtest ─────────────────────────────────────────────────
+            # ── Lots: calculated from budget once per instrument (cached) ─
+            closes    = [c["close"] for c in candles if c.get("close")]
+            avg_price = round(sum(closes) / len(closes), 4) if closes else 0.0
+            if avg_price > 0 and budget_rub > 0:
+                lots = max(1, int((budget_rub * 0.95) // avg_price))
+            else:
+                lots = 1
+
+            # ── Backtest (uses realistic lot size) ───────────────────────
             try:
                 res = run_backtest(
                     candles=candles,
@@ -166,6 +174,7 @@ def _worker(budget_rub, min_win_rate, min_trades, days, interval, min_pnl):
                     take_profit_pct=tp,
                     commission_pct=0.0004,
                     initial_capital=float(budget_rub),
+                    qty=lots,
                 )
             except Exception:
                 continue
@@ -181,10 +190,6 @@ def _worker(budget_rub, min_win_rate, min_trades, days, interval, min_pnl):
             # Composite score: profit_factor × win_rate × (1 - max_dd%)
             dd_penalty = 1.0 - min(res.max_drawdown_pct / 100.0, 0.9)
             score = round(res.profit_factor * (res.win_rate / 100) * dd_penalty * 100, 2)
-
-            # Average close price of candles (for lot calculation when saving)
-            closes = [c["close"] for c in candles if c.get("close")]
-            avg_price = round(sum(closes) / len(closes), 4) if closes else 0.0
 
             # Downsample equity curve to ≤200 points
             curve = res.equity_curve
@@ -210,6 +215,7 @@ def _worker(budget_rub, min_win_rate, min_trades, days, interval, min_pnl):
                     res.max_drawdown, res.avg_r_multiple, res.sharpe_ratio,
                     eq_json, score, avg_price,
                 ))
+            # lots stored in avg_price → recalculated on save; no extra column needed
 
             found += 1
             _upd(found=found)
