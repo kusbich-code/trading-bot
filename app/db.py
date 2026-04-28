@@ -244,9 +244,15 @@ def init_db():
             sharpe_ratio REAL DEFAULT 0,
             equity_curve TEXT DEFAULT '[]',
             score REAL DEFAULT 0,
+            avg_price REAL DEFAULT 0,
             saved_strategy_id INTEGER DEFAULT NULL
         )
         """)
+
+        try:
+            cur.execute("ALTER TABLE analyst_results ADD COLUMN avg_price REAL DEFAULT 0")
+        except Exception:
+            pass
 
         ensure_instruments_columns(cur)
         seed_instruments(cur)

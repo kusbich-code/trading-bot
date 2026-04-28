@@ -1078,11 +1078,19 @@ def api_analyst_result_detail(result_id: int):
     r = _analyst.get_result_by_id(result_id)
     if not r:
         raise HTTPException(status_code=404, detail="Результат не найден")
+    sl         = float(r["sl_pct"])
+    tp         = float(r["tp_pct"])
+    budget     = float(r.get("budget_rub") or 0)
+    avg_price  = float(r.get("avg_price") or 0)
+    lots       = max(1, int((budget * 0.95) // avg_price)) if avg_price > 0 and budget > 0 else 1
     return {
         **r,
         "equity_curve": json.loads(r.get("equity_curve") or "[]"),
-        "sl_pct_ui": f"{float(r['sl_pct'])*100:.3f}%",
-        "tp_pct_ui": f"{float(r['tp_pct'])*100:.3f}%",
+        "sl_pct_ui":    f"{sl * 100:.3f}%",
+        "tp_pct_ui":    f"{tp * 100:.3f}%",
+        "avg_price_ui": f"{avg_price:.2f} ₽" if avg_price else "—",
+        "lots_calc":    lots,
+        "budget_ui":    f"{budget:,.0f} ₽",
     }
 
 

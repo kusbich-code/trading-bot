@@ -234,9 +234,9 @@ async function renderMainShell() {
     <section class="block">
       <div class="row between"><h2>Управление</h2><div class="note">Быстрые действия с сервисом</div></div>
       <div class="row-buttons">
-        <button class="btn btn-primary" id="btnStartService">Запустить</button>
-        <button class="btn" id="btnStopService">Остановить</button>
-        <button class="btn" id="btnRestartService">Перезапустить</button>
+        <button class="btn btn-primary" onclick="serviceAction('start')">Запустить</button>
+        <button class="btn" onclick="serviceAction('stop')">Остановить</button>
+        <button class="btn" onclick="serviceAction('restart')">Перезапустить</button>
       </div>
     </section>
     <section class="block">
@@ -268,9 +268,6 @@ async function renderMainShell() {
     </section>
   `;
   host.dataset.initialized = "1";
-  document.getElementById("btnStartService")?.addEventListener("click", () => serviceAction("start"));
-  document.getElementById("btnStopService")?.addEventListener("click", () => serviceAction("stop"));
-  document.getElementById("btnRestartService")?.addEventListener("click", () => serviceAction("restart"));
   document.getElementById("btnSandboxPayIn")?.addEventListener("click", sandboxPayIn);
   document.getElementById("btnTelegramDiag")?.addEventListener("click", telegramDiag);
 }
@@ -310,18 +307,14 @@ async function renderMainData() {
         <td style="${pnlClass}">${esc(p.unrealized_pnl_ui)}</td>
         <td>${p.figi && p.qty && p.direction ? `
           <button class="btn btn-danger" style="padding:5px 10px"
-            data-close-main-pos data-figi="${esc(p.figi)}"
-            data-qty="${esc(p.qty)}" data-direction="${esc(p.direction)}">
+            onclick="closeOnePosition('${esc(p.figi)}','${esc(p.qty)}','${esc(p.direction)}')">
             Закрыть
           </button>` : "—"}</td>
       </tr>`;
     }).join("")
   );
 
-  // Bind close buttons in main positions
-  document.querySelectorAll("[data-close-main-pos]").forEach((btn) => {
-    btn.addEventListener("click", () => closeOnePosition(btn.dataset.figi, btn.dataset.qty, btn.dataset.direction));
-  });
+  // close buttons use inline onclick — no addEventListener needed
 
   const displayTrades = (data.api_trades && data.api_trades.length > 0)
     ? data.api_trades
@@ -2063,7 +2056,10 @@ async function analystDetail(id) {
       ["Max Drawdown",  `${r.max_drawdown?.toFixed(2)} ₽`],
       ["R-Multiple",    r.avg_r_multiple?.toFixed(2)],
       ["Sharpe",        r.sharpe_ratio?.toFixed(2)],
-      ["Score",         r.score?.toFixed(1)],
+      ["Score",          r.score?.toFixed(1)],
+      ["Ср. цена инстр.", r.avg_price_ui || "—"],
+      ["Лотов (бюджет)",  r.lots_calc != null ? `${r.lots_calc} лот` : "—"],
+      ["Бюджет",          r.budget_ui || "—"],
     ];
     if (meta) {
       meta.innerHTML = metaItems.map(([k, v]) => `

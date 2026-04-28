@@ -182,6 +182,10 @@ def _worker(budget_rub, min_win_rate, min_trades, days, interval, min_pnl):
             dd_penalty = 1.0 - min(res.max_drawdown_pct / 100.0, 0.9)
             score = round(res.profit_factor * (res.win_rate / 100) * dd_penalty * 100, 2)
 
+            # Average close price of candles (for lot calculation when saving)
+            closes = [c["close"] for c in candles if c.get("close")]
+            avg_price = round(sum(closes) / len(closes), 4) if closes else 0.0
+
             # Downsample equity curve to ≤200 points
             curve = res.equity_curve
             if len(curve) > 200:
@@ -196,15 +200,15 @@ def _worker(budget_rub, min_win_rate, min_trades, days, interval, min_pnl):
                     interval, days, sl_pct, tp_pct, budget_rub,
                     net_pnl, win_rate, profit_factor, total_trades,
                     max_drawdown, avg_r_multiple, sharpe_ratio,
-                    equity_curve, score
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    equity_curve, score, avg_price
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """, (
                     run_id, datetime.now().isoformat(),
                     mode, figi, ticker, inst["name"],
                     interval, days, str(sl), str(tp), float(budget_rub),
                     res.net_pnl, res.win_rate, res.profit_factor, res.total_trades,
                     res.max_drawdown, res.avg_r_multiple, res.sharpe_ratio,
-                    eq_json, score,
+                    eq_json, score, avg_price,
                 ))
 
             found += 1
@@ -258,9 +262,17 @@ def save_as_strategy(result_id: int, strategy_name: str) -> int:
     if not name:
         raise ValueError("Имя стратегии не может быть пустым")
 
-    sl  = float(result["sl_pct"])
-    tp  = float(result["tp_pct"])
-    mode = result["tradingmode"]
+    sl         = float(result["sl_pct"])
+    tp         = float(result["tp_pct"])
+    mode       = result["tradingmode"]
+    budget_rub = float(result.get("budget_rub") or 0)
+    avg_price  = float(result.get("avg_price") or 0)
+
+    # Lots that fit in budget with a 5% safety margin so money is guaranteed to cover
+    if avg_price > 0 and budget_rub > 0:
+        lots = max(1, int((budget_rub * 0.95) // avg_price))
+    else:
+        lots = 1
 
     settings = {
         "tradingmode":              mode,
@@ -302,10 +314,11 @@ def save_as_strategy(result_id: int, strategy_name: str) -> int:
         cur.execute("""
         INSERT OR IGNORE INTO strategy_instruments(
             strategy_id, figi, ticker, name,
-            lot, stop_loss_pct, take_profit_pct,
+            lot, lots_override, stop_loss_pct, take_profit_pct,
             allow_long, allow_short, enabled, priority
-        ) VALUES (?, ?, ?, ?, 1, ?, ?, 1, 1, 1, 100)
-        """, (sid, result["figi"], result["ticker"], result["instrument_name"], str(sl), str(tp)))
+        ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, 1, 1, 1, 100)
+        """, (sid, result["figi"], result["ticker"], result["instrument_name"],
+              lots, str(sl), str(tp)))
 
         # Mark result as saved
         cur.execute(
