@@ -47,10 +47,10 @@ def run_backtest(
     commission_pct: float = 0.0004,
     initial_capital: float = 100_000.0,
     qty: int = 1,
-    signal_threshold: int = 30,
 ) -> BacktestResult:
     """
     Event-driven backtest on OHLCV candles using strategy_engine signals.
+    Mirrors live bot logic: any BUY/SELL action opens a position (no score gate).
 
     Per bar:
       1. If position open — check SL/TP against bar high/low.
@@ -127,9 +127,8 @@ def run_backtest(
             window = candles[: i + 1]
             sig = evaluate_signal(mode, window)
             action = sig.get("action", "HOLD")
-            score = sig.get("score", 0)
 
-            if action in ("BUY", "SELL") and score >= signal_threshold:
+            if action in ("BUY", "SELL"):
                 entry_comm = bar_close * qty * commission_pct
                 position = Trade(
                     entry_idx=i,

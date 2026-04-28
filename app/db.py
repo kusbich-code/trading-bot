@@ -12,7 +12,7 @@ STRATEGY_SETTING_KEYS = {
     "default_stop_loss_pct", "default_take_profit_pct", "estimated_commission_pct",
     "allow_long_global", "allow_short_global", "trade_only_session", "pause_after_error_sec",
     "tradingmode", "errorseriespausecount", "stopseriespausecount",
-    "trailing_stop_enabled", "use_signal_service",
+    "trailing_stop_enabled", "use_signal_service", "min_signal_score",
 }
 
 
@@ -225,6 +225,7 @@ def init_db():
         seed_instruments(cur)
         _seed_defaults(cur)
         _seed_default_profile_and_strategy(cur)
+        _seed_preset_strategies(cur)
 
 
 def _seed_defaults(cur):
@@ -253,6 +254,7 @@ def _seed_defaults(cur):
     seed_setting(cur, "tinvestusesandbox", "true")
     seed_setting(cur, "errorseriespausecount", "3")
     seed_setting(cur, "stopseriespausecount", "3")
+    seed_setting(cur, "min_signal_score", "0")
     seed_setting(cur, "healthtelegramenabled", "0")
     seed_setting(cur, "active_profile_id", "")
     seed_setting(cur, "active_profile_name", "")
@@ -278,6 +280,7 @@ def _seed_default_profile_and_strategy(cur):
         "stopseriespausecount": "3",
         "trailing_stop_enabled": "0",
         "use_signal_service": "0",
+        "min_signal_score": "0",
     }
     PROF_DEFAULTS = {
         "bot_enabled": "1",
@@ -327,6 +330,152 @@ def _seed_default_profile_and_strategy(cur):
         INSERT INTO bot_settings(key, value) VALUES ('active_strategy_name', 'Основная')
         ON CONFLICT(key) DO UPDATE SET value = excluded.value
         """)
+
+
+def _seed_preset_strategies(cur):
+    """
+    Create preset strategies for the Russian market if they don't exist yet.
+    Runs on every startup — skips strategies that already exist by name.
+    """
+    PRESETS = [
+        {
+            "name": "Голубые фишки — Возврат к средней",
+            "settings": {
+                "tradingmode": "mean_reversion",
+                "min_signal_score": "50",
+                "default_stop_loss_pct": "0.003",
+                "default_take_profit_pct": "0.006",
+                "estimated_commission_pct": "0.0004",
+                "max_trades_per_day": "8",
+                "max_open_positions": "2",
+                "max_daily_loss_rub": "500",
+                "check_interval_sec": "5",
+                "allow_long_global": "1",
+                "allow_short_global": "0",
+                "trade_only_session": "1",
+                "pause_after_error_sec": "10",
+                "errorseriespausecount": "3",
+                "stopseriespausecount": "3",
+                "trailing_stop_enabled": "0",
+                "use_signal_service": "0",
+            },
+            # SBER, GAZP, LKOH — ликвидные голубые фишки, сильно mean-reverting внутри дня
+            "instruments": [
+                {"figi": "BBG004730N88", "ticker": "SBER", "name": "Сбербанк", "lot": 1, "sl": "0.003", "tp": "0.006"},
+                {"figi": "BBG004730RP0", "ticker": "GAZP", "name": "Газпром",  "lot": 1, "sl": "0.003", "tp": "0.006"},
+                {"figi": "BBG004731032", "ticker": "LKOH", "name": "Лукойл",   "lot": 1, "sl": "0.003", "tp": "0.006"},
+            ],
+        },
+        {
+            "name": "Нефтяной сектор — Возврат к средней",
+            "settings": {
+                "tradingmode": "mean_reversion",
+                "min_signal_score": "50",
+                "default_stop_loss_pct": "0.004",
+                "default_take_profit_pct": "0.008",
+                "estimated_commission_pct": "0.0004",
+                "max_trades_per_day": "6",
+                "max_open_positions": "2",
+                "max_daily_loss_rub": "500",
+                "check_interval_sec": "5",
+                "allow_long_global": "1",
+                "allow_short_global": "0",
+                "trade_only_session": "1",
+                "pause_after_error_sec": "10",
+                "errorseriespausecount": "3",
+                "stopseriespausecount": "3",
+                "trailing_stop_enabled": "0",
+                "use_signal_service": "0",
+            },
+            # LKOH, ROSN, TATN, NVTK — нефтяной и газовый сектор
+            "instruments": [
+                {"figi": "BBG004731032", "ticker": "LKOH", "name": "Лукойл",   "lot": 1, "sl": "0.004", "tp": "0.008"},
+                {"figi": "BBG004731354", "ticker": "ROSN", "name": "Роснефть", "lot": 1, "sl": "0.004", "tp": "0.008"},
+                {"figi": "BBG004RVFN70", "ticker": "TATN", "name": "Татнефть", "lot": 1, "sl": "0.004", "tp": "0.008"},
+                {"figi": "BBG00475KHX6", "ticker": "NVTK", "name": "НОВАТЭК",  "lot": 1, "sl": "0.004", "tp": "0.008"},
+            ],
+        },
+        {
+            "name": "Пробой с объёмом",
+            "settings": {
+                "tradingmode": "breakout",
+                "min_signal_score": "40",
+                "default_stop_loss_pct": "0.005",
+                "default_take_profit_pct": "0.01",
+                "estimated_commission_pct": "0.0004",
+                "max_trades_per_day": "5",
+                "max_open_positions": "1",
+                "max_daily_loss_rub": "300",
+                "check_interval_sec": "5",
+                "allow_long_global": "1",
+                "allow_short_global": "1",
+                "trade_only_session": "1",
+                "pause_after_error_sec": "15",
+                "errorseriespausecount": "2",
+                "stopseriespausecount": "2",
+                "trailing_stop_enabled": "1",
+                "use_signal_service": "0",
+            },
+            # SBER, GMKN, MOEX — высокий объём, чёткие уровни для пробоя
+            "instruments": [
+                {"figi": "BBG004730N88", "ticker": "SBER", "name": "Сбербанк",         "lot": 1, "sl": "0.005", "tp": "0.01"},
+                {"figi": "BBG004731489", "ticker": "GMKN", "name": "Норникель",        "lot": 1, "sl": "0.005", "tp": "0.01"},
+                {"figi": "BBG004730JJ5", "ticker": "MOEX", "name": "Московская биржа", "lot": 1, "sl": "0.005", "tp": "0.01"},
+            ],
+        },
+        {
+            "name": "Финансы — Скальпинг",
+            "settings": {
+                "tradingmode": "mean_reversion",
+                "min_signal_score": "55",
+                "default_stop_loss_pct": "0.0025",
+                "default_take_profit_pct": "0.005",
+                "estimated_commission_pct": "0.0004",
+                "max_trades_per_day": "15",
+                "max_open_positions": "3",
+                "max_daily_loss_rub": "300",
+                "check_interval_sec": "5",
+                "allow_long_global": "1",
+                "allow_short_global": "0",
+                "trade_only_session": "1",
+                "pause_after_error_sec": "10",
+                "errorseriespausecount": "3",
+                "stopseriespausecount": "4",
+                "trailing_stop_enabled": "0",
+                "use_signal_service": "0",
+            },
+            # SBER, VTBR, MTSS — финансы и телеком, высокая ликвидность, узкий спред
+            "instruments": [
+                {"figi": "BBG004730N88", "ticker": "SBER", "name": "Сбербанк", "lot": 1, "sl": "0.0025", "tp": "0.005"},
+                {"figi": "BBG004730ZJ9", "ticker": "VTBR", "name": "ВТБ",      "lot": 1, "sl": "0.0025", "tp": "0.005"},
+                {"figi": "BBG004S68473", "ticker": "MTSS", "name": "МТС",      "lot": 1, "sl": "0.0025", "tp": "0.005"},
+            ],
+        },
+    ]
+
+    for preset in PRESETS:
+        cur.execute("SELECT id FROM strategies WHERE name = ?", (preset["name"],))
+        if cur.fetchone():
+            continue  # already exists
+
+        cur.execute("INSERT INTO strategies(name) VALUES (?)", (preset["name"],))
+        sid = cur.lastrowid
+
+        for key, value in preset["settings"].items():
+            cur.execute("""
+            INSERT INTO strategy_settings(strategy_id, key, value) VALUES (?, ?, ?)
+            ON CONFLICT(strategy_id, key) DO NOTHING
+            """, (sid, key, value))
+
+        for inst in preset["instruments"]:
+            cur.execute("""
+            INSERT OR IGNORE INTO strategy_instruments(
+                strategy_id, figi, ticker, name, lot,
+                stop_loss_pct, take_profit_pct,
+                allow_long, allow_short, enabled, priority
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1, 1, 100)
+            """, (sid, inst["figi"], inst["ticker"], inst["name"],
+                  inst["lot"], inst["sl"], inst["tp"]))
 
 
 def seed_instruments(cur):

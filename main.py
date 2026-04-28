@@ -36,6 +36,7 @@ except Exception:
 
 from app.config import settings
 from app.version import __version__ as BOT_VERSION
+from app.services.strategy_engine import evaluate_signal as _evaluate_signal
 from app.db import (
     init_db,
     set_runtime,
@@ -284,6 +285,24 @@ def get_last_candle_volume(candles) -> int:
         return 0
     last_candle = candles[-1]
     return int(getattr(last_candle, "volume", 0) or 0)
+
+
+def _candles_to_dicts(candles) -> list:
+    """Convert raw t_tech candle objects → List[Dict] for strategy_engine."""
+    out = []
+    for c in candles:
+        try:
+            out.append({
+                "open":   float(quotation_to_decimal(c.open)),
+                "high":   float(quotation_to_decimal(c.high)),
+                "low":    float(quotation_to_decimal(c.low)),
+                "close":  float(quotation_to_decimal(c.close)),
+                "volume": int(getattr(c, "volume", 0) or 0),
+                "time":   c.time.isoformat() if getattr(c, "time", None) else "",
+            })
+        except Exception:
+            continue
+    return out
 
 
 def is_session_allowed(client, figi: str) -> bool:
@@ -634,8 +653,8 @@ def process_instrument(client, item):
         stream_price = stream_md.get("price")
         price = stream_price if (stream_price and stream_price > 0) else get_last_price(client, figi)
 
-        # ── Candles: MA mode needs 120 bars, S/R mode needs 20 ───────────────
-        candle_n = 120 if tradingmode == "ma_crossover" else 20
+        # ── Candles: 50 bars sufficient for all strategy_engine modes ────────
+        candle_n = 50
         candles = get_candles(client, figi, n=candle_n)
         last_volume = get_last_candle_volume(candles)
 
@@ -804,17 +823,25 @@ def process_instrument(client, item):
     if len(state.open_positions) >= int(get_setting("max_open_positions", "2")):
         return
 
-    # ── Signal selection by tradingmode ──────────────────────────────────────
-    if tradingmode == "ma_crossover":
-        sig = get_ma_signal(candles)
-    else:
-        support, resistance = calc_support_resistance(candles)
-        sig = get_signal(price, support, resistance)
+    # ── Signal via strategy_engine (same logic as backtest) ──────────────────
+    candles_dict = _candles_to_dicts(candles)
+    sig_result = _evaluate_signal(tradingmode, candles_dict)
+    sig   = sig_result["action"]   # "BUY" | "SELL" | "HOLD"
+    score = sig_result["score"]
 
-    if not sig:
+    if sig == "HOLD":
         return
 
-    log_event("SIGNAL", f"{sig} [{tradingmode}] on {ticker}", ticker=ticker)
+    min_score = int(get_setting("min_signal_score", "0"))
+    if min_score > 0 and score < min_score:
+        log_event(
+            "SIGNAL_SKIP",
+            f"{ticker}: score={score} < порог={min_score} [{tradingmode}], пропуск",
+            ticker=ticker,
+        )
+        return
+
+    log_event("SIGNAL", f"{sig} [{tradingmode}] score={score} on {ticker}", ticker=ticker)
 
     # ── T-Bank Signal Service filter ──────────────────────────────────────────
     if use_signal_service:

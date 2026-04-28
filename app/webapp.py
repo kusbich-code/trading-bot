@@ -812,6 +812,7 @@ def api_dashboard_settings(profile_id: Optional[int] = None):
                 "stopseriespausecount": ss("stopseriespausecount", "3"),
                 "trailing_stop_enabled": ss("trailing_stop_enabled", "0"),
                 "use_signal_service": ss("use_signal_service", "0"),
+                "min_signal_score": ss("min_signal_score", "0"),
             },
         },
         "profiles": list_profiles(),
