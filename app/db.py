@@ -173,9 +173,14 @@ def init_db():
         CREATE TABLE IF NOT EXISTS strategies (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL UNIQUE,
+            parallel_enabled INTEGER DEFAULT 0,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
         """)
+        try:
+            cur.execute("ALTER TABLE strategies ADD COLUMN parallel_enabled INTEGER DEFAULT 0")
+        except Exception:
+            pass
 
         cur.execute("""
         CREATE TABLE IF NOT EXISTS strategy_settings (
@@ -1059,6 +1064,27 @@ def list_strategies() -> list:
     with db_cursor() as cur:
         cur.execute("SELECT * FROM strategies ORDER BY name ASC")
         return [dict(row) for row in cur.fetchall()]
+
+
+def list_parallel_strategies() -> list:
+    """Return strategies with parallel_enabled=1 including their settings and instruments."""
+    with db_cursor() as cur:
+        cur.execute("SELECT * FROM strategies WHERE parallel_enabled = 1 ORDER BY name ASC")
+        rows = [dict(r) for r in cur.fetchall()]
+    result = []
+    for row in rows:
+        cfg  = get_strategy_settings(row["id"])
+        instr = list_strategy_instruments(row["id"])
+        result.append({"strategy": row, "cfg": cfg, "instruments": instr})
+    return result
+
+
+def set_strategy_parallel(strategy_id: int, enabled: bool):
+    with db_cursor() as cur:
+        cur.execute(
+            "UPDATE strategies SET parallel_enabled = ? WHERE id = ?",
+            (1 if enabled else 0, strategy_id)
+        )
 
 
 def get_strategy(strategy_id: int) -> dict:

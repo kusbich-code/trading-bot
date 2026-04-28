@@ -18,6 +18,8 @@ from app.control import run_control
 from app.db import (
     init_db,
     get_all_settings,
+    set_strategy_parallel,
+    list_parallel_strategies,
     get_all_runtime,
     get_trade_stats_today,
     get_trades,
@@ -818,6 +820,7 @@ def api_dashboard_settings(profile_id: Optional[int] = None):
                 "use_signal_service": ss("use_signal_service", "0"),
                 "min_signal_score": ss("min_signal_score", "0"),
             },
+            "parallel_enabled": bool(int(strategy.get("parallel_enabled") or 0)),
         },
         "profiles": list_profiles(),
         "strategies": list_strategies(),
@@ -1012,6 +1015,37 @@ async def api_backtest_run(request: Request):
         "candles_loaded": len(candles),
         "results": results,
     }
+
+
+# ── parallel strategies ────────────────────────────────────────────────────────
+
+@app.get("/api/parallel/status")
+def api_parallel_status():
+    """Live status of all parallel strategy worker threads."""
+    try:
+        from main import _parallel_status, _parallel_status_lock, _parallel_coord
+        with _parallel_status_lock:
+            statuses = dict(_parallel_status)
+        coord = _parallel_coord.snapshot()
+    except Exception:
+        statuses = {}
+        coord = {}
+    parallel_strats = list_parallel_strategies()
+    result = []
+    for entry in parallel_strats:
+        sid  = entry["strategy"]["id"]
+        name = entry["strategy"].get("name", f"#{sid}")
+        info = statuses.get(sid, {"status": "не запущен", "ticker": "", "updated_at": ""})
+        result.append({"strategy_id": sid, "name": name, **info})
+    return {"threads": result, "coord": coord}
+
+
+@app.post("/api/strategy/{strategy_id}/parallel")
+async def api_strategy_set_parallel(strategy_id: int, request: Request):
+    body = await request.json()
+    enabled = bool(body.get("enabled", False))
+    set_strategy_parallel(strategy_id, enabled)
+    return {"ok": True, "strategy_id": strategy_id, "parallel_enabled": enabled}
 
 
 # ── analyst ───────────────────────────────────────────────────────────────────

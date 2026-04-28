@@ -1,12 +1,13 @@
 import logging
 import os
 import queue as _queue
+import threading
 import time
 import uuid
 from datetime import datetime, timezone, timedelta, date
 from decimal import Decimal
 from threading import Thread, Lock, Event
-from typing import Dict, Set
+from typing import Dict, Optional, Set
 
 from dotenv import load_dotenv
 
@@ -49,6 +50,7 @@ from app.db import (
     close_position,
     clear_open_positions,
     upsert_instrument_market_state,
+    list_parallel_strategies,
 )
 from app.instruments import get_instrument_meta, round_to_price_step
 from app.telegram_notify import TelegramNotifier
@@ -71,6 +73,80 @@ log = logging.getLogger("trading-bot")
 
 init_db()
 notifier = TelegramNotifier()
+
+
+# ── Parallel strategy coordination ───────────────────────────────────────────
+
+class _ParallelCoord:
+    """
+    Ensures only ONE position is open across all parallel strategy threads.
+
+    Protocol:
+      1. Before opening a position: call try_claim(strategy_id, figi).
+         Returns True only if no other thread holds the lock.
+      2. After closing: call release(strategy_id).
+      3. Other threads check is_free() each cycle; if False and they are not
+         the owner, they skip instrument processing and wait.
+    """
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._owner_sid: Optional[int] = None
+        self._owner_figi: Optional[str] = None
+        self._owner_ticker: Optional[str] = None
+
+    @property
+    def is_free(self) -> bool:
+        with self._lock:
+            return self._owner_sid is None
+
+    def try_claim(self, sid: int, figi: str, ticker: str = "") -> bool:
+        with self._lock:
+            if self._owner_sid is None:
+                self._owner_sid   = sid
+                self._owner_figi  = figi
+                self._owner_ticker = ticker
+                return True
+            return False
+
+    def release(self, sid: int) -> bool:
+        with self._lock:
+            if self._owner_sid == sid:
+                self._owner_sid   = None
+                self._owner_figi  = None
+                self._owner_ticker = None
+                return True
+            return False
+
+    def is_owner(self, sid: int) -> bool:
+        with self._lock:
+            return self._owner_sid == sid
+
+    def snapshot(self) -> dict:
+        with self._lock:
+            return {
+                "owner_strategy_id": self._owner_sid,
+                "owner_figi":        self._owner_figi,
+                "owner_ticker":      self._owner_ticker,
+            }
+
+
+_parallel_coord = _ParallelCoord()
+
+# Per-thread status dict: strategy_id → {status, ticker, updated_at}
+_parallel_status: Dict[int, dict] = {}
+_parallel_status_lock = threading.Lock()
+
+# Stop events for each parallel thread: strategy_id → Event
+_parallel_stop_events: Dict[int, threading.Event] = {}
+
+
+def _pset(sid: int, status: str, ticker: str = ""):
+    with _parallel_status_lock:
+        _parallel_status[sid] = {
+            "status":     status,
+            "ticker":     ticker,
+            "updated_at": datetime.now().strftime("%H:%M:%S"),
+        }
 
 
 class BotState:
@@ -623,7 +699,25 @@ def place_order_checked(client, ticker: str, figi: str, lots: int, raw_price: De
         raise
 
 
-def process_instrument(client, item):
+def process_instrument(client, item,
+                       _strategy_id: Optional[int] = None,
+                       _strategy_cfg: Optional[Dict] = None,
+                       _positions: Optional[Dict] = None,
+                       _coord: Optional[_ParallelCoord] = None):
+    """
+    Process one instrument for one strategy cycle.
+
+    Parallel mode: pass _strategy_id, _strategy_cfg (settings dict),
+    _positions (per-thread open positions dict) and _coord.
+    Legacy/main mode: leave all as None — uses global state + get_setting().
+    """
+    def _cfg(key, default=""):
+        if _strategy_cfg is not None:
+            return _strategy_cfg.get(key, default)
+        return get_setting(key, default)
+
+    positions = _positions if _positions is not None else state.open_positions
+
     ticker = item["ticker"]
     figi = item["figi"]
     lot = item["lots_override"]
@@ -642,9 +736,9 @@ def process_instrument(client, item):
     if not is_tradable(trading_status):
         return
 
-    tradingmode = get_setting("tradingmode", "trend")
-    trailing_stop_enabled = get_setting("trailing_stop_enabled", "0") == "1"
-    use_signal_service    = get_setting("use_signal_service", "0") == "1"
+    tradingmode           = _cfg("tradingmode", "trend")
+    trailing_stop_enabled = _cfg("trailing_stop_enabled", "0") == "1"
+    use_signal_service    = _cfg("use_signal_service", "0") == "1"
 
     try:
         # ── Price: stream (fast) → REST fallback ──────────────────────────────
@@ -694,8 +788,8 @@ def process_instrument(client, item):
     if max_spread_pct > 0 and spread_pct > max_spread_pct:
         return
 
-    if ticker in state.open_positions:
-        pos = state.open_positions[ticker]
+    if ticker in positions:
+        pos = positions[ticker]
         entry_price = Decimal(str(pos["entry_price"]))
         direction = pos["direction"]
         qty = int(pos["qty"])
@@ -779,7 +873,7 @@ def process_instrument(client, item):
             exec_qty = int(order_result["lots_executed"] or qty)
             gross_amount = exit_price * exec_qty
            
-            estimated_commission_pct = Decimal(get_setting("estimated_commission_pct", str(settings.ESTIMATED_COMMISSION_PCT)))
+            estimated_commission_pct = Decimal(_cfg("estimated_commission_pct", str(settings.ESTIMATED_COMMISSION_PCT)))
             commission = (entry_price * exec_qty + exit_price * exec_qty) * estimated_commission_pct
 
             if direction == "BUY":
@@ -808,7 +902,9 @@ def process_instrument(client, item):
             add_trade(trade)
             close_position(figi, source="BOT")
             log_event("ORDER_CLOSE", f"{ticker} pnl={float(pnl):.2f} reason={close_reason}", ticker=ticker)
-            del state.open_positions[ticker]
+            del positions[ticker]
+            if _coord is not None:
+                _coord.release(_strategy_id)
 
             notify(
                 f"✅ Закрытие позиции\n"
@@ -820,7 +916,11 @@ def process_instrument(client, item):
             )
         return
 
-    if len(state.open_positions) >= int(get_setting("max_open_positions", "2")):
+    if _coord is not None:
+        # Parallel mode: skip if another strategy holds the position lock
+        if not _coord.is_free and not _coord.is_owner(_strategy_id):
+            return
+    elif len(positions) >= int(_cfg("max_open_positions", "2")):
         return
 
     # ── Signal via strategy_engine (same logic as backtest) ──────────────────
@@ -832,7 +932,7 @@ def process_instrument(client, item):
     if sig == "HOLD":
         return
 
-    min_score = int(get_setting("min_signal_score", "0"))
+    min_score = int(_cfg("min_signal_score", "0"))
     if min_score > 0 and score < min_score:
         log_event(
             "SIGNAL_SKIP",
@@ -857,7 +957,7 @@ def process_instrument(client, item):
     # ── Balance check before order ───────────────────────────────────────────
     if sig == "BUY":
         lot_size = item.get("lot", 1)
-        commission_pct = Decimal(get_setting("estimated_commission_pct", "0.0004"))
+        commission_pct = Decimal(_cfg("estimated_commission_pct", "0.0004"))
         required = Decimal(str(lot)) * Decimal(str(lot_size)) * price * (1 + commission_pct)
         available = Decimal(str(state.session_balance_current))
         if available < required:
@@ -885,12 +985,16 @@ def process_instrument(client, item):
     if sig == "BUY":
         if not allow_long_global or not allow_long:
             return
+        if _coord is not None and not _coord.try_claim(_strategy_id, figi, ticker):
+            return  # another thread just claimed first
 
         order_result = place_order_checked(client, ticker, figi, lot, price, OrderDirection.ORDER_DIRECTION_BUY)
         if not order_result:
+            if _coord is not None:
+                _coord.release(_strategy_id)
             return
         _ep = float(order_result["executed_price"])
-        state.open_positions[ticker] = {
+        positions[ticker] = {
             "figi": figi,
             "direction": "BUY",
             "entry_price": _ep,
@@ -919,12 +1023,16 @@ def process_instrument(client, item):
     elif sig == "SELL":
         if not allow_short_global or not allow_short:
             return
+        if _coord is not None and not _coord.try_claim(_strategy_id, figi, ticker):
+            return
 
         order_result = place_order_checked(client, ticker, figi, lot, price, OrderDirection.ORDER_DIRECTION_SELL)
         if not order_result:
+            if _coord is not None:
+                _coord.release(_strategy_id)
             return
         _ep = float(order_result["executed_price"])
-        state.open_positions[ticker] = {
+        positions[ticker] = {
             "figi": figi,
             "direction": "SELL",
             "entry_price": _ep,
@@ -950,6 +1058,146 @@ def process_instrument(client, item):
 
         notify(f"🔴 Открытие позиции\n{ticker} | SELL\nЦена: {order_result['executed_price']}")
 
+def _parallel_strategy_worker(strategy_id: int, strat_name: str, stop_ev: threading.Event):
+    """
+    Worker thread for one parallel strategy.
+
+    Lifecycle per cycle:
+      1. If another strategy holds the position lock → skip, wait.
+      2. Otherwise scan all enabled instruments of this strategy.
+      3. process_instrument() claims the lock if it opens a position.
+      4. The thread that owns the lock keeps checking SL/TP until close,
+         then releases the lock and all threads resume.
+    """
+    _pset(strategy_id, "запуск")
+    log.info("Parallel [%s] thread started", strat_name)
+
+    positions: Dict = {}  # per-thread position store (max 1 in parallel mode)
+
+    while not stop_ev.is_set():
+        try:
+            # Reload settings each cycle (reflects UI changes)
+            cfg   = {row["key"]: row["value"]
+                     for row in _parallel_cfg_rows(strategy_id)}
+            instr = _parallel_instruments(strategy_id)
+
+            interval = int(cfg.get("check_interval_sec", "5"))
+
+            # If we have no open positions and coordinator is taken → wait
+            if not positions and not _parallel_coord.is_free and not _parallel_coord.is_owner(strategy_id):
+                _pset(strategy_id, "ожидание — другая стратегия в позиции")
+                stop_ev.wait(timeout=interval)
+                continue
+
+            if get_setting("bot_enabled", "1") != "1":
+                _pset(strategy_id, "бот выключен")
+                stop_ev.wait(timeout=interval)
+                continue
+
+            if not instr:
+                _pset(strategy_id, "нет инструментов")
+                stop_ev.wait(timeout=interval)
+                continue
+
+            client_cls = _bot_client_cls
+            if client_cls is None:
+                stop_ev.wait(timeout=3)
+                continue
+
+            with client_cls(settings.TINVEST_TOKEN) as client:
+                for item in instr:
+                    if stop_ev.is_set():
+                        break
+                    # Mid-scan check: someone else just opened
+                    if not positions and not _parallel_coord.is_free and not _parallel_coord.is_owner(strategy_id):
+                        break
+                    _pset(strategy_id, "сканирование", item["ticker"])
+                    try:
+                        process_instrument(
+                            client, item,
+                            _strategy_id=strategy_id,
+                            _strategy_cfg=cfg,
+                            _positions=positions,
+                            _coord=_parallel_coord,
+                        )
+                    except Exception as exc:
+                        log.warning("Parallel [%s] %s: %s", strat_name, item.get("ticker", "?"), exc)
+
+            status = "в позиции" if positions else "ожидание сигнала"
+            ticker = list(positions.keys())[0] if positions else ""
+            _pset(strategy_id, status, ticker)
+
+        except Exception as exc:
+            log.warning("Parallel [%s] цикл: %s", strat_name, exc)
+            _pset(strategy_id, f"ошибка: {exc}")
+
+        stop_ev.wait(timeout=int(cfg.get("check_interval_sec", "5")) if "cfg" in dir() else 5)
+
+    _pset(strategy_id, "остановлен")
+    _parallel_coord.release(strategy_id)
+    log.info("Parallel [%s] thread stopped", strat_name)
+
+
+def _parallel_cfg_rows(strategy_id: int) -> list:
+    from app.db import db_cursor as _dbc
+    with _dbc() as cur:
+        cur.execute("SELECT key, value FROM strategy_settings WHERE strategy_id = ?", (strategy_id,))
+        return cur.fetchall()
+
+
+def _parallel_instruments(strategy_id: int) -> list:
+    from app.db import list_strategy_instruments, get_instrument_meta
+    rows = list_strategy_instruments(strategy_id)
+    result = []
+    for item in rows:
+        if not str(item.get("enabled", "1")) in ("1", "true"):
+            continue
+        meta = get_instrument_meta(item["figi"])
+        if not meta:
+            continue
+        result.append({
+            "figi":              item["figi"],
+            "instrument_uid":    item.get("instrument_uid", "") or "",
+            "ticker":            item["ticker"],
+            "lot":               item.get("lot", 1),
+            "name":              item.get("name", ""),
+            "class_code":        item.get("class_code", ""),
+            "instrument_type":   item.get("instrument_type", ""),
+            "currency":          item.get("currency", ""),
+            "min_price_increment": Decimal(str(item.get("min_price_increment", "0.01"))),
+            "lots_override":     int(item.get("lots_override", 1)),
+            "stop_loss_pct":     Decimal(str(item.get("stop_loss_pct", "0.0025"))),
+            "take_profit_pct":   Decimal(str(item.get("take_profit_pct", "0.005"))),
+            "max_spread_pct":    Decimal(str(item.get("max_spread_pct", "0"))),
+            "min_volume":        int(item.get("min_volume", 0)),
+            "allow_long":        int(item.get("allow_long", 1)),
+            "allow_short":       int(item.get("allow_short", 1)),
+            "priority":          int(item.get("priority", 100)),
+        })
+    result.sort(key=lambda x: x["priority"])
+    return result
+
+
+def start_parallel_workers(stop_ev: threading.Event) -> list:
+    """Start one thread per strategy with parallel_enabled=1. Returns list of threads."""
+    threads = []
+    for entry in list_parallel_strategies():
+        strat = entry["strategy"]
+        sid   = strat["id"]
+        name  = strat.get("name", f"#{sid}")
+        t = Thread(
+            target=_parallel_strategy_worker,
+            args=(sid, name, stop_ev),
+            daemon=True,
+            name=f"parallel-{sid}",
+        )
+        _parallel_stop_events[sid] = stop_ev
+        t.start()
+        threads.append(t)
+        log.info("Parallel strategy '%s' (id=%d) started", name, sid)
+    return threads
+
+
 def main():
 
     log.info("=== Bot v%s started ===", BOT_VERSION)
@@ -968,6 +1216,10 @@ def main():
     Thread(target=_orders_stream_worker, daemon=True, name="orders-stream").start()
     Thread(target=_market_data_stream_worker, daemon=True, name="market-data-stream").start()
     log.info("OrdersStream + MarketDataStream workers started")
+
+    _parallel_stop_ev = threading.Event()
+    start_parallel_workers(_parallel_stop_ev)
+    log.info("Parallel strategy workers started")
 
     with client_cls(settings.TINVEST_TOKEN) as client:
         state.session_balance_start = get_money_balance(client)

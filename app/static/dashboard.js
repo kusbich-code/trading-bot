@@ -239,6 +239,13 @@ async function renderMainShell() {
         <button class="btn" onclick="serviceAction('restart')">Перезапустить</button>
       </div>
     </section>
+    <section class="block" id="parallelStatusBlock" style="display:none">
+      <div class="row between">
+        <h2>Параллельные стратегии</h2>
+        <span class="note">Потоки работают независимо, одна позиция за раз</span>
+      </div>
+      <div id="parallelStatusBody"></div>
+    </section>
     <section class="block">
       <div class="row between"><h2>Инструменты</h2><div class="note">Активная стратегия</div></div>
       <div class="table-wrap">
@@ -328,6 +335,8 @@ async function renderMainData() {
       </tr>
     `).join("")
   );
+
+  refreshParallelStatus();
 
   // Balance check + sandbox visibility
   try {
@@ -549,6 +558,19 @@ async function renderSettingsTab() {
           <button type="button" class="btn btn-primary" id="btnSaveStrategySettings">Сохранить настройки стратегии</button>
         </div>
       </form>
+
+      <!-- PARALLEL MODE TOGGLE -->
+      <div class="block" style="margin-top:16px;padding:14px 18px;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+        <div>
+          <b>Параллельная торговля</b>
+          <div class="note" style="margin-top:2px">Запускает эту стратегию в отдельном потоке. Все потоки используют один счёт и уступают друг другу: открыта позиция у одного — остальные ждут.</div>
+        </div>
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;white-space:nowrap">
+          <input type="checkbox" id="parallelToggle" ${strat.parallel_enabled ? "checked" : ""}
+            onchange="toggleParallel(${strat.id}, this.checked)" style="width:18px;height:18px;cursor:pointer">
+          <span id="parallelToggleLabel">${strat.parallel_enabled ? "Включена" : "Выключена"}</span>
+        </label>
+      </div>
 
       <!-- INSTRUMENTS -->
       <div style="margin-top:20px;">
@@ -1478,6 +1500,62 @@ async function sandboxPayIn() {
   }
 }
 
+// ── Parallel strategy status ──────────────────────────────────────────────────
+
+async function refreshParallelStatus() {
+  try {
+    const data = await apiGet("/api/parallel/status");
+    const threads = data.threads || [];
+    const block = document.getElementById("parallelStatusBlock");
+    const body  = document.getElementById("parallelStatusBody");
+    if (!block || !body) return;
+
+    if (!threads.length) { block.style.display = "none"; return; }
+    block.style.display = "block";
+
+    const coord = data.coord || {};
+    const statusColors = {
+      "ожидание сигнала": "#9fb3d8",
+      "сканирование": "#4c8dff",
+      "в позиции": "#2ecc71",
+      "ожидание — другая стратегия в позиции": "#f0c04a",
+      "остановлен": "#666",
+      "бот выключен": "#666",
+    };
+
+    body.innerHTML = threads.map(t => {
+      const color = statusColors[t.status] || "#eef4ff";
+      const ticker = t.ticker ? ` · ${esc(t.ticker)}` : "";
+      const updated = t.updated_at ? `<span class="note" style="font-size:11px">${esc(t.updated_at)}</span>` : "";
+      return `<div style="display:flex;align-items:center;gap:12px;padding:8px 0;border-bottom:1px solid rgba(255,255,255,.07)">
+        <div style="width:10px;height:10px;border-radius:50%;background:${color};flex-shrink:0"></div>
+        <div style="flex:1">
+          <b>${esc(t.name)}</b>
+          <span class="note" style="margin-left:8px">${esc(t.status)}${ticker}</span>
+        </div>
+        ${updated}
+      </div>`;
+    }).join("");
+
+    if (coord.owner_strategy_id != null) {
+      body.innerHTML += `<div class="note" style="margin-top:8px">
+        Позиция занята: стратегия id=${esc(coord.owner_strategy_id)}, инструмент ${esc(coord.owner_ticker || coord.owner_figi || "?")}
+      </div>`;
+    }
+  } catch {}
+}
+
+async function toggleParallel(strategyId, enabled) {
+  const label = document.getElementById("parallelToggleLabel");
+  try {
+    await apiPostJson(`/api/strategy/${strategyId}/parallel`, { enabled });
+    if (label) label.textContent = enabled ? "Включена" : "Выключена";
+    showToast(enabled ? "Параллельный режим включён. Перезапустите бота." : "Параллельный режим выключен.", "success", 4000);
+  } catch (e) {
+    showToast(`Ошибка: ${e.message}`, "error");
+  }
+}
+
 // ── Service control ───────────────────────────────────────────────────────────
 
 async function serviceAction(action) {
@@ -2183,6 +2261,7 @@ async function bootstrapDashboard() {
 
   window.runBacktest = runBacktest;
   window._showBacktestTrades = _showBacktestTrades;
+  window.toggleParallel = toggleParallel;
   window.analystStart = analystStart;
   window.analystStop  = analystStop;
   window.analystDetail = analystDetail;
