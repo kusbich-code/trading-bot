@@ -221,6 +221,33 @@ def init_db():
         )
         """)
 
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS analyst_results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT NOT NULL,
+            found_at TEXT NOT NULL,
+            tradingmode TEXT NOT NULL,
+            figi TEXT NOT NULL,
+            ticker TEXT NOT NULL,
+            instrument_name TEXT DEFAULT '',
+            interval TEXT NOT NULL,
+            days INTEGER NOT NULL,
+            sl_pct TEXT NOT NULL,
+            tp_pct TEXT NOT NULL,
+            budget_rub REAL DEFAULT 0,
+            net_pnl REAL DEFAULT 0,
+            win_rate REAL DEFAULT 0,
+            profit_factor REAL DEFAULT 0,
+            total_trades INTEGER DEFAULT 0,
+            max_drawdown REAL DEFAULT 0,
+            avg_r_multiple REAL DEFAULT 0,
+            sharpe_ratio REAL DEFAULT 0,
+            equity_curve TEXT DEFAULT '[]',
+            score REAL DEFAULT 0,
+            saved_strategy_id INTEGER DEFAULT NULL
+        )
+        """)
+
         ensure_instruments_columns(cur)
         seed_instruments(cur)
         _seed_defaults(cur)
@@ -256,6 +283,12 @@ def _seed_defaults(cur):
     seed_setting(cur, "stopseriespausecount", "3")
     seed_setting(cur, "min_signal_score", "0")
     seed_setting(cur, "healthtelegramenabled", "0")
+    seed_setting(cur, "analyst_budget_rub", "60000")
+    seed_setting(cur, "analyst_min_win_rate", "45")
+    seed_setting(cur, "analyst_min_trades", "5")
+    seed_setting(cur, "analyst_days", "14")
+    seed_setting(cur, "analyst_interval", "15min")
+    seed_setting(cur, "analyst_min_pnl", "0")
     seed_setting(cur, "active_profile_id", "")
     seed_setting(cur, "active_profile_name", "")
     seed_setting(cur, "active_strategy_id", "")

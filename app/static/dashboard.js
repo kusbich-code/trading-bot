@@ -8,7 +8,7 @@ let refreshTimersStarted = false;
 // Viewed profile in settings tab (may differ from active profile)
 let viewedProfileId = null;
 
-const ALLOWED_TABS = new Set(["главное", "портфель", "настройки", "история", "график", "бэктест"]);
+const ALLOWED_TABS = new Set(["главное", "портфель", "настройки", "история", "график", "бэктест", "аналитик"]);
 
 function esc(v) {
   return String(v ?? "");
@@ -119,7 +119,7 @@ function diffTbody(tbody, rowsHtml) {
 }
 
 function ensureViewsExist() {
-  const required = ["главное", "портфель", "настройки", "история", "график", "бэктест"];
+  const required = ["главное", "портфель", "настройки", "история", "график", "бэктест", "аналитик"];
   const root = document.querySelector(".app") || document.body;
   required.forEach((tab) => {
     if (!document.querySelector(`[data-view="${tab}"]`)) {
@@ -1801,6 +1801,314 @@ function _showBacktestTrades(sid) {
   }).join("");
 }
 
+// ── Analyst tab ───────────────────────────────────────────────────────────────
+
+let _analystPollTimer = null;
+let _analystViewingId = null;
+
+async function renderAnalystTab() {
+  const host = document.getElementById("view-analyst");
+  if (!host) return;
+
+  if (host.dataset.initialized !== "1") {
+    host.innerHTML = `
+      ${helpCard("Аналитик", [
+        "<b>Что делает:</b> перебирает комбинации инструментов × режимов торговли × SL × TP, запускает бэктест на каждой и сохраняет те где PnL положительный. Поиск идёт в фоне — вы можете пользоваться другими вкладками.",
+        "<b>Инструменты поиска:</b> SBER, GAZP, LKOH, GMKN, ROSN, TATN, NVTK, MTSS, MOEX, VTBR, ALRS. Режимы: Mean Reversion, Breakout, Trend. Комбинации SL (0.2–0.5%) × TP (0.4–1.5%). Итого до 600 бэктестов.",
+        "<b>Бюджет:</b> сумма используется как начальный капитал в бэктесте — PnL будет реалистичен для вашего депозита.",
+        "<b>Фильтры:</b> мин. Win Rate, мин. количество сделок, мин. PnL. Результаты сортируются по составному score = Profit Factor × Win Rate × (1 − Drawdown%).",
+        "<b>Как сохранить:</b> нажмите «Подробнее» — проверьте кривую капитала и сделки. Если всё устраивает — введите название и нажмите «Сохранить как стратегию». Стратегия появится в Настройках.",
+        "<b>Важно:</b> бэктест не учитывает проскальзывание. Перед боевым запуском проверьте стратегию в Sandbox хотя бы 1–2 дня.",
+      ])}
+
+      <div class="block" style="margin-bottom:16px">
+        <h2>Параметры поиска</h2>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;margin-bottom:16px">
+          <label class="field-label">Бюджет (₽)
+            <input id="anBudget" class="field" type="number" min="1000" step="1000" value="60000">
+          </label>
+          <label class="field-label">Интервал свечей
+            <select id="anInterval" class="field">
+              <option value="5min">5 минут</option>
+              <option value="15min" selected>15 минут</option>
+              <option value="hour">1 час</option>
+            </select>
+          </label>
+          <label class="field-label">Период бэктеста (дней)
+            <select id="anDays" class="field">
+              <option value="7">7 дней</option>
+              <option value="14" selected>14 дней</option>
+              <option value="30">30 дней</option>
+            </select>
+          </label>
+          <label class="field-label">Мин. Win Rate (%)
+            <input id="anWinRate" class="field" type="number" min="0" max="100" value="45">
+          </label>
+          <label class="field-label">Мин. сделок
+            <input id="anMinTrades" class="field" type="number" min="1" value="5">
+          </label>
+          <label class="field-label">Мин. PnL (₽)
+            <input id="anMinPnl" class="field" type="number" value="0">
+          </label>
+        </div>
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+          <button class="btn btn-primary" id="anBtnStart" onclick="analystStart()">▶ Запустить поиск</button>
+          <button class="btn" id="anBtnStop" onclick="analystStop()" style="display:none">⏹ Остановить</button>
+          <span id="anStatusText" class="note"></span>
+        </div>
+      </div>
+
+      <div class="block" id="anProgressBlock" style="display:none;margin-bottom:16px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <b>Прогресс поиска</b>
+          <span id="anProgressLabel" class="note"></span>
+        </div>
+        <div style="background:rgba(255,255,255,.08);border-radius:8px;height:12px;overflow:hidden">
+          <div id="anProgressBar" style="height:100%;background:#4c8dff;border-radius:8px;width:0%;transition:width .4s"></div>
+        </div>
+        <div id="anCurrentCombo" class="note" style="margin-top:6px"></div>
+      </div>
+
+      <div id="anResultsBlock" style="display:none">
+        <div class="block" style="margin-bottom:16px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+            <h2>Найденные стратегии <span id="anResultCount" class="note"></span></h2>
+            <span class="note">Сортировка по составному score</span>
+          </div>
+          <div style="overflow-x:auto">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>Score</th><th>Инструмент</th><th>Режим</th>
+                  <th>SL / TP</th><th>Сделок</th><th>Win Rate</th>
+                  <th>PnL (₽)</th><th>Profit Factor</th><th>Drawdown</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="anResultsTbody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Detail panel -->
+        <div class="block" id="anDetailBlock" style="display:none">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px">
+            <h2 id="anDetailTitle">Детали</h2>
+            <button class="btn" onclick="document.getElementById('anDetailBlock').style.display='none'">✕</button>
+          </div>
+          <div id="anDetailMeta" style="margin-bottom:12px;display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:8px"></div>
+          <div id="anDetailChart" style="height:240px;margin-bottom:16px"></div>
+          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
+            <input id="anSaveName" class="field" placeholder="Название новой стратегии" style="flex:1;min-width:220px">
+            <button class="btn btn-primary" onclick="analystSave()">💾 Сохранить как стратегию</button>
+          </div>
+        </div>
+      </div>
+    `;
+    host.dataset.initialized = "1";
+  }
+
+  await _analystRefresh();
+}
+
+async function _analystRefresh() {
+  try {
+    const s = await apiGet("/api/analyst/status");
+    _analystUpdateStatus(s);
+    if (s.status === "running") {
+      if (!_analystPollTimer) {
+        _analystPollTimer = setInterval(async () => {
+          if (getTabFromHash() !== "аналитик") { _analystStopPoll(); return; }
+          try {
+            const st = await apiGet("/api/analyst/status");
+            _analystUpdateStatus(st);
+            if (st.status !== "running") { _analystStopPoll(); await _analystLoadResults(); }
+          } catch {}
+        }, 2000);
+      }
+    } else {
+      _analystStopPoll();
+      if (s.status === "done" || s.status === "stopped") await _analystLoadResults();
+    }
+  } catch {}
+}
+
+function _analystStopPoll() {
+  if (_analystPollTimer) { clearInterval(_analystPollTimer); _analystPollTimer = null; }
+}
+
+function _analystUpdateStatus(s) {
+  const prog  = document.getElementById("anProgressBlock");
+  const bar   = document.getElementById("anProgressBar");
+  const label = document.getElementById("anProgressLabel");
+  const combo = document.getElementById("anCurrentCombo");
+  const txt   = document.getElementById("anStatusText");
+  const btnStart = document.getElementById("anBtnStart");
+  const btnStop  = document.getElementById("anBtnStop");
+
+  const running = s.status === "running";
+  if (prog)  prog.style.display  = running ? "block" : "none";
+  if (btnStart) btnStart.style.display = running ? "none"  : "";
+  if (btnStop)  btnStop.style.display  = running ? ""      : "none";
+
+  if (s.total > 0 && bar) {
+    const pct = Math.round(s.progress / s.total * 100);
+    bar.style.width = pct + "%";
+    if (label) label.textContent = `${s.progress} / ${s.total} (${pct}%) · найдено: ${s.found}`;
+  }
+  if (combo) combo.textContent = s.current || "";
+
+  const statusMap = {
+    idle: "Ожидание", running: "Идёт поиск…", done: "Завершён",
+    stopped: "Остановлен", error: "Ошибка",
+  };
+  if (txt) {
+    txt.textContent = statusMap[s.status] || s.status;
+    if (s.error) txt.textContent += ": " + s.error;
+    if (s.started_at) txt.textContent += ` (запуск: ${s.started_at.slice(0,19).replace("T"," ")})`;
+  }
+}
+
+async function _analystLoadResults() {
+  try {
+    const results = await apiGet("/api/analyst/results?limit=50");
+    const block = document.getElementById("anResultsBlock");
+    const tbody = document.getElementById("anResultsTbody");
+    const cnt   = document.getElementById("anResultCount");
+    if (!tbody) return;
+    if (block) block.style.display = results.length ? "block" : "none";
+    if (cnt) cnt.textContent = `(${results.length})`;
+
+    if (!results.length) {
+      tbody.innerHTML = `<tr><td colspan="10" class="note">Нет результатов. Попробуйте снизить фильтры или увеличить период.</td></tr>`;
+      return;
+    }
+
+    const modeColors = {mean_reversion: "#a8c8ff", breakout: "#2ecc71", trend: "#f0c04a"};
+    tbody.innerHTML = results.map(r => {
+      const saved = r.saved ? `<span class="badge badge-active">Сохранена</span>` : `<button class="btn btn-small" onclick="analystDetail(${r.id})">Подробнее</button>`;
+      const scoreColor = r.score >= 30 ? "#2ecc71" : r.score >= 15 ? "#f0c04a" : "#aaa";
+      const modeColor  = modeColors[r.mode] || "#eef4ff";
+      return `<tr>
+        <td><b style="color:${scoreColor}">${r.score.toFixed(1)}</b></td>
+        <td><b>${esc(r.ticker)}</b><div class="note" style="font-size:11px">${esc(r.instrument_name)}</div></td>
+        <td style="color:${modeColor};font-size:12px">${esc(r.mode_label)}</td>
+        <td class="mono" style="font-size:12px">${esc(r.sl_pct_ui)} / ${esc(r.tp_pct_ui)}</td>
+        <td>${r.total_trades}</td>
+        <td class="${r.win_rate >= 50 ? "pnl-pos" : ""}">${r.win_rate.toFixed(1)}%</td>
+        <td class="mono ${r.net_pnl >= 0 ? "pnl-pos" : "pnl-neg"}">${r.net_pnl.toFixed(2)}</td>
+        <td class="mono ${r.profit_factor >= 1 ? "pnl-pos" : "pnl-neg"}">${r.profit_factor.toFixed(2)}</td>
+        <td class="mono">${r.max_drawdown.toFixed(2)}</td>
+        <td>${saved}</td>
+      </tr>`;
+    }).join("");
+  } catch (e) {
+    console.error("analyst results error", e);
+  }
+}
+
+async function analystStart() {
+  const budget    = parseFloat((document.getElementById("anBudget")    || {}).value || "60000");
+  const interval  = (document.getElementById("anInterval")  || {}).value || "15min";
+  const days      = parseInt((document.getElementById("anDays")      || {}).value || "14");
+  const winRate   = parseFloat((document.getElementById("anWinRate")   || {}).value || "45");
+  const minTrades = parseInt((document.getElementById("anMinTrades") || {}).value || "5");
+  const minPnl    = parseFloat((document.getElementById("anMinPnl")    || {}).value || "0");
+
+  try {
+    await apiPostJson("/api/analyst/start", { budget_rub: budget, min_win_rate: winRate, min_trades: minTrades, days, interval, min_pnl: minPnl });
+    showToast("Поиск запущен", "success");
+    // Reset results block
+    const block = document.getElementById("anResultsBlock");
+    if (block) block.style.display = "none";
+    const detail = document.getElementById("anDetailBlock");
+    if (detail) detail.style.display = "none";
+    await _analystRefresh();
+  } catch (e) {
+    showToast(`Ошибка запуска: ${e.message}`, "error", 6000);
+  }
+}
+
+async function analystStop() {
+  try {
+    await fetch("/api/analyst/stop", { method: "POST", credentials: "same-origin" });
+    showToast("Остановка запрошена", "info");
+  } catch {}
+}
+
+async function analystDetail(id) {
+  _analystViewingId = id;
+  const detail = document.getElementById("anDetailBlock");
+  const title  = document.getElementById("anDetailTitle");
+  const meta   = document.getElementById("anDetailMeta");
+  const chart  = document.getElementById("anDetailChart");
+  const nameIn = document.getElementById("anSaveName");
+  if (!detail) return;
+
+  try {
+    const r = await apiGet(`/api/analyst/result/${id}`);
+    const modeLabels = {mean_reversion:"Возврат к средней", breakout:"Пробой", trend:"Тренд"};
+
+    if (title) title.textContent = `${r.ticker} — ${modeLabels[r.tradingmode] || r.tradingmode}`;
+    if (nameIn) nameIn.value = `${r.ticker} ${modeLabels[r.tradingmode] || r.tradingmode} ${r.sl_pct_ui}/${r.tp_pct_ui}`;
+
+    const metaItems = [
+      ["Режим",         modeLabels[r.tradingmode] || r.tradingmode],
+      ["SL / TP",       `${r.sl_pct_ui} / ${r.tp_pct_ui}`],
+      ["Интервал",      `${r.interval}, ${r.days} дн.`],
+      ["Сделок",        r.total_trades],
+      ["Win Rate",      `${r.win_rate?.toFixed(1)}%`],
+      ["Чистый PnL",   `${r.net_pnl?.toFixed(2)} ₽`],
+      ["Profit Factor", r.profit_factor?.toFixed(2)],
+      ["Max Drawdown",  `${r.max_drawdown?.toFixed(2)} ₽`],
+      ["R-Multiple",    r.avg_r_multiple?.toFixed(2)],
+      ["Sharpe",        r.sharpe_ratio?.toFixed(2)],
+      ["Score",         r.score?.toFixed(1)],
+    ];
+    if (meta) {
+      meta.innerHTML = metaItems.map(([k, v]) => `
+        <div style="background:rgba(255,255,255,.05);border-radius:8px;padding:8px 12px">
+          <div class="note" style="font-size:11px">${esc(k)}</div>
+          <div style="font-weight:600">${esc(String(v))}</div>
+        </div>`).join("");
+    }
+
+    if (window.Plotly && chart && r.equity_curve?.length) {
+      Plotly.newPlot(chart, [{
+        y: r.equity_curve, mode: "lines",
+        line: { color: "#4c8dff", width: 2 },
+        name: "Капитал",
+      }], {
+        paper_bgcolor: "rgba(0,0,0,0)", plot_bgcolor: "rgba(0,0,0,0)",
+        font: { color: "#eef4ff" }, margin: { t: 10, r: 20, b: 30, l: 60 },
+        yaxis: { title: "Капитал (₽)" }, xaxis: { title: "Бар" },
+      }, { displayModeBar: false, responsive: true });
+    }
+
+    detail.style.display = "block";
+    detail.scrollIntoView({ behavior: "smooth", block: "start" });
+  } catch (e) {
+    showToast(`Ошибка загрузки: ${e.message}`, "error");
+  }
+}
+
+async function analystSave() {
+  if (!_analystViewingId) { showToast("Сначала откройте детали стратегии", "error"); return; }
+  const nameIn = document.getElementById("anSaveName");
+  const name   = (nameIn || {}).value?.trim() || "";
+  if (!name) { showToast("Введите название стратегии", "error"); return; }
+
+  try {
+    const res = await apiPostJson(`/api/analyst/save/${_analystViewingId}`, { strategy_name: name });
+    showToast(`Стратегия «${res.strategy_name}» сохранена`, "success", 5000);
+    document.getElementById("anDetailBlock").style.display = "none";
+    _analystViewingId = null;
+    await _analystLoadResults();
+  } catch (e) {
+    showToast(`Ошибка сохранения: ${e.message}`, "error", 7000);
+  }
+}
+
 // ── Router ────────────────────────────────────────────────────────────────────
 
 async function applyRoute() {
@@ -1823,6 +2131,8 @@ async function applyRoute() {
       await renderChartTab();
     } else if (tab === "бэктест") {
       await renderBacktestTab();
+    } else if (tab === "аналитик") {
+      await renderAnalystTab();
     }
   } catch (e) {
     console.error("[tabs] route error", e);
@@ -1871,6 +2181,10 @@ async function bootstrapDashboard() {
 
   window.runBacktest = runBacktest;
   window._showBacktestTrades = _showBacktestTrades;
+  window.analystStart = analystStart;
+  window.analystStop  = analystStop;
+  window.analystDetail = analystDetail;
+  window.analystSave  = analystSave;
   window.searchInstruments = searchInstruments;
   window.loadTopVolumeInstruments = loadTopVolumeInstruments;
   window.acceptSelectedInstruments = acceptSelectedInstruments;

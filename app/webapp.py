@@ -1,3 +1,4 @@
+import json
 import os
 import logging
 import threading
@@ -71,6 +72,7 @@ from app.services.tbank_client import (
 )
 from app.services.strategy_engine import evaluate_signal
 from app.services.backtest_engine import run_backtest, result_to_dict
+import app.services.analyst as _analyst
 from app.services.healthcheck import dashboard_health
 from decimal import Decimal
 from app.telegram_health import send_telegram, health_snapshot
@@ -352,6 +354,7 @@ def dashboard_page():
       <a href="#/история" class="tab-link" data-tab-link="история">История</a>
       <a href="#/график" class="tab-link" data-tab-link="график">График</a>
       <a href="#/бэктест" class="tab-link" data-tab-link="бэктест">Бэктест</a>
+      <a href="#/аналитик" class="tab-link" data-tab-link="аналитик">Аналитик</a>
     </nav>
 
     <section id="summaryCards" class="summary-grid"></section>
@@ -362,6 +365,7 @@ def dashboard_page():
     <section id="view-history" data-view="история" class="hidden"></section>
     <section id="view-chart" data-view="график" class="hidden"></section>
     <section id="view-backtest" data-view="бэктест" class="hidden"></section>
+    <section id="view-analyst" data-view="аналитик" class="hidden"></section>
   </div>
 
   <div id="toastHost" class="toast-host"></div>
@@ -995,6 +999,107 @@ async def api_backtest_run(request: Request):
         "candles_loaded": len(candles),
         "results": results,
     }
+
+
+# ── analyst ───────────────────────────────────────────────────────────────────
+
+@app.get("/api/analyst/status")
+def api_analyst_status():
+    return _analyst.get_state()
+
+
+@app.post("/api/analyst/start")
+async def api_analyst_start(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    budget      = float(body.get("budget_rub",      get_setting("analyst_budget_rub",    "60000")))
+    win_rate    = float(body.get("min_win_rate",     get_setting("analyst_min_win_rate",  "45")))
+    min_trades  = int(body.get("min_trades",         get_setting("analyst_min_trades",    "5")))
+    days        = int(body.get("days",               get_setting("analyst_days",          "14")))
+    interval    = str(body.get("interval",           get_setting("analyst_interval",      "15min")))
+    min_pnl     = float(body.get("min_pnl",         get_setting("analyst_min_pnl",       "0")))
+
+    # Persist settings
+    from app.db import db_cursor as _dbc
+    with _dbc() as cur:
+        for k, v in [
+            ("analyst_budget_rub", str(budget)), ("analyst_min_win_rate", str(win_rate)),
+            ("analyst_min_trades", str(min_trades)), ("analyst_days", str(days)),
+            ("analyst_interval", interval), ("analyst_min_pnl", str(min_pnl)),
+        ]:
+            cur.execute("INSERT INTO bot_settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (k, v))
+
+    ok, msg = _analyst.start(budget, win_rate, min_trades, days, interval, min_pnl)
+    if not ok:
+        raise HTTPException(status_code=409, detail=msg)
+    return {"ok": True, "message": msg}
+
+
+@app.post("/api/analyst/stop")
+def api_analyst_stop():
+    ok, msg = _analyst.stop()
+    return {"ok": ok, "message": msg}
+
+
+@app.get("/api/analyst/results")
+def api_analyst_results(limit: int = 50):
+    rows = _analyst.get_results(limit=limit)
+    MODE_LABELS = {"mean_reversion": "Возврат к средней", "breakout": "Пробой", "trend": "Тренд"}
+    out = []
+    for r in rows:
+        out.append({
+            "id":              r["id"],
+            "ticker":          r["ticker"],
+            "instrument_name": r["instrument_name"],
+            "mode":            r["tradingmode"],
+            "mode_label":      MODE_LABELS.get(r["tradingmode"], r["tradingmode"]),
+            "interval":        r["interval"],
+            "days":            r["days"],
+            "sl_pct_ui":       f"{float(r['sl_pct'])*100:.3f}%",
+            "tp_pct_ui":       f"{float(r['tp_pct'])*100:.3f}%",
+            "net_pnl":         round(r["net_pnl"], 2),
+            "win_rate":        round(r["win_rate"], 1),
+            "profit_factor":   round(r["profit_factor"], 2),
+            "total_trades":    r["total_trades"],
+            "max_drawdown":    round(r["max_drawdown"], 2),
+            "avg_r_multiple":  round(r["avg_r_multiple"], 2),
+            "sharpe_ratio":    round(r["sharpe_ratio"], 2),
+            "score":           round(r["score"], 1),
+            "equity_curve":    json.loads(r["equity_curve"] or "[]"),
+            "saved":           r["saved_strategy_id"] is not None,
+        })
+    return out
+
+
+@app.get("/api/analyst/result/{result_id}")
+def api_analyst_result_detail(result_id: int):
+    r = _analyst.get_result_by_id(result_id)
+    if not r:
+        raise HTTPException(status_code=404, detail="Результат не найден")
+    return {
+        **r,
+        "equity_curve": json.loads(r.get("equity_curve") or "[]"),
+        "sl_pct_ui": f"{float(r['sl_pct'])*100:.3f}%",
+        "tp_pct_ui": f"{float(r['tp_pct'])*100:.3f}%",
+    }
+
+
+@app.post("/api/analyst/save/{result_id}")
+async def api_analyst_save(result_id: int, request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    name = str(body.get("strategy_name", "")).strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Укажите название стратегии")
+    try:
+        sid = _analyst.save_as_strategy(result_id, name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True, "strategy_id": sid, "strategy_name": name}
 
 
 # ── control ───────────────────────────────────────────────────────────────────
