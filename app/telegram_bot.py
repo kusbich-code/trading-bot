@@ -15,11 +15,11 @@ def build_status_text():
 
     return (
         f"🤖 {settings.BOT_NAME}\n"
-        f"Status: {status}\n"
-        f"Daily PnL: {daily_pnl}\n"
-        f"Trades today: {trades_today}\n"
-        f"Instruments: {tickers}\n"
-        f"Last error: {last_error or '-'}"
+        f"Статус: {status}\n"
+        f"PnL за день: {daily_pnl}\n"
+        f"Сделок сегодня: {trades_today}\n"
+        f"Инструменты: {tickers}\n"
+        f"Последняя ошибка: {last_error or '-'}"
     )
 
 

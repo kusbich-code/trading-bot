@@ -139,9 +139,9 @@ def get_candles_range(
     days: int = 7,
 ) -> List[Dict[str, Any]]:
     """
-    Fetch candles over a date range, automatically splitting into chunks
-    accepted by the T-Bank API (1 day for minute intervals, 7 days for hour).
-    Returns candles sorted ascending by time.
+    Загружает свечи за диапазон дат, автоматически разбивая на чанки,
+    принимаемые API T-Bank (1 день для минутных интервалов, 7 дней для часовых).
+    Возвращает свечи отсортированные по времени по возрастанию.
     """
     interval_map = {
         "1min": CandleInterval.CANDLE_INTERVAL_1_MIN,
@@ -152,7 +152,7 @@ def get_candles_range(
     }
     interval = interval_map.get(interval_name, CandleInterval.CANDLE_INTERVAL_5_MIN)
 
-    # Chunk size: minutes intervals → 1 day, hour → 7 days, day → 365 days
+    # Размер чанка: минутные интервалы → 1 день, час → 7 дней, день → 365 дней
     if interval_name in ("1min", "5min", "15min"):
         chunk_hours = 24
     elif interval_name == "hour":
@@ -341,7 +341,7 @@ def _money_value_to_decimal(item) -> Decimal:
 
 
 def get_operations_today() -> Dict[str, Any]:
-    """Fetch today's executed operations from T-Bank API and calculate real PnL."""
+    """Загружает исполненные операции сегодня из API T-Bank и рассчитывает реальный PnL."""
     from datetime import timezone
     now = datetime.now(timezone.utc)
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -389,7 +389,7 @@ def get_operations_today() -> Dict[str, Any]:
 
             if is_trade or is_fee:
                 direction = "SELL" if "SELL" in op_type else ("BUY" if "BUY" in op_type else "")
-                # When API returns price=0, derive from payment/quantity (common for market orders)
+                # Когда API возвращает price=0, вычисляем из payment/quantity (часто для маркет-ордеров)
                 if price == 0 and quantity > 0 and payment != 0:
                     price = abs(payment) / Decimal(str(quantity))
                 price_ui = f"{price:.2f}" if price else "—"
@@ -446,8 +446,8 @@ def get_operations_by_cursor(
     cursor: str = "",
 ) -> Dict[str, Any]:
     """
-    Paginated broker operations history via GetOperationsByCursor.
-    Returns executed BUY/SELL/FEE operations with fill prices.
+    Постраничная история операций брокера через GetOperationsByCursor.
+    Возвращает исполненные операции BUY/SELL/FEE с ценами исполнения.
     """
     from datetime import timezone, timedelta
     now = datetime.now(timezone.utc)
@@ -511,9 +511,9 @@ def get_operations_by_cursor(
 
 def get_tbank_signals(figis: List[str]) -> Dict[str, str]:
     """
-    Fetch analyst signals from T-Bank SignalService.
-    Returns figi → 'BUY' | 'SELL' | 'NEUTRAL'.
-    Returns {} silently on any error (service may be unavailable in sandbox).
+    Загружает аналитические сигналы из SignalService T-Bank.
+    Возвращает figi → 'BUY' | 'SELL' | 'NEUTRAL'.
+    Возвращает {} без ошибки при любой проблеме (сервис может быть недоступен в sandbox).
     """
     if not figis:
         return {}
@@ -542,7 +542,7 @@ def get_tbank_signals(figis: List[str]) -> Dict[str, str]:
 
 
 def get_positions_detailed() -> Dict[str, Any]:
-    """GetPositions: exact cash per currency + securities held in the account."""
+    """GetPositions: точный кэш по валютам + ценные бумаги на счёте."""
     with with_client() as client:
         resp = client.operations.get_positions(account_id=_account_id())
         money = []
@@ -564,7 +564,7 @@ def get_positions_detailed() -> Dict[str, Any]:
         securities = []
         for sec in getattr(resp, "securities", []):
             figi = getattr(sec, "figi", "") or ""
-            balance = int(getattr(sec, "balance", 0) or 0)  # units (shares), not lots
+            balance = int(getattr(sec, "balance", 0) or 0)  # в штуках (акциях), не в лотах
             blocked_qty = int(getattr(sec, "blocked", 0) or 0)
             if figi and abs(balance) > 0:
                 securities.append({
@@ -576,7 +576,7 @@ def get_positions_detailed() -> Dict[str, Any]:
 
 
 def get_broker_positions() -> List[Dict[str, Any]]:
-    """Return actual open positions from T-Bank broker API."""
+    """Возвращает фактические открытые позиции из API брокера T-Bank."""
     with with_client() as client:
         portfolio = client.operations.get_portfolio(account_id=_account_id())
         result = []
@@ -657,7 +657,7 @@ def get_portfolio_snapshot() -> Dict[str, Any]:
 
         cash_total = sum((x["total"] for x in money), Decimal("0"))
 
-        # Unrealized P&L: sum of expected_yield across all open positions
+        # Нереализованный P&L: сумма expected_yield по всем открытым позициям
         unrealized_pnl = Decimal("0")
         for pos in getattr(portfolio, "positions", []):
             unrealized_pnl += quotation_to_decimal_safe(getattr(pos, "expected_yield", None))

@@ -49,14 +49,14 @@ def run_backtest(
     qty: int = 1,
 ) -> BacktestResult:
     """
-    Event-driven backtest on OHLCV candles using strategy_engine signals.
-    Mirrors live bot logic: any BUY/SELL action opens a position (no score gate).
+    Событийно-управляемый бэктест на OHLCV свечах с сигналами strategy_engine.
+    Зеркалирует логику живого бота: любое действие BUY/SELL открывает позицию (без фильтра скора).
 
-    Per bar:
-      1. If position open — check SL/TP against bar high/low.
-      2. If no position — evaluate signal on candles[0..i].
-      3. On BUY/SELL signal — open position at bar close.
-    One position at a time; commission charged on entry and exit.
+    На каждом баре:
+      1. Если позиция открыта — проверяем SL/TP по high/low бара.
+      2. Если нет позиции — оцениваем сигнал на candles[0..i].
+      3. При сигнале BUY/SELL — открываем позицию по закрытию бара.
+    Одна позиция одновременно; комиссия взимается при входе и выходе.
     """
     from app.services.strategy_engine import evaluate_signal
 
@@ -80,7 +80,7 @@ def run_backtest(
             equity_curve.append(capital)
             continue
 
-        # ── Check SL / TP on open position ───────────────────────────────────
+        # ── Проверка SL / TP на открытой позиции ─────────────────────────────
         if position is not None:
             ep = position.entry_price
             if position.direction == "BUY":
@@ -122,7 +122,7 @@ def run_backtest(
 
         equity_curve.append(capital)
 
-        # ── Open new position if none ─────────────────────────────────────────
+        # ── Открытие новой позиции если нет текущей ──────────────────────────
         if position is None:
             window = candles[: i + 1]
             sig = evaluate_signal(mode, window)
@@ -140,7 +140,7 @@ def run_backtest(
                 )
                 capital -= entry_comm
 
-    # Close any leftover position at the last bar
+    # Закрываем оставшуюся позицию на последнем баре
     if position is not None and candles:
         last_close = float(candles[-1].get("close") or 0)
         if last_close > 0:
@@ -160,7 +160,7 @@ def run_backtest(
 
     result.equity_curve = equity_curve
 
-    # ── Metrics ───────────────────────────────────────────────────────────────
+    # ── Метрики ───────────────────────────────────────────────────────────────
     trades = result.trades
     result.total_trades = len(trades)
     if trades:
@@ -177,7 +177,7 @@ def run_backtest(
         result.net_pnl = round(sum(t.pnl for t in trades), 2)
         result.total_commission = round(sum(t.commission for t in trades), 2)
 
-        # R-multiple: pnl / (entry × sl_pct × qty)
+        # R-кратное: pnl / (entry × sl_pct × qty)
         r_list = []
         for t in trades:
             risk = t.entry_price * stop_loss_pct * t.qty
@@ -185,7 +185,7 @@ def run_backtest(
                 r_list.append(t.pnl / risk)
         result.avg_r_multiple = round(sum(r_list) / len(r_list), 2) if r_list else 0.0
 
-        # Max drawdown
+        # Максимальная просадка
         peak = initial_capital
         max_dd = 0.0
         for eq in equity_curve:
@@ -197,7 +197,7 @@ def run_backtest(
         result.max_drawdown = round(max_dd, 2)
         result.max_drawdown_pct = round(max_dd / initial_capital * 100, 2)
 
-        # Sharpe (annualised, bar-level returns, 252*390 min-bars/year → use count)
+        # Шарп (аннуализированный, доходности на уровне баров, 252*390 мин-баров/год → используем счётчик)
         if len(equity_curve) > 1:
             rets = [
                 (equity_curve[i] - equity_curve[i - 1]) / max(0.0001, equity_curve[i - 1])
@@ -206,7 +206,7 @@ def run_backtest(
             mean_r = sum(rets) / len(rets)
             var = sum((r - mean_r) ** 2 for r in rets) / len(rets)
             std_r = var ** 0.5
-            bars_per_year = 252 * 7  # rough for intraday bars
+            bars_per_year = 252 * 7  # приближённо для внутридневных баров
             result.sharpe_ratio = round(
                 (mean_r / std_r) * (bars_per_year ** 0.5) if std_r > 0 else 0.0, 2
             )
@@ -215,7 +215,7 @@ def run_backtest(
 
 
 def result_to_dict(res: BacktestResult, candles: List[Dict]) -> Dict[str, Any]:
-    """Serialize BacktestResult to a JSON-safe dict."""
+    """Сериализует BacktestResult в JSON-безопасный словарь."""
     trades_out = []
     for t in res.trades:
         entry_time = t.entry_time or (candles[t.entry_idx].get("time", "") if t.entry_idx < len(candles) else "")
@@ -232,7 +232,7 @@ def result_to_dict(res: BacktestResult, candles: List[Dict]) -> Dict[str, Any]:
             "commission": round(t.commission, 2),
         })
 
-    # Downsample equity curve to ≤500 points to keep response small
+    # Прореживаем кривую капитала до ≤500 точек для уменьшения размера ответа
     curve = res.equity_curve
     if len(curve) > 500:
         step = len(curve) // 500

@@ -27,8 +27,8 @@ class Settings:
     TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
     TELEGRAM_POLLING_ENABLED = os.getenv("TELEGRAM_POLLING_ENABLED", "true").lower() == "true"
-    # Proxy for Telegram API (e.g. socks5://user:pass@host:port or http://host:port)
-    # Also respects standard HTTPS_PROXY env var automatically via requests library
+    # Прокси для Telegram API (например socks5://user:pass@host:port или http://host:port)
+    # Также автоматически учитывает стандартную переменную HTTPS_PROXY через библиотеку requests
     TELEGRAM_PROXY = os.getenv("TELEGRAM_PROXY", "").strip()
 
     DASHBOARD_HOST = os.getenv("DASHBOARD_HOST", "127.0.0.1")

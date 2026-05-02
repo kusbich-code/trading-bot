@@ -18,9 +18,8 @@ from app.control import run_control
 from app.db import (
     init_db,
     get_all_settings,
-    set_strategy_parallel,
-    list_parallel_strategies,
     get_all_runtime,
+    get_runtime,
     get_trade_stats_today,
     get_trades,
     get_logs,
@@ -38,11 +37,18 @@ from app.db import (
     list_profiles,
     get_profile,
     get_profile_settings,
+    get_profile_setting,
     create_profile,
     delete_profile,
     activate_profile,
     update_profile_settings,
     set_profile_strategy,
+    # parallel
+    list_profile_parallel_strategies,
+    add_profile_parallel_strategy,
+    remove_profile_parallel_strategy,
+    set_strategy_parallel,
+    list_parallel_strategies,
     # strategies
     list_strategies,
     get_strategy,
@@ -84,13 +90,13 @@ app = FastAPI(title=f"Trading Bot Dashboard v{BOT_VERSION}")
 if os.path.isdir("app/static"):
     app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
-# ── Portfolio stream cache (Priority-2) ───────────────────────────────────────
-_portfolio_cache: Dict[str, Any] = {}   # last snapshot from OperationsStream
+# ── Кэш потока портфеля (Приоритет-2) ────────────────────────────────────────
+_portfolio_cache: Dict[str, Any] = {}   # последний снимок из OperationsStream
 _portfolio_cache_lock = threading.Lock()
 
 
 def _portfolio_stream_worker():
-    """Background thread: subscribes to T-Bank portfolio_stream and updates cache."""
+    """Фоновый поток: подписывается на portfolio_stream T-Bank и обновляет кэш."""
     from app.config import settings as _cfg
     from app.services.tbank_client import with_client
     while True:
@@ -795,6 +801,7 @@ def api_dashboard_settings(profile_id: Optional[int] = None):
                 "telegram_errors_only": ps("telegram_errors_only", "0"),
                 "auto_reload_settings": ps("auto_reload_settings", "1"),
                 "tinvestusesandbox": ps("tinvestusesandbox", "true"),
+                "parallel_trading_enabled": ps("parallel_trading_enabled", "0"),
             },
         },
         "view_strategy": {
@@ -825,6 +832,7 @@ def api_dashboard_settings(profile_id: Optional[int] = None):
         "profiles": list_profiles(),
         "strategies": list_strategies(),
         "instruments": [strategy_instrument_row(i, market_map) for i in strat_instruments],
+        "parallel_strategies": list_profile_parallel_strategies(profile.get("id") or 0) if profile.get("id") else [],
     })
 
 
@@ -1021,31 +1029,62 @@ async def api_backtest_run(request: Request):
 
 @app.get("/api/parallel/status")
 def api_parallel_status():
-    """Live status of all parallel strategy worker threads."""
-    try:
-        from main import _parallel_status, _parallel_status_lock, _parallel_coord
-        with _parallel_status_lock:
-            statuses = dict(_parallel_status)
-        coord = _parallel_coord.snapshot()
-    except Exception:
-        statuses = {}
-        coord = {}
-    parallel_strats = list_parallel_strategies()
+    """Live status of all parallel strategy worker threads (reads from DB runtime_state)."""
+    active_profile_id = get_setting("active_profile_id", "").strip()
+    if not active_profile_id:
+        return {"threads": [], "coord": {}}
+
+    pid = int(active_profile_id)
+    parallel_strats = list_profile_parallel_strategies(pid)
+
     result = []
     for entry in parallel_strats:
-        sid  = entry["strategy"]["id"]
-        name = entry["strategy"].get("name", f"#{sid}")
-        info = statuses.get(sid, {"status": "не запущен", "ticker": "", "updated_at": ""})
+        sid  = entry["strategy_id"]
+        name = entry["name"]
+        raw  = get_runtime(f"parallel_thread_{sid}") or ""
+        try:
+            info = json.loads(raw)
+        except Exception:
+            info = {"status": "не запущен", "ticker": "", "updated_at": ""}
         result.append({"strategy_id": sid, "name": name, **info})
+
+    # Coordinator snapshot is also stored in runtime_state
+    coord_raw = get_runtime("parallel_coord") or ""
+    try:
+        coord = json.loads(coord_raw)
+    except Exception:
+        coord = {}
+
     return {"threads": result, "coord": coord}
 
 
-@app.post("/api/strategy/{strategy_id}/parallel")
-async def api_strategy_set_parallel(strategy_id: int, request: Request):
+@app.post("/api/profile/{profile_id}/parallel-toggle")
+async def api_profile_parallel_toggle(profile_id: int, request: Request):
     body = await request.json()
     enabled = bool(body.get("enabled", False))
-    set_strategy_parallel(strategy_id, enabled)
-    return {"ok": True, "strategy_id": strategy_id, "parallel_enabled": enabled}
+    update_profile_settings(profile_id, {"parallel_trading_enabled": "1" if enabled else "0"})
+    return {"ok": True, "parallel_trading_enabled": enabled}
+
+
+@app.get("/api/profile/{profile_id}/parallel-strategies")
+def api_profile_parallel_list(profile_id: int):
+    return list_profile_parallel_strategies(profile_id)
+
+
+@app.post("/api/profile/{profile_id}/parallel-strategies")
+async def api_profile_parallel_add(profile_id: int, request: Request):
+    body = await request.json()
+    strategy_id = int(body.get("strategy_id", 0))
+    if not strategy_id:
+        raise HTTPException(status_code=400, detail="strategy_id required")
+    add_profile_parallel_strategy(profile_id, strategy_id)
+    return {"ok": True}
+
+
+@app.delete("/api/profile/{profile_id}/parallel-strategies/{strategy_id}")
+def api_profile_parallel_remove(profile_id: int, strategy_id: int):
+    remove_profile_parallel_strategy(profile_id, strategy_id)
+    return {"ok": True}
 
 
 # ── analyst ───────────────────────────────────────────────────────────────────
@@ -1289,6 +1328,14 @@ def api_strategies_delete(strategy_id: int):
 
 
 # ── strategy instruments API ──────────────────────────────────────────────────
+
+@app.get("/api/strategy/{strategy_id}/instruments")
+def api_strategy_instruments_get(strategy_id: int):
+    """Return instruments for a strategy with market data (for parallel expand panel)."""
+    market_map = get_instrument_market_state_map()
+    instr = list_strategy_instruments(strategy_id)
+    return {"instruments": [strategy_instrument_row(i, market_map) for i in instr]}
+
 
 @app.post("/api/strategies/{strategy_id}/instruments/add")
 async def api_strategy_instruments_add(strategy_id: int, request: Request):

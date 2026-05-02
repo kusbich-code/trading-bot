@@ -1,12 +1,12 @@
 """
-Analyst service: searches for profitable strategies via automated backtesting.
+Сервис аналитика: ищет прибыльные стратегии через автоматическое тестирование.
 
-Flow:
-  1. Build a search grid: instruments × modes × SL × TP combinations.
-  2. Load candles once per instrument (cached).
-  3. Run backtest for every combination.
-  4. Store profitable results in analyst_results table.
-  5. Expose state for the dashboard to poll.
+Процесс:
+  1. Строим сетку поиска: инструменты × режимы × SL × TP комбинации.
+  2. Загружаем свечи один раз для каждого инструмента (кэшируется).
+  3. Запускаем бэктест для каждой комбинации.
+  4. Сохраняем прибыльные результаты в таблицу analyst_results.
+  5. Открываем состояние для опроса дашбордом.
 """
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-# ── State shared with the web layer ──────────────────────────────────────────
+# ── Состояние, разделяемое с веб-слоем ──────────────────────────────────────
 
 _lock = threading.Lock()
 _state: Dict[str, Any] = {
@@ -33,7 +33,7 @@ _state: Dict[str, Any] = {
 _stop_event = threading.Event()
 _thread: Optional[threading.Thread] = None
 
-# ── Instruments to search across ─────────────────────────────────────────────
+# ── Инструменты для перебора ─────────────────────────────────────────────────
 
 SEARCH_INSTRUMENTS = [
     {"figi": "BBG004730N88", "ticker": "SBER", "name": "Сбербанк",         "lot": 1},
@@ -55,7 +55,7 @@ SL_OPTIONS = [0.002, 0.003, 0.004, 0.005]
 TP_OPTIONS = [0.004, 0.006, 0.008, 0.010, 0.015]
 
 
-# ── Public API ────────────────────────────────────────────────────────────────
+# ── Публичный API ────────────────────────────────────────────────────────────
 
 def get_state() -> Dict[str, Any]:
     with _lock:
@@ -90,7 +90,7 @@ def stop() -> tuple[bool, str]:
     return True, "Остановка запрошена"
 
 
-# ── Worker ────────────────────────────────────────────────────────────────────
+# ── Воркер ───────────────────────────────────────────────────────────────────
 
 def _upd(**kwargs):
     with _lock:
@@ -108,7 +108,7 @@ def _worker(budget_rub, min_win_rate, min_trades, days, interval, min_pnl):
          progress=0, total=0, current="Инициализация…", found=0, error=None)
 
     try:
-        # Deduplicate instruments by figi
+        # Дедуплицируем инструменты по figi
         seen: set = set()
         instruments = []
         for inst in SEARCH_INSTRUMENTS:
@@ -116,7 +116,7 @@ def _worker(budget_rub, min_win_rate, min_trades, days, interval, min_pnl):
                 seen.add(inst["figi"])
                 instruments.append(inst)
 
-        # Build search grid (only TP > SL × 1.5 for min risk:reward 1.5)
+        # Строим сетку поиска (только TP > SL × 1.5 для минимального risk:reward 1.5)
         combos: List[tuple] = []
         for inst in instruments:
             for mode in MODES:
@@ -127,7 +127,7 @@ def _worker(budget_rub, min_win_rate, min_trades, days, interval, min_pnl):
 
         _upd(total=len(combos))
 
-        # Clear previous results for this fresh run
+        # Очищаем предыдущие результаты для этого нового запуска
         with db_cursor() as cur:
             cur.execute("DELETE FROM analyst_results")
 
@@ -144,7 +144,7 @@ def _worker(budget_rub, min_win_rate, min_trades, days, interval, min_pnl):
             _upd(progress=i + 1,
                  current=f"{ticker} | {mode} | SL={sl*100:.2f}% TP={tp*100:.2f}%")
 
-            # ── Load candles (cached per instrument) ──────────────────────
+            # ── Загрузка свечей (кэшируется для каждого инструмента) ──────
             if figi not in candles_cache:
                 try:
                     candles_cache[figi] = get_candles_range(
@@ -157,7 +157,7 @@ def _worker(budget_rub, min_win_rate, min_trades, days, interval, min_pnl):
             if len(candles) < 30:
                 continue
 
-            # ── Lots: calculated from budget once per instrument (cached) ─
+            # ── Лоты: рассчитываются из бюджета один раз для инструмента (кэш) ─
             closes    = [c["close"] for c in candles if c.get("close")]
             avg_price = round(sum(closes) / len(closes), 4) if closes else 0.0
             if avg_price > 0 and budget_rub > 0:
@@ -165,7 +165,7 @@ def _worker(budget_rub, min_win_rate, min_trades, days, interval, min_pnl):
             else:
                 lots = 1
 
-            # ── Backtest (uses realistic lot size) ───────────────────────
+            # ── Бэктест (использует реалистичный размер лота) ────────────
             try:
                 res = run_backtest(
                     candles=candles,
@@ -179,7 +179,7 @@ def _worker(budget_rub, min_win_rate, min_trades, days, interval, min_pnl):
             except Exception:
                 continue
 
-            # ── Filter ───────────────────────────────────────────────────
+            # ── Фильтр ───────────────────────────────────────────────────
             if res.total_trades < min_trades:
                 continue
             if res.net_pnl < min_pnl:
@@ -187,11 +187,11 @@ def _worker(budget_rub, min_win_rate, min_trades, days, interval, min_pnl):
             if res.win_rate < min_win_rate:
                 continue
 
-            # Composite score: profit_factor × win_rate × (1 - max_dd%)
+            # Комплексный скор: profit_factor × win_rate × (1 - max_dd%)
             dd_penalty = 1.0 - min(res.max_drawdown_pct / 100.0, 0.9)
             score = round(res.profit_factor * (res.win_rate / 100) * dd_penalty * 100, 2)
 
-            # Downsample equity curve to ≤200 points
+            # Прореживаем кривую капитала до ≤200 точек
             curve = res.equity_curve
             if len(curve) > 200:
                 step = len(curve) // 200
@@ -215,7 +215,7 @@ def _worker(budget_rub, min_win_rate, min_trades, days, interval, min_pnl):
                     res.max_drawdown, res.avg_r_multiple, res.sharpe_ratio,
                     eq_json, score, avg_price,
                 ))
-            # lots stored in avg_price → recalculated on save; no extra column needed
+            # лоты хранятся в avg_price → пересчитываются при сохранении; доп. колонка не нужна
 
             found += 1
             _upd(found=found)
@@ -233,7 +233,7 @@ def _worker(budget_rub, min_win_rate, min_trades, days, interval, min_pnl):
             pass
 
 
-# ── Results helpers ───────────────────────────────────────────────────────────
+# ── Вспомогательные функции для результатов ──────────────────────────────────
 
 def get_results(limit: int = 50) -> List[Dict[str, Any]]:
     from app.db import db_cursor
@@ -257,7 +257,7 @@ def get_result_by_id(result_id: int) -> Optional[Dict[str, Any]]:
 
 
 def save_as_strategy(result_id: int, strategy_name: str) -> int:
-    """Create a new Strategy from an analyst result. Returns strategy_id."""
+    """Создаёт новую стратегию из результата аналитика. Возвращает strategy_id."""
     from app.db import db_cursor, STRATEGY_SETTING_KEYS
 
     result = get_result_by_id(result_id)
@@ -274,7 +274,7 @@ def save_as_strategy(result_id: int, strategy_name: str) -> int:
     budget_rub = float(result.get("budget_rub") or 0)
     avg_price  = float(result.get("avg_price") or 0)
 
-    # Lots that fit in budget with a 5% safety margin so money is guaranteed to cover
+    # Лоты, помещающиеся в бюджет с запасом безопасности 5%, гарантирующим покрытие
     if avg_price > 0 and budget_rub > 0:
         lots = max(1, int((budget_rub * 0.95) // avg_price))
     else:
@@ -316,7 +316,7 @@ def save_as_strategy(result_id: int, strategy_name: str) -> int:
                 ON CONFLICT(strategy_id, key) DO UPDATE SET value = excluded.value
                 """, (sid, key, value))
 
-        # Add the instrument
+        # Добавляем инструмент
         cur.execute("""
         INSERT OR IGNORE INTO strategy_instruments(
             strategy_id, figi, ticker, name,
@@ -326,7 +326,7 @@ def save_as_strategy(result_id: int, strategy_name: str) -> int:
         """, (sid, result["figi"], result["ticker"], result["instrument_name"],
               lots, str(sl), str(tp)))
 
-        # Mark result as saved
+        # Помечаем результат как сохранённый
         cur.execute(
             "UPDATE analyst_results SET saved_strategy_id = ? WHERE id = ?",
             (sid, result_id)

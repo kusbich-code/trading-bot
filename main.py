@@ -21,7 +21,7 @@ from t_tech.invest import (
 from t_tech.invest.sandbox.client import SandboxClient
 from t_tech.invest.utils import quotation_to_decimal
 
-# MarketDataStream classes (optional — fallback to polling if unavailable)
+# Классы MarketDataStream (опционально — откат к поллингу если недоступны)
 try:
     from t_tech.invest import (
         MarketDataRequest,
@@ -51,6 +51,8 @@ from app.db import (
     clear_open_positions,
     upsert_instrument_market_state,
     list_parallel_strategies,
+    list_profile_parallel_strategies,
+    get_profile_setting,
 )
 from app.instruments import get_instrument_meta, round_to_price_step
 from app.telegram_notify import TelegramNotifier
@@ -75,18 +77,18 @@ init_db()
 notifier = TelegramNotifier()
 
 
-# ── Parallel strategy coordination ───────────────────────────────────────────
+# ── Координация параллельных стратегий ───────────────────────────────────────
 
 class _ParallelCoord:
     """
-    Ensures only ONE position is open across all parallel strategy threads.
+    Гарантирует, что только ОДНА позиция открыта во всех потоках параллельных стратегий.
 
-    Protocol:
-      1. Before opening a position: call try_claim(strategy_id, figi).
-         Returns True only if no other thread holds the lock.
-      2. After closing: call release(strategy_id).
-      3. Other threads check is_free() each cycle; if False and they are not
-         the owner, they skip instrument processing and wait.
+    Протокол:
+      1. Перед открытием позиции: вызовите try_claim(strategy_id, figi).
+         Возвращает True только если ни один другой поток не удерживает блокировку.
+      2. После закрытия: вызовите release(strategy_id).
+      3. Остальные потоки проверяют is_free() каждый цикл; если False и они не
+         владелец, они пропускают обработку инструмента и ждут.
     """
     def __init__(self):
         self._lock = threading.Lock()
@@ -102,20 +104,33 @@ class _ParallelCoord:
     def try_claim(self, sid: int, figi: str, ticker: str = "") -> bool:
         with self._lock:
             if self._owner_sid is None:
-                self._owner_sid   = sid
-                self._owner_figi  = figi
+                self._owner_sid    = sid
+                self._owner_figi   = figi
                 self._owner_ticker = ticker
+                self._persist()
                 return True
             return False
 
     def release(self, sid: int) -> bool:
         with self._lock:
             if self._owner_sid == sid:
-                self._owner_sid   = None
-                self._owner_figi  = None
+                self._owner_sid    = None
+                self._owner_figi   = None
                 self._owner_ticker = None
+                self._persist()
                 return True
             return False
+
+    def _persist(self):
+        try:
+            import json as _j
+            set_runtime("parallel_coord", _j.dumps({
+                "owner_strategy_id": self._owner_sid,
+                "owner_figi":        self._owner_figi,
+                "owner_ticker":      self._owner_ticker,
+            }))
+        except Exception:
+            pass
 
     def is_owner(self, sid: int) -> bool:
         with self._lock:
@@ -132,21 +147,28 @@ class _ParallelCoord:
 
 _parallel_coord = _ParallelCoord()
 
-# Per-thread status dict: strategy_id → {status, ticker, updated_at}
+# Словарь статусов по потокам: strategy_id → {status, ticker, updated_at}
 _parallel_status: Dict[int, dict] = {}
 _parallel_status_lock = threading.Lock()
 
-# Stop events for each parallel thread: strategy_id → Event
+# События остановки для каждого параллельного потока: strategy_id → Event
 _parallel_stop_events: Dict[int, threading.Event] = {}
 
 
 def _pset(sid: int, status: str, ticker: str = ""):
+    info = {
+        "status":     status,
+        "ticker":     ticker,
+        "updated_at": datetime.now().strftime("%H:%M:%S"),
+    }
     with _parallel_status_lock:
-        _parallel_status[sid] = {
-            "status":     status,
-            "ticker":     ticker,
-            "updated_at": datetime.now().strftime("%H:%M:%S"),
-        }
+        _parallel_status[sid] = info
+    # Записываем в БД, чтобы webapp.py (другой процесс) мог прочитать
+    try:
+        import json as _json
+        set_runtime(f"parallel_thread_{sid}", _json.dumps(info))
+    except Exception:
+        pass
 
 
 class BotState:
@@ -172,15 +194,15 @@ class BotState:
 
 state = BotState()
 
-# ── Orders stream (Priority-1) ────────────────────────────────────────────────
-# Maps response_order_id → Queue; place_order_checked() blocks on the queue,
-# _orders_stream_worker() puts the OrderTrades object when fill arrives.
+# ── Поток ордеров (Приоритет-1) ───────────────────────────────────────────────
+# Сопоставляет response_order_id → Queue; place_order_checked() блокируется на очереди,
+# _orders_stream_worker() помещает объект OrderTrades при получении исполнения.
 _pending_orders: Dict[str, _queue.Queue] = {}
-_bot_client_cls = None  # set by main() before the stream thread starts
+_bot_client_cls = None  # устанавливается в main() до запуска потока стрима
 
 
 def _orders_stream_worker():
-    """Background thread: subscribes to order trade events via OrdersStream."""
+    """Фоновый поток: подписывается на события исполнения ордеров через OrdersStream."""
     account_id = settings.TINVEST_ACCOUNT_ID
     while True:
         try:
@@ -189,7 +211,7 @@ def _orders_stream_worker():
                 for resp in sc.orders_stream.trade_stream(accounts=[account_id]):
                     ot = getattr(resp, "order_trades", None)
                     if ot is None:
-                        continue  # ping frame
+                        continue  # пинг-фрейм
                     order_id = str(getattr(ot, "order_id", "") or "")
                     q = _pending_orders.get(order_id)
                     if q is not None:
@@ -199,21 +221,21 @@ def _orders_stream_worker():
             time.sleep(5)
 
 
-# ── MarketDataStream (Priority-2) ─────────────────────────────────────────────
-# figi → {"price": Decimal, "orderbook": {...}}   — written by stream thread,
-# read by process_instrument() on the main thread.
+# ── MarketDataStream (Приоритет-2) ────────────────────────────────────────────
+# figi → {"price": Decimal, "orderbook": {...}}   — записывается потоком стрима,
+# читается process_instrument() в основном потоке.
 _md: Dict[str, dict] = {}
 _md_lock = Lock()
-_md_instruments: list = []           # list of {figi, instrument_uid} dicts
-_md_figis: Set[str] = set()          # set of figis for change detection
-_md_restart = Event()                 # set → worker reconnects with new instruments
+_md_instruments: list = []           # список словарей {figi, instrument_uid}
+_md_figis: Set[str] = set()          # множество figi для обнаружения изменений
+_md_restart = Event()                 # установка → воркер переподключается с новыми инструментами
 
 
 def _make_md_gen(instruments: list, stop_ev: Event):
     """
-    Generator that sends MarketDataStream subscriptions then blocks until stop_ev.
-    instruments: list of dicts with 'figi' and optional 'instrument_uid'.
-    Uses instrument_uid (preferred) or figi (fallback) for each subscription.
+    Генератор, отправляющий подписки MarketDataStream, затем блокирующийся до stop_ev.
+    instruments: список словарей с 'figi' и опциональным 'instrument_uid'.
+    Использует instrument_uid (предпочтительно) или figi (резервный вариант) для каждой подписки.
     """
     if not instruments or not _STREAM_IMPORTS_OK:
         stop_ev.wait()
@@ -243,7 +265,7 @@ def _make_md_gen(instruments: list, stop_ev: Event):
 
 
 def _market_data_stream_worker():
-    """Background thread: real-time last prices + order book (depth=10)."""
+    """Фоновый поток: последние цены в реальном времени + стакан заявок (depth=10)."""
     if not _STREAM_IMPORTS_OK:
         log.warning("MarketDataStream: импорты недоступны, используется поллинг")
         return
@@ -304,7 +326,7 @@ def _market_data_stream_worker():
 
 
 def get_ma_signal(candles, short_period: int = 20, long_period: int = 100):
-    """Dual moving-average crossover. Returns 'BUY', 'SELL', or None."""
+    """Пересечение двух скользящих средних. Возвращает 'BUY', 'SELL' или None."""
     if len(candles) < long_period + 1:
         return None
     closes = [float(quotation_to_decimal(c.close)) for c in candles]
@@ -364,7 +386,7 @@ def get_last_candle_volume(candles) -> int:
 
 
 def _candles_to_dicts(candles) -> list:
-    """Convert raw t_tech candle objects → List[Dict] for strategy_engine."""
+    """Конвертирует сырые объекты свечей t_tech → List[Dict] для strategy_engine."""
     out = []
     for c in candles:
         try:
@@ -408,7 +430,7 @@ def notify(message: str, is_error: bool = False):
 
 
 def sync_portfolio_positions(client):
-    """Sync PORTFOLIO positions from broker API into local DB (source=PORTFOLIO)."""
+    """Синхронизирует позиции PORTFOLIO из API брокера в локальную БД (source=PORTFOLIO)."""
     try:
         clear_open_positions(source="PORTFOLIO")
 
@@ -423,7 +445,7 @@ def sync_portfolio_positions(client):
             if not figi or "currency" in instrument_type or ticker.upper().startswith("RUB"):
                 continue
 
-            # qty in LOTS (quantity_lots), not shares (quantity)
+            # qty в ЛОТАХ (quantity_lots), не в штуках (quantity)
             qty_lots_obj = getattr(p, "quantity_lots", None)
             qty_shares_obj = getattr(p, "quantity", None)
             avg_obj = getattr(p, "average_position_price", None)
@@ -440,7 +462,7 @@ def sync_portfolio_positions(client):
             except Exception:
                 pass
 
-            # Prefer lots; fall back to shares if quantity_lots unavailable
+            # Предпочитаем лоты; откат к штукам если quantity_lots недоступен
             qty = qty_lots if qty_lots != 0 else qty_shares
             if qty == 0:
                 continue
@@ -449,10 +471,10 @@ def sync_portfolio_positions(client):
             current_price = float(quotation_to_decimal(cur_obj)) if cur_obj else 0.0
             expected_yield = float(quotation_to_decimal(yield_obj)) if yield_obj else 0.0
 
-            # Consistent with BOT: BUY = long, SELL = short
+            # Согласовано с BOT: BUY = лонг, SELL = шорт
             direction = "SELL" if qty < 0 else "BUY"
 
-            # Compute unrealized PnL if broker returned 0 (common in sandbox)
+            # Вычисляем нереализованный PnL если брокер вернул 0 (часто в sandbox)
             if expected_yield == 0.0 and avg_price > 0 and current_price > 0:
                 lots = abs(qty)
                 if direction == "BUY":
@@ -612,23 +634,23 @@ def place_order_checked(client, ticker: str, figi: str, lots: int, raw_price: De
         log_event("ORDER_OPEN", f"post_order success request={request_order_id} response={response_order_id}", ticker=ticker)
 
         execution_report_status = "ORDER_STATE_PENDING"
-        avg_price = rounded_price   # always per-share; used as fallback
+        avg_price = rounded_price   # всегда за штуку; используется как резервный
         lots_executed = lots
 
         def _accept_fill_price(ep: Decimal) -> bool:
             """
-            Sandbox returns executed_order_price in price-per-LOT (not per-share).
-            E.g. SBER lot=10, price=323.7 → sandbox returns 3237.
-            A real limit-order fill deviates ≤ 5% from the limit price.
-            If the returned price diverges more, it is a per-lot value — reject it
-            so we keep the correct per-share rounded_price.
+            Sandbox возвращает executed_order_price как цену за ЛОТ (не за штуку).
+            Например, SBER lot=10, price=323.7 → sandbox вернёт 3237.
+            Реальное исполнение лимитного ордера отклоняется ≤ 5% от лимитной цены.
+            Если возвращённая цена отклоняется больше, это цена за лот — отклоняем,
+            чтобы сохранить корректную цену за штуку rounded_price.
             """
             if ep <= 0 or rounded_price <= 0:
                 return False
             ratio = ep / rounded_price
             return Decimal("0.95") <= ratio <= Decimal("1.05")
 
-        # Fast path: wait for OrdersStream fill notification (up to 6 s)
+        # Быстрый путь: ждём уведомления об исполнении из OrdersStream (до 6 с)
         result_q: _queue.Queue = _queue.Queue()
         _pending_orders[response_order_id] = result_q
         try:
@@ -652,7 +674,7 @@ def place_order_checked(client, ticker: str, figi: str, lots: int, raw_price: De
             execution_report_status = "ORDER_STATE_FILL"
             log_event("ORDER_FILL", f"stream fill: {ticker} qty={lots_executed} price={avg_price}", ticker=ticker)
         except _queue.Empty:
-            # Fallback: poll get_order_state
+            # Резервный вариант: опрос get_order_state
             for _ in range(4):
                 try:
                     time.sleep(1)
@@ -705,11 +727,11 @@ def process_instrument(client, item,
                        _positions: Optional[Dict] = None,
                        _coord: Optional[_ParallelCoord] = None):
     """
-    Process one instrument for one strategy cycle.
+    Обрабатывает один инструмент за один цикл стратегии.
 
-    Parallel mode: pass _strategy_id, _strategy_cfg (settings dict),
-    _positions (per-thread open positions dict) and _coord.
-    Legacy/main mode: leave all as None — uses global state + get_setting().
+    Параллельный режим: передайте _strategy_id, _strategy_cfg (словарь настроек),
+    _positions (словарь открытых позиций потока) и _coord.
+    Основной/legacy режим: оставьте все как None — использует глобальное состояние + get_setting().
     """
     def _cfg(key, default=""):
         if _strategy_cfg is not None:
@@ -741,18 +763,18 @@ def process_instrument(client, item,
     use_signal_service    = _cfg("use_signal_service", "0") == "1"
 
     try:
-        # ── Price: stream (fast) → REST fallback ──────────────────────────────
+        # ── Цена: стрим (быстро) → REST резервный вариант ────────────────────
         with _md_lock:
             stream_md = _md.get(figi, {})
         stream_price = stream_md.get("price")
         price = stream_price if (stream_price and stream_price > 0) else get_last_price(client, figi)
 
-        # ── Candles: 50 bars sufficient for all strategy_engine modes ────────
+        # ── Свечи: 50 баров достаточно для всех режимов strategy_engine ──────
         candle_n = 50
         candles = get_candles(client, figi, n=candle_n)
         last_volume = get_last_candle_volume(candles)
 
-        # ── Order book: stream depth=10 → REST depth=1 fallback ──────────────
+        # ── Стакан: стрим depth=10 → REST depth=1 резервный вариант ─────────
         ob_stream = stream_md.get("orderbook", {})
         if ob_stream:
             spread_pct = ob_stream["spread_pct"]
@@ -794,12 +816,12 @@ def process_instrument(client, item,
         direction = pos["direction"]
         qty = int(pos["qty"])
 
-        # Guard: if entry_price is per-lot (sandbox legacy), normalize to per-share.
-        # Detect: entry_price should be in the same range as current price (within 5×).
+        # Защита: если entry_price в лотах (legacy sandbox), нормализуем до цены за штуку.
+        # Обнаружение: entry_price должна быть в том же диапазоне что текущая цена (в пределах 5×).
         lot_size = item.get("lot", 1)
         if lot_size > 1 and price > 0 and entry_price > price * Decimal("5"):
             entry_price = entry_price / Decimal(str(lot_size))
-            pos["entry_price"] = float(entry_price)  # fix in-memory too
+            pos["entry_price"] = float(entry_price)  # исправляем также в памяти
 
         unrealized_pnl = Decimal("0")
         if direction == "BUY":
@@ -821,7 +843,7 @@ def process_instrument(client, item,
         })
 
         if trailing_stop_enabled:
-            # Trailing stop: moves with price, never against profit
+            # Трейлинг-стоп: движется вместе с ценой, никогда против прибыли
             if direction == "BUY":
                 new_ts = price * (Decimal("1") - stop_loss_pct)
                 cur_ts = Decimal(str(pos.get("trailing_stop") or 0))
@@ -917,13 +939,13 @@ def process_instrument(client, item,
         return
 
     if _coord is not None:
-        # Parallel mode: skip if another strategy holds the position lock
+        # Параллельный режим: пропускаем если другая стратегия удерживает блокировку позиции
         if not _coord.is_free and not _coord.is_owner(_strategy_id):
             return
     elif len(positions) >= int(_cfg("max_open_positions", "2")):
         return
 
-    # ── Signal via strategy_engine (same logic as backtest) ──────────────────
+    # ── Сигнал через strategy_engine (та же логика что и бэктест) ───────────
     candles_dict = _candles_to_dicts(candles)
     sig_result = _evaluate_signal(tradingmode, candles_dict)
     sig   = sig_result["action"]   # "BUY" | "SELL" | "HOLD"
@@ -943,7 +965,7 @@ def process_instrument(client, item,
 
     log_event("SIGNAL", f"{sig} [{tradingmode}] score={score} on {ticker}", ticker=ticker)
 
-    # ── T-Bank Signal Service filter ──────────────────────────────────────────
+    # ── Фильтр сервиса сигналов T-Bank ───────────────────────────────────────
     if use_signal_service:
         from app.services.tbank_client import get_tbank_signals
         analyst = get_tbank_signals([figi]).get(figi, "NEUTRAL")
@@ -954,7 +976,7 @@ def process_instrument(client, item,
             log_event("SIGNAL_SKIP", f"{ticker} SELL пропущен: аналитики BUY", ticker=ticker)
             return
 
-    # ── Balance check before order ───────────────────────────────────────────
+    # ── Проверка баланса перед ордером ───────────────────────────────────────
     if sig == "BUY":
         lot_size = item.get("lot", 1)
         commission_pct = Decimal(_cfg("estimated_commission_pct", "0.0004"))
@@ -970,10 +992,10 @@ def process_instrument(client, item,
             )
             return
 
-    # ── Order-book pressure filter (only when stream data available) ──────────
+    # ── Фильтр давления стакана (только при наличии данных стрима) ───────────
     total_vol = bid_vol + ask_vol
     if total_vol > 0:
-        buy_pressure = bid_vol / total_vol   # fraction of volume on bid side
+        buy_pressure = bid_vol / total_vol   # доля объёма на стороне бид
         sell_pressure = ask_vol / total_vol
         if sig == "BUY" and buy_pressure < 0.40:
             log_event("SIGNAL_SKIP", f"{ticker} BUY пропущен: давление покупателей {buy_pressure:.0%}", ticker=ticker)
@@ -986,7 +1008,7 @@ def process_instrument(client, item,
         if not allow_long_global or not allow_long:
             return
         if _coord is not None and not _coord.try_claim(_strategy_id, figi, ticker):
-            return  # another thread just claimed first
+            return  # другой поток только что захватил первым
 
         order_result = place_order_checked(client, ticker, figi, lot, price, OrderDirection.ORDER_DIRECTION_BUY)
         if not order_result:
@@ -1060,30 +1082,30 @@ def process_instrument(client, item,
 
 def _parallel_strategy_worker(strategy_id: int, strat_name: str, stop_ev: threading.Event):
     """
-    Worker thread for one parallel strategy.
+    Рабочий поток для одной параллельной стратегии.
 
-    Lifecycle per cycle:
-      1. If another strategy holds the position lock → skip, wait.
-      2. Otherwise scan all enabled instruments of this strategy.
-      3. process_instrument() claims the lock if it opens a position.
-      4. The thread that owns the lock keeps checking SL/TP until close,
-         then releases the lock and all threads resume.
+    Жизненный цикл за цикл:
+      1. Если другая стратегия удерживает блокировку позиции → пропустить, ждать.
+      2. Иначе сканировать все активные инструменты этой стратегии.
+      3. process_instrument() захватывает блокировку при открытии позиции.
+      4. Поток-владелец блокировки продолжает проверять SL/TP до закрытия,
+         затем освобождает блокировку и все потоки возобновляют работу.
     """
     _pset(strategy_id, "запуск")
     log.info("Parallel [%s] thread started", strat_name)
 
-    positions: Dict = {}  # per-thread position store (max 1 in parallel mode)
+    positions: Dict = {}  # хранилище позиций потока (макс. 1 в параллельном режиме)
 
     while not stop_ev.is_set():
         try:
-            # Reload settings each cycle (reflects UI changes)
+            # Перезагружаем настройки каждый цикл (отражает изменения в UI)
             cfg   = {row["key"]: row["value"]
                      for row in _parallel_cfg_rows(strategy_id)}
             instr = _parallel_instruments(strategy_id)
 
             interval = int(cfg.get("check_interval_sec", "5"))
 
-            # If we have no open positions and coordinator is taken → wait
+            # Если нет открытых позиций и координатор занят → ждём
             if not positions and not _parallel_coord.is_free and not _parallel_coord.is_owner(strategy_id):
                 _pset(strategy_id, "ожидание — другая стратегия в позиции")
                 stop_ev.wait(timeout=interval)
@@ -1108,7 +1130,7 @@ def _parallel_strategy_worker(strategy_id: int, strat_name: str, stop_ev: thread
                 for item in instr:
                     if stop_ev.is_set():
                         break
-                    # Mid-scan check: someone else just opened
+                    # Проверка в середине сканирования: кто-то другой только что открыл
                     if not positions and not _parallel_coord.is_free and not _parallel_coord.is_owner(strategy_id):
                         break
                     _pset(strategy_id, "сканирование", item["ticker"])
@@ -1179,12 +1201,29 @@ def _parallel_instruments(strategy_id: int) -> list:
 
 
 def start_parallel_workers(stop_ev: threading.Event) -> list:
-    """Start one thread per strategy with parallel_enabled=1. Returns list of threads."""
+    """
+    Запускает по одному потоку на каждую стратегию из параллельного списка активного профиля.
+    Запускается только если у профиля parallel_trading_enabled=1.
+    Возвращает список запущенных потоков.
+    """
+    active_profile_id = get_setting("active_profile_id", "").strip()
+    if not active_profile_id:
+        return []
+
+    pid = int(active_profile_id)
+    parallel_on = get_profile_setting(pid, "parallel_trading_enabled", "0")
+    if parallel_on != "1":
+        return []
+
+    entries = list_profile_parallel_strategies(pid)
+    if not entries:
+        log.info("Parallel trading enabled but no strategies configured for profile %d", pid)
+        return []
+
     threads = []
-    for entry in list_parallel_strategies():
-        strat = entry["strategy"]
-        sid   = strat["id"]
-        name  = strat.get("name", f"#{sid}")
+    for entry in entries:
+        sid  = entry["strategy_id"]
+        name = entry["name"]
         t = Thread(
             target=_parallel_strategy_worker,
             args=(sid, name, stop_ev),

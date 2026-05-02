@@ -7,11 +7,11 @@ log = logging.getLogger("telegram")
 
 
 def _proxies():
-    """Build requests proxy dict from config. Respects TELEGRAM_PROXY or HTTPS_PROXY."""
+    """Строит словарь прокси requests из конфига. Учитывает TELEGRAM_PROXY или HTTPS_PROXY."""
     proxy = settings.TELEGRAM_PROXY
     if not proxy:
-        # requests reads HTTPS_PROXY / HTTP_PROXY from os.environ automatically,
-        # so returning None lets it use those if set.
+        # requests автоматически читает HTTPS_PROXY / HTTP_PROXY из os.environ,
+        # поэтому возврат None позволяет использовать их если они заданы.
         return None
     return {"http": proxy, "https": proxy}
 

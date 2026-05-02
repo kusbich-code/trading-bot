@@ -487,9 +487,89 @@ async function renderSettingsTab() {
           <button type="button" class="btn btn-primary" id="btnSaveProfileSettings">Сохранить</button>
         </div>
       </form>
+
+      <!-- PARALLEL TOGGLE inside profile section -->
+      <div style="display:flex;align-items:center;gap:14px;padding:12px 0 4px;border-top:1px solid rgba(255,255,255,.08);margin-top:4px;flex-wrap:wrap">
+        <div>
+          <b>Параллельная торговля</b>
+          <div class="note" style="margin-top:2px;max-width:480px">Запускает несколько стратегий одновременно. Один счёт — одна позиция за раз: когда одна стратегия открывает позицию, остальные ждут.</div>
+        </div>
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+          <input type="checkbox" id="parallelTradingToggle"
+            ${profSettings.parallel_trading_enabled === "1" ? "checked" : ""}
+            onchange="onParallelToggle(${esc(prof.id)}, this.checked)"
+            style="width:18px;height:18px;cursor:pointer">
+          <span>${profSettings.parallel_trading_enabled === "1" ? "Включена" : "Выключена"}</span>
+        </label>
+      </div>
     </section>
 
-    <!-- STRATEGY SECTION -->
+    ${profSettings.parallel_trading_enabled === "1" ? `
+    <!-- ── PARALLEL STRATEGIES TABLE ── -->
+    <section class="block" id="parallelStrategiesSection">
+      <div class="row between" style="margin-bottom:12px">
+        <h2>Параллельные стратегии</h2>
+        <div class="row" style="gap:10px">
+          <select id="parallelStratSelect" class="field" style="min-width:220px">
+            <option value="">Выберите стратегию...</option>
+            ${(data.strategies || [])
+              .filter(s => !(data.parallel_strategies || []).some(ps => ps.strategy_id === s.id))
+              .map(s => `<option value="${esc(s.id)}">${esc(s.name)}</option>`)
+              .join("")}
+          </select>
+          <button class="btn btn-primary" onclick="addParallelStrategy(${esc(prof.id)})">+ Добавить</button>
+        </div>
+      </div>
+
+      ${(data.parallel_strategies || []).length === 0 ? `
+        <p class="note">Стратегии не добавлены. Выберите стратегию из списка и нажмите «Добавить».</p>
+        <p class="note" style="margin-top:4px">После изменений перезапустите бота чтобы новые потоки стартовали.</p>
+      ` : `
+      <div class="table-wrap" style="margin-bottom:0">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Стратегия</th><th>Режим</th><th>SL / TP</th>
+              <th>Инструментов</th><th>Действия</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${(data.parallel_strategies || []).map(ps => {
+              const modeLabels = {trend:"Тренд", mean_reversion:"MeanRev", breakout:"Breakout"};
+              const sl = ps.sl_pct ? (parseFloat(ps.sl_pct)*100).toFixed(3)+"%" : "—";
+              const tp = ps.tp_pct ? (parseFloat(ps.tp_pct)*100).toFixed(3)+"%" : "—";
+              return `<tr>
+                <td><b>${esc(ps.name)}</b></td>
+                <td style="color:#a8c8ff;font-size:12px">${esc(modeLabels[ps.tradingmode] || ps.tradingmode)}</td>
+                <td class="mono" style="font-size:12px">${esc(sl)} / ${esc(tp)}</td>
+                <td>${ps.instrument_count}</td>
+                <td style="white-space:nowrap">
+                  <button class="btn btn-small" onclick="expandParallelStrategy(${ps.strategy_id})">Инструменты</button>
+                  <button class="btn btn-small" style="margin-left:6px;color:#ff7b7b;border-color:#bf4d5a"
+                    onclick="removeParallelStrategy(${esc(prof.id)}, ${ps.strategy_id})">Убрать</button>
+                </td>
+              </tr>`;
+            }).join("")}
+          </tbody>
+        </table>
+      </div>
+      <p class="note" style="margin-top:8px">После изменений перезапустите бота чтобы потоки применили изменения.</p>
+      `}
+
+      <!-- Expanded instruments section (shown below table when user clicks "Инструменты") -->
+      <div id="parallelInstrExpanded" style="display:none;margin-top:20px;border-top:1px solid rgba(255,255,255,.1);padding-top:16px">
+        <div class="row between" style="margin-bottom:10px">
+          <h2 id="parallelInstrTitle">Инструменты стратегии</h2>
+          <div class="row" style="gap:8px">
+            <button class="btn" id="parallelBtnAddInstr">Добавить инструмент</button>
+            <button class="btn" onclick="document.getElementById('parallelInstrExpanded').style.display='none'">✕ Закрыть</button>
+          </div>
+        </div>
+        <div id="parallelInstrBody"></div>
+      </div>
+    </section>
+    ` : `
+    <!-- ── SINGLE STRATEGY SECTION ── -->
     <section class="block">
       <div class="row between">
         <div class="row">
@@ -551,26 +631,12 @@ async function renderSettingsTab() {
         </label>
         <label>Мин. качество сигнала (score)
           <input class="field" type="number" name="min_signal_score" min="0" max="100" step="1"
-            value="${esc(stratSettings.min_signal_score || 0)}"
-            title="0 = все сигналы. Mean Reversion: рекомендуется 50–55. Breakout: 30–40. Trend: 0 (score всегда низкий).">
+            value="${esc(stratSettings.min_signal_score || 0)}">
         </label>
         <div class="row-buttons">
           <button type="button" class="btn btn-primary" id="btnSaveStrategySettings">Сохранить настройки стратегии</button>
         </div>
       </form>
-
-      <!-- PARALLEL MODE TOGGLE -->
-      <div class="block" style="margin-top:16px;padding:14px 18px;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
-        <div>
-          <b>Параллельная торговля</b>
-          <div class="note" style="margin-top:2px">Запускает эту стратегию в отдельном потоке. Все потоки используют один счёт и уступают друг другу: открыта позиция у одного — остальные ждут.</div>
-        </div>
-        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;white-space:nowrap">
-          <input type="checkbox" id="parallelToggle" ${strat.parallel_enabled ? "checked" : ""}
-            onchange="toggleParallel(${strat.id}, this.checked)" style="width:18px;height:18px;cursor:pointer">
-          <span id="parallelToggleLabel">${strat.parallel_enabled ? "Включена" : "Выключена"}</span>
-        </label>
-      </div>
 
       <!-- INSTRUMENTS -->
       <div style="margin-top:20px;">
@@ -578,69 +644,166 @@ async function renderSettingsTab() {
           <h2>Инструменты стратегии</h2>
           <button class="btn" id="btnOpenAddInstrument">Добавить инструмент</button>
         </div>
-        ${(data.instruments || []).length === 0
-          ? '<p class="note">Инструменты не добавлены.</p>'
-          : (data.instruments || []).map((i) => `
-            <form class="form-grid instrument-form block" data-strategy-id="${esc(strat.id)}" data-figi="${esc(i.figi)}">
-              <label>Тикер<input class="field" value="${esc(i.ticker)}" disabled></label>
-              <label>Название<input class="field" value="${esc(i.name)}" disabled></label>
-              <label>Лоты<input class="field" name="lots_override" value="${esc(i.lots_override || 1)}"></label>
-              <label>SL %<input class="field" name="stop_loss_pct" value="${esc(i.stop_loss_pct_ui)}"></label>
-              <label>TP %<input class="field" name="take_profit_pct" value="${esc(i.take_profit_pct_ui)}"></label>
-              <label>Спред %<input class="field" name="max_spread_pct" value="${esc(i.max_spread_pct_ui)}"></label>
-              <label>Мин. объём<input class="field" name="min_volume" value="${esc(i.min_volume || 0)}"></label>
-              <label>Лонг
-                <select class="field" name="allow_long">
-                  <option value="1" ${String(i.allow_long) === "1" ? "selected" : ""}>Да</option>
-                  <option value="0" ${String(i.allow_long) === "0" ? "selected" : ""}>Нет</option>
-                </select>
-              </label>
-              <label>Шорт
-                <select class="field" name="allow_short">
-                  <option value="1" ${String(i.allow_short) === "1" ? "selected" : ""}>Да</option>
-                  <option value="0" ${String(i.allow_short) === "0" ? "selected" : ""}>Нет</option>
-                </select>
-              </label>
-              <label>Приоритет<input class="field" name="priority" value="${esc(i.priority || 100)}"></label>
-              <label>Вкл
-                <select class="field" name="enabled">
-                  <option value="1" ${String(i.enabled) === "1" ? "selected" : ""}>Да</option>
-                  <option value="0" ${String(i.enabled) === "0" ? "selected" : ""}>Нет</option>
-                </select>
-              </label>
-              <label>Цена<input class="field" value="${esc(i.last_price_ui)}" disabled></label>
-              <div class="row-buttons">
-                <button type="submit" class="btn btn-primary">Сохранить</button>
-                <button type="button" class="btn btn-danger" data-delete-instrument="${esc(i.figi)}" data-strategy-id="${esc(strat.id)}">Удалить</button>
-              </div>
-            </form>
-          `).join("")
-        }
+        ${_renderInstrumentForms(data.instruments || [], strat.id)}
       </div>
-      ` : '<p class="note" style="margin-top:12px;">Стратегия не выбрана. Нажмите «Изменить стратегию», чтобы выбрать или создать стратегию.</p>'}
+      ` : '<p class="note" style="margin-top:12px;">Стратегия не выбрана. Нажмите «Изменить стратегию».</p>'}
     </section>
+    `}
   `;
 
-  // Bind profile settings save
+  // Profile settings save
   document.getElementById("btnSaveProfileSettings")?.addEventListener("click", () => saveProfileSettings(prof.id));
 
-  // Bind strategy settings save
+  // Strategy settings (non-parallel mode only)
   document.getElementById("btnSaveStrategySettings")?.addEventListener("click", () => saveStrategySettings(strat.id));
 
-  // Bind instrument forms
-  host.querySelectorAll(".instrument-form").forEach((form) => {
-    const stratId = form.dataset.strategyId;
-    const figi = form.dataset.figi;
-    form.addEventListener("submit", (e) => submitInstrumentUpdate(e, stratId, figi));
-  });
-  host.querySelectorAll("[data-delete-instrument]").forEach((btn) => {
-    btn.addEventListener("click", () => deleteStrategyInstrument(btn.dataset.strategyId, btn.dataset.deleteInstrument));
-  });
+  // Instrument forms (non-parallel mode)
+  _bindInstrumentForms(host, strat.id);
 
-  // Bind modal buttons
+  // Modal buttons
   document.getElementById("btnOpenProfiles")?.addEventListener("click", () => openProfilesModal(data));
   document.getElementById("btnOpenStrategies")?.addEventListener("click", () => openStrategiesModal(data));
   document.getElementById("btnOpenAddInstrument")?.addEventListener("click", () => openAddInstrumentModal(strat.id));
+
+  // Parallel: "Add instrument" inside expanded section
+  document.getElementById("parallelBtnAddInstr")?.addEventListener("click", () => {
+    const sid = document.getElementById("parallelInstrExpanded")?.dataset.strategyId;
+    if (sid) openAddInstrumentModal(sid);
+  });
+}
+
+// ── Settings tab helpers ──────────────────────────────────────────────────────
+
+function _renderInstrumentForms(instruments, stratId) {
+  if (!instruments.length) return '<p class="note">Инструменты не добавлены.</p>';
+  return instruments.map(i => `
+    <form class="form-grid instrument-form block" data-strategy-id="${esc(stratId)}" data-figi="${esc(i.figi)}">
+      <label>Тикер<input class="field" value="${esc(i.ticker)}" disabled></label>
+      <label>Название<input class="field" value="${esc(i.name)}" disabled></label>
+      <label>Лоты<input class="field" name="lots_override" value="${esc(i.lots_override || 1)}"></label>
+      <label>SL %<input class="field" name="stop_loss_pct" value="${esc(i.stop_loss_pct_ui)}"></label>
+      <label>TP %<input class="field" name="take_profit_pct" value="${esc(i.take_profit_pct_ui)}"></label>
+      <label>Спред %<input class="field" name="max_spread_pct" value="${esc(i.max_spread_pct_ui)}"></label>
+      <label>Мин. объём<input class="field" name="min_volume" value="${esc(i.min_volume || 0)}"></label>
+      <label>Лонг
+        <select class="field" name="allow_long">
+          <option value="1" ${String(i.allow_long) === "1" ? "selected" : ""}>Да</option>
+          <option value="0" ${String(i.allow_long) === "0" ? "selected" : ""}>Нет</option>
+        </select>
+      </label>
+      <label>Шорт
+        <select class="field" name="allow_short">
+          <option value="1" ${String(i.allow_short) === "1" ? "selected" : ""}>Да</option>
+          <option value="0" ${String(i.allow_short) === "0" ? "selected" : ""}>Нет</option>
+        </select>
+      </label>
+      <label>Приоритет<input class="field" name="priority" value="${esc(i.priority || 100)}"></label>
+      <label>Вкл
+        <select class="field" name="enabled">
+          <option value="1" ${String(i.enabled) === "1" ? "selected" : ""}>Да</option>
+          <option value="0" ${String(i.enabled) === "0" ? "selected" : ""}>Нет</option>
+        </select>
+      </label>
+      <label>Цена<input class="field" value="${esc(i.last_price_ui)}" disabled></label>
+      <div class="row-buttons">
+        <button type="submit" class="btn btn-primary">Сохранить</button>
+        <button type="button" class="btn btn-danger"
+          data-delete-instrument="${esc(i.figi)}" data-strategy-id="${esc(stratId)}">Удалить</button>
+      </div>
+    </form>
+  `).join("");
+}
+
+function _bindInstrumentForms(host, stratId) {
+  host.querySelectorAll(".instrument-form").forEach((form) => {
+    const sid  = form.dataset.strategyId;
+    const figi = form.dataset.figi;
+    form.addEventListener("submit", (e) => submitInstrumentUpdate(e, sid, figi));
+  });
+  host.querySelectorAll("[data-delete-instrument]").forEach((btn) => {
+    btn.addEventListener("click", () =>
+      deleteStrategyInstrument(btn.dataset.strategyId, btn.dataset.deleteInstrument)
+    );
+  });
+}
+
+// ── Parallel trading management ───────────────────────────────────────────────
+
+async function onParallelToggle(profileId, enabled) {
+  try {
+    await apiPostJson(`/api/profile/${profileId}/parallel-toggle`, { enabled });
+    await renderSettingsTab();
+  } catch (e) {
+    showToast(`Ошибка: ${e.message}`, "error");
+  }
+}
+
+async function addParallelStrategy(profileId) {
+  const sel = document.getElementById("parallelStratSelect");
+  const strategyId = sel ? parseInt(sel.value) : 0;
+  if (!strategyId) { showToast("Выберите стратегию", "error"); return; }
+  try {
+    await apiPostJson(`/api/profile/${profileId}/parallel-strategies`, { strategy_id: strategyId });
+    showToast("Стратегия добавлена", "success");
+    await renderSettingsTab();
+  } catch (e) {
+    showToast(`Ошибка: ${e.message}`, "error");
+  }
+}
+
+async function removeParallelStrategy(profileId, strategyId) {
+  if (!confirm("Убрать стратегию из параллельного списка?")) return;
+  try {
+    await fetch(`/api/profile/${profileId}/parallel-strategies/${strategyId}`,
+      { method: "DELETE", credentials: "same-origin" });
+    showToast("Стратегия убрана", "success");
+    await renderSettingsTab();
+  } catch (e) {
+    showToast(`Ошибка: ${e.message}`, "error");
+  }
+}
+
+async function expandParallelStrategy(strategyId) {
+  const panel = document.getElementById("parallelInstrExpanded");
+  const title = document.getElementById("parallelInstrTitle");
+  const body  = document.getElementById("parallelInstrBody");
+  if (!panel || !body) return;
+
+  // Toggle: close if same strategy already expanded
+  if (panel.dataset.strategyId === String(strategyId) && panel.style.display !== "none") {
+    panel.style.display = "none";
+    return;
+  }
+
+  panel.dataset.strategyId = strategyId;
+  body.innerHTML = '<span class="note">Загрузка...</span>';
+  panel.style.display = "block";
+
+  try {
+    const data = await apiGet(`/api/dashboard/settings?profile_id=${viewedProfileId || ""}`);
+    // Find instruments for this strategy in parallel_strategies list
+    const ps = (data.parallel_strategies || []).find(p => p.strategy_id === strategyId);
+    if (title) title.textContent = `Инструменты — ${ps ? ps.name : "#" + strategyId}`;
+
+    // Load full instrument list with market data
+    const instrResp = await apiGet(`/api/strategy/${strategyId}/instruments`);
+    const instruments = instrResp.instruments || [];
+
+    body.innerHTML = instruments.length
+      ? _renderInstrumentForms(instruments, strategyId)
+      : '<p class="note">Инструменты не добавлены. Нажмите «Добавить инструмент».</p>';
+
+    // Bind forms
+    _bindInstrumentForms(panel, strategyId);
+
+    // Update "Add instrument" button
+    const btn = document.getElementById("parallelBtnAddInstr");
+    if (btn) {
+      btn.onclick = () => openAddInstrumentModal(strategyId);
+    }
+  } catch (e) {
+    body.innerHTML = `<span class="note">Ошибка: ${esc(e.message)}</span>`;
+  }
 }
 
 // ── Profile modal ─────────────────────────────────────────────────────────────
@@ -2259,9 +2422,17 @@ async function bootstrapDashboard() {
   await applyRoute();
   startRefreshLoops();
 
+  window.serviceAction    = serviceAction;
+  window.closeOnePosition = closeOnePosition;
+  window.closeAllPositionsConfirm = closeAllPositionsConfirm;
+  window.clearLocalPositions = clearLocalPositions;
   window.runBacktest = runBacktest;
   window._showBacktestTrades = _showBacktestTrades;
   window.toggleParallel = toggleParallel;
+  window.onParallelToggle = onParallelToggle;
+  window.addParallelStrategy = addParallelStrategy;
+  window.removeParallelStrategy = removeParallelStrategy;
+  window.expandParallelStrategy = expandParallelStrategy;
   window.analystStart = analystStart;
   window.analystStop  = analystStop;
   window.analystDetail = analystDetail;

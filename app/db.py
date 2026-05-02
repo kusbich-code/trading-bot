@@ -5,7 +5,7 @@ from datetime import datetime
 from app.config import settings
 
 
-PROFILE_SETTING_KEYS = {"bot_enabled", "telegram_errors_only", "auto_reload_settings", "tinvestusesandbox"}
+PROFILE_SETTING_KEYS = {"bot_enabled", "telegram_errors_only", "auto_reload_settings", "tinvestusesandbox", "parallel_trading_enabled"}
 
 STRATEGY_SETTING_KEYS = {
     "max_trades_per_day", "max_daily_loss_rub", "max_open_positions", "check_interval_sec",
@@ -147,7 +147,7 @@ def init_db():
         )
         """)
 
-        # --- New profile/strategy schema ---
+        # --- Новая схема профилей/стратегий ---
 
         cur.execute("""
         CREATE TABLE IF NOT EXISTS profiles (
@@ -192,7 +192,7 @@ def init_db():
         )
         """)
 
-        # Migrate old strategy_instruments if it has the old schema (no strategy_id column)
+        # Мигрируем старую strategy_instruments если у неё старая схема (нет колонки strategy_id)
         cur.execute("PRAGMA table_info(strategy_instruments)")
         si_cols = {row[1] for row in cur.fetchall()}
         if si_cols and "strategy_id" not in si_cols:
@@ -223,6 +223,16 @@ def init_db():
             priority INTEGER DEFAULT 100,
             enabled INTEGER DEFAULT 1,
             UNIQUE(strategy_id, figi)
+        )
+        """)
+
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS profile_parallel_strategies (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            profile_id INTEGER NOT NULL,
+            strategy_id INTEGER NOT NULL,
+            sort_order INTEGER DEFAULT 0,
+            UNIQUE(profile_id, strategy_id)
         )
         """)
 
@@ -331,6 +341,7 @@ def _seed_default_profile_and_strategy(cur):
         "telegram_errors_only": "0",
         "auto_reload_settings": "1",
         "tinvestusesandbox": "true",
+        "parallel_trading_enabled": "0",
     }
 
     cur.execute("SELECT id FROM strategies WHERE name = 'Основная'")
@@ -378,8 +389,8 @@ def _seed_default_profile_and_strategy(cur):
 
 def _seed_preset_strategies(cur):
     """
-    Create preset strategies for the Russian market if they don't exist yet.
-    Runs on every startup — skips strategies that already exist by name.
+    Создаёт преднастроенные стратегии для российского рынка если они ещё не существуют.
+    Запускается при каждом старте — пропускает стратегии, которые уже существуют по имени.
     """
     PRESETS = [
         {
@@ -500,7 +511,7 @@ def _seed_preset_strategies(cur):
     for preset in PRESETS:
         cur.execute("SELECT id FROM strategies WHERE name = ?", (preset["name"],))
         if cur.fetchone():
-            continue  # already exists
+            continue  # уже существует
 
         cur.execute("INSERT INTO strategies(name) VALUES (?)", (preset["name"],))
         sid = cur.lastrowid
@@ -1066,8 +1077,61 @@ def list_strategies() -> list:
         return [dict(row) for row in cur.fetchall()]
 
 
+def get_profile_setting(profile_id: int, key: str, default: str = "") -> str:
+    with db_cursor() as cur:
+        cur.execute(
+            "SELECT value FROM profile_settings WHERE profile_id = ? AND key = ?",
+            (profile_id, key)
+        )
+        row = cur.fetchone()
+        return row["value"] if row else default
+
+
+def list_profile_parallel_strategies(profile_id: int) -> list:
+    """Стратегии, назначенные в список параллельного выполнения профиля, с полной информацией."""
+    with db_cursor() as cur:
+        cur.execute("""
+        SELECT pps.strategy_id, s.name, s.parallel_enabled
+        FROM profile_parallel_strategies pps
+        JOIN strategies s ON s.id = pps.strategy_id
+        WHERE pps.profile_id = ?
+        ORDER BY pps.sort_order, pps.id
+        """, (profile_id,))
+        rows = [dict(r) for r in cur.fetchall()]
+    result = []
+    for row in rows:
+        sid  = row["strategy_id"]
+        cfg  = get_strategy_settings(sid)
+        instr = list_strategy_instruments(sid)
+        result.append({
+            "strategy_id":   sid,
+            "name":          row["name"],
+            "tradingmode":   cfg.get("tradingmode", "trend"),
+            "sl_pct":        cfg.get("default_stop_loss_pct", "0.0025"),
+            "tp_pct":        cfg.get("default_take_profit_pct", "0.005"),
+            "instruments":   [{"figi": i["figi"], "ticker": i.get("ticker",""), "name": i.get("name",""), "enabled": i.get("enabled",1)} for i in instr],
+            "instrument_count": len(instr),
+        })
+    return result
+
+
+def add_profile_parallel_strategy(profile_id: int, strategy_id: int):
+    with db_cursor() as cur:
+        cur.execute("""
+        INSERT OR IGNORE INTO profile_parallel_strategies(profile_id, strategy_id)
+        VALUES (?, ?)
+        """, (profile_id, strategy_id))
+
+
+def remove_profile_parallel_strategy(profile_id: int, strategy_id: int):
+    with db_cursor() as cur:
+        cur.execute("""
+        DELETE FROM profile_parallel_strategies WHERE profile_id = ? AND strategy_id = ?
+        """, (profile_id, strategy_id))
+
+
 def list_parallel_strategies() -> list:
-    """Return strategies with parallel_enabled=1 including their settings and instruments."""
+    """Возвращает стратегии с parallel_enabled=1 включая их настройки и инструменты."""
     with db_cursor() as cur:
         cur.execute("SELECT * FROM strategies WHERE parallel_enabled = 1 ORDER BY name ASC")
         rows = [dict(r) for r in cur.fetchall()]
@@ -1231,7 +1295,7 @@ def delete_strategy_instrument(strategy_id: int, figi: str):
         cur.execute("DELETE FROM strategy_instruments WHERE strategy_id=? AND figi=?", (strategy_id, figi))
 
 
-# ── legacy list_enabled_instruments (kept for compatibility) ──────────────────
+# ── legacy list_enabled_instruments (сохранено для совместимости) ────────────
 
 def list_enabled_instruments():
     with db_cursor() as cur:
