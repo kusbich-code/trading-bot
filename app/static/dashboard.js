@@ -150,25 +150,54 @@ function summaryCard(label, value) {
   `;
 }
 
+function _crd(label, value) {
+  const cls = summaryValueClass(value);
+  return `<div class="crd"><div class="lbl">${label}</div><div class="val ${cls}" title="${esc(value ?? "—")}">${esc(value ?? "—")}</div></div>`;
+}
+
 async function renderSummaryCards() {
   const s = await apiGet("/api/dashboard/summary");
   const host = document.getElementById("summaryCards");
   if (!host) return;
-  host.innerHTML = `
-    ${summaryCard("Статус", s.status)}
-    ${summaryCard("Торговля", s.trading_status)}
-    ${summaryCard("Сделки", s.trades_today)}
-    ${summaryCard("Реализованный ПнЛ", s.daily_pnl_ui)}
-    ${summaryCard("Нереализованный ПнЛ", s.unrealized_pnl_ui || "0.00")}
-    ${summaryCard("Комиссия", s.total_commission_ui)}
-    ${summaryCard("Деньги", s.cash_rub_ui)}
-    ${summaryCard("Позиции", s.positions_value_rub_ui)}
-    ${summaryCard("Резерв", s.blocked_rub_ui)}
-    ${summaryCard("Итого", s.total_assets_rub_ui)}
-    ${summaryCard("Профиль", s.active_profile_name || "—")}
-    ${summaryCard("Стратегия", s.active_strategy_name || "—")}
-    ${summaryCard("Ошибка", s.last_error || "—")}
-  `;
+  host.style.cssText = "display:block;margin-bottom:18px";
+  const hasError = s.last_error && s.last_error !== "—";
+  host.innerHTML = `<div class="sgroups">
+    <div class="sgrp">
+      <div class="sgrp-lbl">Сервис</div>
+      <div class="sgrp-cards">
+        ${_crd("Статус",    s.status)}
+        ${_crd("Торговля",  s.trading_status)}
+        ${_crd("Профиль",   s.active_profile_name || "—")}
+        ${_crd("Стратегия", s.active_strategy_name || "—")}
+      </div>
+    </div>
+    <div class="sgrp">
+      <div class="sgrp-lbl">Счёт</div>
+      <div class="sgrp-cards">
+        ${_crd("Деньги",  s.cash_rub_ui)}
+        ${_crd("Позиции", s.positions_value_rub_ui)}
+        ${_crd("Резерв",  s.blocked_rub_ui)}
+        ${_crd("Итого",   s.total_assets_rub_ui)}
+      </div>
+    </div>
+    <div class="sgrp">
+      <div class="sgrp-lbl">Сессия</div>
+      <div class="sgrp-cards">
+        ${_crd("Сделки",      s.trades_today)}
+        ${_crd("PnL реал.",   s.daily_pnl_ui)}
+        ${_crd("PnL нереал.", s.unrealized_pnl_ui || "0.00")}
+        ${_crd("Комиссия",    s.total_commission_ui)}
+      </div>
+    </div>
+    ${hasError ? `<div class="sgrp">
+      <div class="sgrp-lbl" style="color:#ff7b7b;border-color:#bf4d5a">Ошибка</div>
+      <div class="sgrp-cards" style="grid-template-columns:1fr">
+        <div class="crd" style="background:rgba(191,77,90,.08)">
+          <div class="val" style="font-size:12px;font-weight:400;color:#ff9999;white-space:normal">${esc(s.last_error)}</div>
+        </div>
+      </div>
+    </div>` : ""}
+  </div>`;
 }
 
 function helpCard(title, bullets) {
@@ -239,22 +268,27 @@ async function renderMainShell() {
       <div id="parallelStatusBody"></div>
     </section>
 
-    <!-- ── Инструменты ── -->
-    <section class="block">
+    <!-- ── Графики инструментов (настройки + сетка) ── -->
+    <section class="block" style="padding:12px 16px;margin-bottom:6px">
       <div class="row between">
-        <h2 id="instrumentsTitle">Инструменты</h2>
-        <span class="note" id="instrumentsNote">Активная стратегия</span>
-      </div>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>Тикер</th><th>Название</th><th>Стратегия</th><th>Лоты</th><th>SL%</th><th>TP%</th><th>Цена</th><th>Время</th></tr></thead>
-          <tbody id="mainInstrumentsBody"></tbody>
-        </table>
+        <h2 style="margin:0">Графики инструментов</h2>
+        <div class="row" style="gap:6px;flex-wrap:wrap">
+          <select class="field" id="mcInterval" style="width:auto">
+            <option value="1min">1 мин</option>
+            <option value="5min">5 мин</option>
+            <option value="15min">15 мин</option>
+            <option value="hour">1 час</option>
+          </select>
+          <select class="field" id="mcHours" style="width:auto">
+            <option value="1">1 ч</option>
+            <option value="4" selected>4 ч</option>
+            <option value="8">8 ч</option>
+          </select>
+          <button class="btn" onclick="mainChartsApplySettings()">Обновить</button>
+        </div>
       </div>
     </section>
-
-    <!-- ── Мини-графики инструментов ── -->
-    <div id="mainChartsGrid"></div>
+    <div id="mainChartsGrid" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:18px"></div>
 
     <!-- ── Позиции ── -->
     <section class="block">
@@ -285,32 +319,7 @@ async function renderMainShell() {
 
 async function renderMainData() {
   const data = await apiGet("/api/dashboard/main");
-  const parallelOn = !!data.parallel_on;
-
-  // ── Инструменты ──────────────────────────────────────────────────────────
-  const instrTitle = document.getElementById("instrumentsTitle");
-  const instrNote  = document.getElementById("instrumentsNote");
-  if (instrTitle) instrTitle.textContent = "Инструменты";
-  if (instrNote)  instrNote.textContent  = parallelOn ? "Все параллельные стратегии" : "Активная стратегия";
-
-  diffTbody(document.getElementById("mainInstrumentsBody"),
-    (data.instruments || []).map((i) => `
-      <tr>
-        <td><b>${esc(i.ticker)}</b></td>
-        <td class="muted" style="font-size:12px">${esc(i.name)}</td>
-        <td class="muted" style="font-size:12px">${esc(i._strategy_name || "—")}</td>
-        <td>${esc(i.lots_override || 1)}</td>
-        <td class="muted">${esc(i.stop_loss_pct_ui)}</td>
-        <td class="muted">${esc(i.take_profit_pct_ui)}</td>
-        <td class="live-price" data-figi="${esc(i.figi)}">${esc(i.last_price_ui)}</td>
-        <td class="live-time muted" style="font-size:11px" data-figi="${esc(i.figi)}">${esc(i.price_time)}</td>
-      </tr>
-    `).join("")
-  );
-
-  // ── Мини-графики ─────────────────────────────────────────────────────────
-  const figis = (data.instruments || []).map(i => i.figi).filter(Boolean);
-  _renderMiniCharts(figis, data.instruments || []);
+  // Графики обновляются через refreshParallelStatus (figis берутся оттуда)
 
   // ── Позиции ──────────────────────────────────────────────────────────────
   diffTbody(document.getElementById("mainPositionsBody"),
@@ -441,54 +450,6 @@ async function renderMainData() {
   } catch {}
 }
 
-async function _renderMiniCharts(figis, instruments) {
-  const grid = document.getElementById("mainChartsGrid");
-  if (!grid || !window.Plotly || !figis.length) {
-    if (grid) grid.innerHTML = "";
-    return;
-  }
-  const count = Math.min(figis.length, 10);
-  const useFigis = figis.slice(0, count);
-
-  grid.innerHTML = `
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:18px">
-      ${useFigis.map(figi => {
-        const instr = instruments.find(x => x.figi === figi) || {};
-        return `<div class="block" style="padding:10px;margin-bottom:0">
-          <div class="row between" style="margin-bottom:4px">
-            <span style="font-size:13px;font-weight:700">${esc(instr.ticker || figi)}</span>
-            <span class="note" style="font-size:11px" id="sc-price-${figi}">${esc(instr.last_price_ui || "")}</span>
-          </div>
-          <div id="sc-${figi}" style="height:80px"></div>
-        </div>`;
-      }).join("")}
-    </div>`;
-
-  try {
-    const sparkData = await apiGet(`/api/dashboard/sparklines?figis=${useFigis.join(",")}`);
-    for (const figi of useFigis) {
-      const el = document.getElementById(`sc-${figi}`);
-      if (!el) continue;
-      const closes = sparkData[figi] || [];
-      if (!closes.length) { el.innerHTML = `<div class="note" style="text-align:center;line-height:80px">Нет данных</div>`; continue; }
-      const up = closes[closes.length - 1] >= closes[0];
-      const color = up ? "#2fa36b" : "#ff7b7b";
-      Plotly.newPlot(el, [{
-        y: closes, type: "scatter", mode: "lines",
-        line: {color, width: 1.5},
-        fill: "tozeroy", fillcolor: up ? "rgba(47,163,107,.1)" : "rgba(191,77,90,.1)",
-        hoverinfo: "y",
-      }], {
-        paper_bgcolor:"rgba(0,0,0,0)", plot_bgcolor:"rgba(0,0,0,0)",
-        margin:{t:0,r:0,b:0,l:0},
-        xaxis:{visible:false, fixedrange:true},
-        yaxis:{visible:false, fixedrange:true},
-        showlegend:false,
-        hoverlabel:{bgcolor:"rgba(14,27,52,.95)", bordercolor:color, font:{color:"#eef4ff",size:11}},
-      }, {displayModeBar:false, responsive:true, staticPlot:false});
-    }
-  } catch (e) { console.error("sparklines:", e); }
-}
 
 async function refreshQuotesOnly() {
   if (getTabFromHash() !== "главное") return;
@@ -2027,78 +1988,185 @@ async function sandboxPayIn() {
 
 // ── Parallel strategy status ──────────────────────────────────────────────────
 
+let _mainChartInterval = "1min";
+let _mainChartHours    = 4;
+let _mainChartFigis    = [];  // [{figi, ticker}]
+
 async function refreshParallelStatus() {
   try {
-    const data = await apiGet("/api/parallel/status");
+    const data    = await apiGet("/api/parallel/status");
     const threads = data.threads || [];
-    const block = document.getElementById("parallelStatusBlock");
-    const body  = document.getElementById("parallelStatusBody");
+    const block   = document.getElementById("parallelStatusBlock");
+    const body    = document.getElementById("parallelStatusBody");
     if (!block || !body) return;
     if (!threads.length) { block.style.display = "none"; return; }
     block.style.display = "block";
 
-    const coord = data.coord || {};
+    const coord       = data.coord || {};
+    const instruments = data.instruments || [];
+
+    // Цвет статуса потока
     const statusColor = {
-      "ожидание сигнала":                        "#9fb3d8",
-      "сканирование":                            "#4c8dff",
-      "в позиции":                               "#2ecc71",
-      "ожидание — другая стратегия в позиции":   "#f0c04a",
-      "остановлен":                              "#555",
-      "бот выключен":                            "#555",
-      "не запущен":                              "#555",
+      "ожидание сигнала":                      "#9fb3d8",
+      "сканирование":                          "#4c8dff",
+      "в позиции":                             "#2ecc71",
+      "ожидание — другая стратегия в позиции": "#f0c04a",
+      "остановлен": "#555", "бот выключен": "#555", "не запущен": "#555",
+    };
+    const threadStatus = {};
+    threads.forEach(t => { threadStatus[t.strategy_id] = t; });
+
+    const fmtStat = (st, f) => {
+      if (!st || !st.trades) return `<span class="muted">—</span>`;
+      if (f === "pnl") { const v = st.pnl||0; const c = v>=0?"#2fa36b":"#ff7b7b"; return `<span style="color:${c};font-weight:600">${v>=0?"+":""}${esc(st.pnl_ui)}</span>`; }
+      if (f === "wr")  return `${st.win_rate??0}%`;
+      if (f === "cnt") return `${st.trades}`;
     };
 
-    const fmtStat = (st, field) => {
-      if (!st || !st.trades) return '<span class="muted">—</span>';
-      if (field === "pnl") {
-        const v = st.pnl || 0;
-        const col = v >= 0 ? "#2fa36b" : "#ff7b7b";
-        return `<span style="color:${col};font-weight:600">${v >= 0 ? "+" : ""}${esc(st.pnl_ui || v.toFixed(0))}</span>`;
-      }
-      if (field === "wr")  return `${st.win_rate ?? 0}%`;
-      if (field === "cnt") return `${st.trades}`;
-      return "—";
+    // ── Таблица стратегий ─────────────────────────────────────────────────
+    const stratRows = threads.map(t => {
+      const col  = statusColor[t.status] || "#eef4ff";
+      const tick = t.ticker ? ` · ${esc(t.ticker)}` : "";
+      const s    = t.stats || {};
+      return `<tr>
+        <td><b>${esc(t.name)}</b></td>
+        <td><span style="display:inline-flex;align-items:center;gap:5px">
+          <span style="width:7px;height:7px;border-radius:50%;background:${col};flex-shrink:0"></span>
+          <span style="color:${col};font-size:12px">${esc(t.status)}${tick}</span>
+        </span></td>
+        <td>${fmtStat(s.day,"pnl")}</td><td>${fmtStat(s.week,"pnl")}</td><td>${fmtStat(s.month,"pnl")}</td>
+        <td class="muted">${fmtStat(s.month,"wr")}</td>
+        <td class="muted">${fmtStat(s.month,"cnt")}</td>
+        <td class="muted" style="font-size:11px">${esc(t.updated_at||"")}</td>
+      </tr>`;
+    }).join("");
+
+    // ── Инструменты: сортировка по unrealized_pnl (прибыльные сверху) ─────
+    const sorted = [...instruments].sort((a,b) => b.unrealized_pnl - a.unrealized_pnl);
+    const n      = sorted.length;
+
+    // Градиент: top → зелёный, bottom → красный (только если есть позиции)
+    const hasPos = sorted.some(i => i.in_position);
+    const rowBg  = (idx) => {
+      if (!hasPos || n < 2) return "";
+      const t = n === 1 ? 0.5 : idx / (n - 1);  // 0 = top (green), 1 = bottom (red)
+      const r = Math.round(47  + (191-47)  * t);
+      const g = Math.round(163 + (77-163)  * t);
+      const b = Math.round(107 + (90-107)  * t);
+      return `background:rgba(${r},${g},${b},.08)`;
     };
+
+    const instrRows = sorted.map((i, idx) => {
+      const th = threadStatus[i.strategy_id] || {};
+      const sc = statusColor[th.status] || "#555";
+      const pnlColor = i.in_position ? (i.unrealized_pnl >= 0 ? "#2fa36b" : "#ff7b7b") : "";
+      return `<tr style="${rowBg(idx)}">
+        <td><b>${esc(i.ticker)}</b></td>
+        <td class="muted" style="font-size:12px">${esc(i.strategy_name)}</td>
+        <td><span style="display:inline-flex;align-items:center;gap:5px">
+          <span style="width:6px;height:6px;border-radius:50%;background:${sc};flex-shrink:0"></span>
+          <span style="color:${sc};font-size:11px">${esc(th.status||"—")}</span>
+        </span></td>
+        <td>${esc(i.lots)}</td>
+        <td class="muted">${esc(i.sl_pct)}</td>
+        <td class="muted">${esc(i.tp_pct)}</td>
+        <td class="live-price" data-figi="${esc(i.figi)}">${esc(i.last_price_ui)}</td>
+        <td class="live-time muted" style="font-size:11px" data-figi="${esc(i.figi)}">${esc(i.price_time)}</td>
+        <td style="font-weight:700;color:${pnlColor}">${i.in_position ? esc(i.unrealized_pnl_ui) : "—"}</td>
+      </tr>`;
+    }).join("");
 
     body.innerHTML = `
-      <div class="table-wrap">
-        <table>
-          <thead><tr>
-            <th>Стратегия</th><th>Статус</th>
-            <th>PnL день</th><th>PnL нед.</th><th>PnL мес.</th>
-            <th>Win% мес.</th><th>Сделок мес.</th>
-            <th>Обновлено</th>
-          </tr></thead>
-          <tbody>
-            ${threads.map(t => {
-              const col  = statusColor[t.status] || "#eef4ff";
-              const tick = t.ticker ? ` · ${esc(t.ticker)}` : "";
-              const s    = t.stats || {};
-              return `<tr>
-                <td><b>${esc(t.name)}</b></td>
-                <td>
-                  <span style="display:inline-flex;align-items:center;gap:6px">
-                    <span style="width:8px;height:8px;border-radius:50%;background:${col};flex-shrink:0"></span>
-                    <span style="color:${col};font-size:12px">${esc(t.status)}${tick}</span>
-                  </span>
-                </td>
-                <td>${fmtStat(s.day,  "pnl")}</td>
-                <td>${fmtStat(s.week, "pnl")}</td>
-                <td>${fmtStat(s.month,"pnl")}</td>
-                <td class="muted">${fmtStat(s.month,"wr")}</td>
-                <td class="muted">${fmtStat(s.month,"cnt")}</td>
-                <td class="muted" style="font-size:11px">${esc(t.updated_at || "")}</td>
-              </tr>`;
-            }).join("")}
-          </tbody>
-        </table>
+      <div class="table-wrap" style="margin-bottom:12px">
+        <table><thead><tr>
+          <th>Стратегия</th><th>Статус</th>
+          <th>PnL день</th><th>PnL нед.</th><th>PnL мес.</th>
+          <th>Win% мес.</th><th>Сделок мес.</th><th>Обновлено</th>
+        </tr></thead><tbody>${stratRows}</tbody></table>
       </div>
-      ${coord.owner_strategy_id != null ? `
-        <div class="note" style="margin-top:8px">
-          Позиция занята: стратегия id=${esc(coord.owner_strategy_id)},
-          инструмент ${esc(coord.owner_ticker || coord.owner_figi || "?")}
-        </div>` : ""}`;
-  } catch {}
+      <div class="table-wrap">
+        <table><thead><tr>
+          <th>Тикер</th><th>Стратегия</th><th>Статус потока</th>
+          <th>Лоты</th><th>SL%</th><th>TP%</th>
+          <th>Цена</th><th>Обновлено</th><th>PnL позиции</th>
+        </tr></thead><tbody>${instrRows}</tbody></table>
+      </div>
+      ${coord.owner_strategy_id != null ? `<div class="note" style="margin-top:8px">
+        Позиция занята: стратегия ${esc(coord.owner_strategy_id)}, инструмент ${esc(coord.owner_ticker||coord.owner_figi||"?")}
+      </div>` : ""}`;
+
+    // Обновляем figis для графиков
+    _mainChartFigis = instruments.map(i => ({figi: i.figi, ticker: i.ticker}));
+    await _renderMainCharts();
+  } catch (e) { console.error("refreshParallelStatus:", e); }
+}
+
+async function mainChartsApplySettings() {
+  _mainChartInterval = document.getElementById("mcInterval")?.value || "1min";
+  _mainChartHours    = parseInt(document.getElementById("mcHours")?.value || "4");
+  await _renderMainCharts();
+}
+
+async function _renderMainCharts() {
+  const grid = document.getElementById("mainChartsGrid");
+  if (!grid || !window.Plotly || !_mainChartFigis.length) {
+    if (grid) grid.innerHTML = "";
+    return;
+  }
+  const figis = _mainChartFigis.slice(0, 10);
+
+  // Плейсхолдеры
+  grid.innerHTML = figis.map(f => `
+    <div class="block" style="padding:12px;margin-bottom:0">
+      <div class="row between" style="margin-bottom:6px">
+        <span style="font-size:13px;font-weight:700">${esc(f.ticker)}</span>
+        <span class="note" style="font-size:11px" id="mc-price-${f.figi}"></span>
+      </div>
+      <div id="mc-${f.figi}" style="height:160px"></div>
+    </div>`).join("");
+
+  try {
+    const url = `/api/dashboard/multi-candles?figis=${figis.map(f=>f.figi).join(",")}&interval=${_mainChartInterval}&hours=${_mainChartHours}`;
+    const resp = await apiGet(url);
+
+    for (const {figi, ticker} of figis) {
+      const el  = document.getElementById(`mc-${figi}`);
+      if (!el) continue;
+      const item    = resp[figi] || {};
+      const candles = item.candles || [];
+      if (!candles.length) {
+        Plotly.newPlot(el, [], {
+          paper_bgcolor:"rgba(0,0,0,0)", plot_bgcolor:"rgba(0,0,0,0)", font:{color:"#eef4ff"},
+          margin:{t:0,r:0,b:20,l:40},
+          annotations:[{text:"Нет данных",xref:"paper",yref:"paper",x:.5,y:.5,showarrow:false,font:{size:12,color:"#9fb3d8"}}],
+        }, {displayModeBar:false, responsive:true});
+        continue;
+      }
+      // Последняя цена в заголовок
+      const lastC = candles[candles.length-1];
+      const priceEl = document.getElementById(`mc-price-${figi}`);
+      if (priceEl && lastC) priceEl.textContent = lastC.close?.toFixed(2) ?? "";
+
+      Plotly.newPlot(el, [{
+        x:    candles.map(c => c.time),
+        open:  candles.map(c => c.open),
+        high:  candles.map(c => c.high),
+        low:   candles.map(c => c.low),
+        close: candles.map(c => c.close),
+        type: "candlestick",
+        increasing: {line:{color:"#2ecc71"}, fillcolor:"rgba(46,204,113,.7)"},
+        decreasing: {line:{color:"#ff5c5c"}, fillcolor:"rgba(255,92,92,.7)"},
+        hoverinfo: "x+y",
+      }], {
+        paper_bgcolor:"rgba(0,0,0,0)", plot_bgcolor:"rgba(0,0,0,0)",
+        font:{color:"#eef4ff",size:10},
+        margin:{t:0,r:8,b:24,l:44},
+        xaxis:{rangeslider:{visible:false}, gridcolor:"rgba(255,255,255,.05)", tickformat:"%H:%M", tickfont:{size:9}},
+        yaxis:{gridcolor:"rgba(255,255,255,.05)", tickfont:{size:9}},
+        hoverlabel:{bgcolor:"rgba(14,27,52,.95)", bordercolor:"rgba(76,141,255,.5)", font:{color:"#eef4ff",size:11}},
+      }, {displayModeBar:false, responsive:true, scrollZoom:false});
+    }
+  } catch(e) { console.error("multi-candles:", e); }
 }
 
 async function toggleParallel(strategyId, enabled) {
@@ -2818,6 +2886,7 @@ async function bootstrapDashboard() {
   window.clearLocalPositions = clearLocalPositions;
   window.runBacktest = runBacktest;
   window._showBacktestTrades = _showBacktestTrades;
+  window.mainChartsApplySettings = mainChartsApplySettings;
   window.histSetPeriod   = histSetPeriod;
   window.histShowTab     = histShowTab;
   window.histClearTrades = histClearTrades;

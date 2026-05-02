@@ -559,17 +559,21 @@ def api_dashboard_main():
     })
 
 
-@app.get("/api/dashboard/sparklines")
-def api_sparklines(figis: str = ""):
-    """Последние 40 свечей 1-мин для мини-графиков инструментов (только close)."""
+@app.get("/api/dashboard/multi-candles")
+def api_multi_candles(figis: str = "", interval: str = "1min", hours: int = 4):
+    """OHLCV свечи для нескольких инструментов — мини-графики на главной."""
     figi_list = [f.strip() for f in figis.split(",") if f.strip()][:10]
+    market_map = get_instrument_market_state_map()
     result: dict = {}
     for figi in figi_list:
         try:
-            candles = get_candles(figi, interval_name="1min", hours=1)
-            result[figi] = [round(float(c["close"]), 4) for c in candles[-40:] if c.get("close")]
+            candles = get_candles(figi, interval_name=interval, hours=hours)
+            result[figi] = {
+                "ticker":  market_map.get(figi, {}).get("ticker", figi[:8]),
+                "candles": candles,
+            }
         except Exception:
-            result[figi] = []
+            result[figi] = {"ticker": figi[:8], "candles": []}
     return JSONResponse(result)
 
 
@@ -1090,14 +1094,17 @@ async def api_backtest_run(request: Request):
 
 @app.get("/api/parallel/status")
 def api_parallel_status():
-    """Live status of all parallel strategy worker threads (reads from DB runtime_state)."""
+    """Live status of parallel strategy threads + instruments with current prices."""
     active_profile_id = get_setting("active_profile_id", "").strip()
     if not active_profile_id:
-        return {"threads": [], "coord": {}}
+        return {"threads": [], "coord": {}, "instruments": []}
 
     pid = int(active_profile_id)
     parallel_strats = list_profile_parallel_strategies(pid)
+    market_map = get_instrument_market_state_map()
+    open_pos = {p["figi"]: p for p in get_open_positions()}
 
+    # Thread statuses + stats
     result = []
     for entry in parallel_strats:
         sid  = entry["strategy_id"]
@@ -1112,19 +1119,43 @@ def api_parallel_status():
             "week":  get_strategy_trade_stats(sid, 7),
             "month": get_strategy_trade_stats(sid, 30),
         }
-        # Форматируем PnL для отображения
-        for period, st in stats.items():
+        for st in stats.values():
             st["pnl_ui"] = fmt_money(st["pnl"])
         result.append({"strategy_id": sid, "name": name, **info, "stats": stats})
 
-    # Coordinator snapshot is also stored in runtime_state
+    # Unified instruments table across all strategies
+    all_instrs = []
+    for strat in parallel_strats:
+        sid = strat["strategy_id"]
+        for instr in list_strategy_instruments(sid):
+            if str(instr.get("enabled", 1)) not in ("1", "true"):
+                continue
+            figi = instr["figi"]
+            mkt  = market_map.get(figi, {})
+            pos  = open_pos.get(figi)
+            upnl = float(pos.get("unrealized_pnl", 0)) if pos else 0.0
+            all_instrs.append({
+                "figi":            figi,
+                "ticker":          instr["ticker"],
+                "strategy_id":     sid,
+                "strategy_name":   strat["name"],
+                "lots":            int(instr.get("lots_override", 1)),
+                "sl_pct":          f"{float(instr.get('stop_loss_pct', 0))*100:.2f}%",
+                "tp_pct":          f"{float(instr.get('take_profit_pct', 0))*100:.2f}%",
+                "last_price_ui":   fmt_price(mkt.get("last_price", 0)),
+                "price_time":      mkt.get("price_time", "—"),
+                "unrealized_pnl":  upnl,
+                "unrealized_pnl_ui": fmt_money(upnl) if pos else "—",
+                "in_position":     pos is not None,
+            })
+
     coord_raw = get_runtime("parallel_coord") or ""
     try:
         coord = json.loads(coord_raw)
     except Exception:
         coord = {}
 
-    return {"threads": result, "coord": coord}
+    return {"threads": result, "coord": coord, "instruments": all_instrs}
 
 
 @app.post("/api/profile/{profile_id}/parallel-toggle")
