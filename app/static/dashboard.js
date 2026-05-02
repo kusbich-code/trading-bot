@@ -2417,11 +2417,8 @@ function startRefreshLoops() {
 }
 
 async function bootstrapDashboard() {
-  bindRouter();
-  await renderSummaryCards();
-  await applyRoute();
-  startRefreshLoops();
-
+  // Экспортируем все обработчики в глобальный scope ДО любых await,
+  // чтобы кнопки работали даже если API-запросы упадут с ошибкой.
   window.serviceAction    = serviceAction;
   window.closeOnePosition = closeOnePosition;
   window.closeAllPositionsConfirm = closeAllPositionsConfirm;
@@ -2448,6 +2445,11 @@ async function bootstrapDashboard() {
   window.closeStrategiesModal = closeStrategiesModal;
   window.createProfile = createProfile;
   window.createStrategy = createStrategy;
+
+  bindRouter();
+  try { await renderSummaryCards(); } catch (e) { console.error("renderSummaryCards:", e); }
+  try { await applyRoute(); } catch (e) { console.error("applyRoute:", e); }
+  startRefreshLoops();
 }
 
 document.addEventListener("DOMContentLoaded", bootstrapDashboard);

@@ -154,6 +154,12 @@ _parallel_status_lock = threading.Lock()
 # События остановки для каждого параллельного потока: strategy_id → Event
 _parallel_stop_events: Dict[int, threading.Event] = {}
 
+# Состояние параллельных воркеров — управляется через _refresh_parallel_workers()
+_parallel_threads: list = []
+_parallel_main_stop_ev: Optional[threading.Event] = None
+_last_parallel_sig: tuple = ()
+_last_parallel_check_ts: float = 0.0
+
 
 def _pset(sid: int, status: str, ticker: str = ""):
     info = {
@@ -1200,6 +1206,47 @@ def _parallel_instruments(strategy_id: int) -> list:
     return result
 
 
+def _refresh_parallel_workers():
+    """
+    Сравнивает текущую конфигурацию параллельных стратегий в БД с запущенными потоками.
+    При изменении конфигурации или гибели потоков — перезапускает воркеры.
+    Вызывается из основного цикла раз в ~30 секунд.
+    """
+    global _parallel_threads, _parallel_main_stop_ev, _last_parallel_sig
+
+    active_profile_id = get_setting("active_profile_id", "").strip()
+    if not active_profile_id:
+        new_sig: tuple = ()
+    else:
+        pid = int(active_profile_id)
+        parallel_on = get_profile_setting(pid, "parallel_trading_enabled", "0")
+        if parallel_on == "1":
+            entries = list_profile_parallel_strategies(pid)
+            new_sig = (pid, "1", tuple(sorted(e["strategy_id"] for e in entries)))
+        else:
+            new_sig = (pid, "0")
+
+    alive = [t for t in _parallel_threads if t.is_alive()]
+
+    if new_sig == _last_parallel_sig and len(alive) == len(_parallel_threads):
+        return  # Конфигурация и потоки не изменились
+
+    # Конфигурация изменилась или потоки умерли — останавливаем старые
+    if new_sig != _last_parallel_sig and _parallel_main_stop_ev is not None:
+        log.info("Parallel config changed — останавливаем старые воркеры")
+        _parallel_main_stop_ev.set()
+        _parallel_threads = []
+
+    _last_parallel_sig = new_sig
+
+    # Запускаем воркеры если параллельный режим включён и потоков нет
+    if new_sig and len(new_sig) >= 2 and new_sig[1] == "1" and not _parallel_threads:
+        _parallel_main_stop_ev = threading.Event()
+        _parallel_threads = start_parallel_workers(_parallel_main_stop_ev)
+        if _parallel_threads:
+            log.info("Parallel workers (пере)запущены: %d потоков", len(_parallel_threads))
+
+
 def start_parallel_workers(stop_ev: threading.Event) -> list:
     """
     Запускает по одному потоку на каждую стратегию из параллельного списка активного профиля.
@@ -1256,8 +1303,7 @@ def main():
     Thread(target=_market_data_stream_worker, daemon=True, name="market-data-stream").start()
     log.info("OrdersStream + MarketDataStream workers started")
 
-    _parallel_stop_ev = threading.Event()
-    start_parallel_workers(_parallel_stop_ev)
+    _refresh_parallel_workers()
     log.info("Parallel strategy workers started")
 
     with client_cls(settings.TINVEST_TOKEN) as client:
@@ -1288,6 +1334,13 @@ def main():
                     state.sync_runtime()
                     time.sleep(60)
                     continue
+
+                # Периодически проверяем и перезапускаем параллельные воркеры
+                global _last_parallel_check_ts
+                now_ts = time.time()
+                if now_ts - _last_parallel_check_ts > 30:
+                    _last_parallel_check_ts = now_ts
+                    _refresh_parallel_workers()
 
                 watchlist = load_enabled_instruments(client)
 
