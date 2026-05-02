@@ -1359,143 +1359,387 @@ async function closeAllPositionsConfirm() {
 
 // ── History tab ───────────────────────────────────────────────────────────────
 
+let _histPeriod    = 30;   // дней (0 = всё время)
+let _histActiveTab = "trades";
+let _histData      = {};
+let _histBrokerItems  = [];
+let _histBrokerCursor = "";
+
 async function renderHistoryTab() {
   const host = document.getElementById("view-history");
   if (!host) return;
 
-  const data = await apiGet("/api/dashboard/history");
-  const mapLogs = (rows) => (rows || []).map((x) => `
-    <tr>
-      <td>${esc(x.event_time)}</td><td>${esc(x.event_type)}</td>
-      <td>${esc(x.ticker)}</td><td>${esc(x.level)}</td><td>${esc(x.message)}</td>
-    </tr>
-  `).join("");
+  host.innerHTML = _histShell();
 
-  host.innerHTML = `
-    ${helpCard("История", [
-      "<b>Операции брокера (GetOperationsByCursor):</b> реальные исполненные операции из T-Bank API с курсорной пагинацией. Выбери период (7/30/90 дней) → «Загрузить» → «Загрузить ещё» для следующей страницы. Показываются только торговые операции (BUY/SELL), комиссии скрыты. Цена вычисляется из суммы и количества если T-Bank не вернул цену (маркет-ордер). Это самый точный источник — данные от брокера, не из локальной БД.",
-      "<b>Сделки (локальная БД):</b> записи которые бот создаёт при закрытии позиции. Содержит: Вход и Выход (цены исполнения), Кол-во лотов, Комиссия (расчётная), ПнЛ, Причина закрытия (STOP_LOSS / TAKE_PROFIT / TRAILING_STOP). Если цена входа или выхода = «—» — ордер исполнился по нулевой цене (sandbox-артефакт), актуальные данные смотреть в «Операции брокера».",
-      "<b>Система:</b> ключевые события бота — BOT_START, BOT_STOP, BOT_ERROR, DAILY_RESET, CONFIG_CHANGED. Используй для диагностики перезапусков и сбоев.",
-      "<b>Ошибки:</b> только события уровня ERROR — ошибки API, неверные FIGI, проблемы с ордерами.",
-      "<b>Журнал:</b> полный лог всех событий (SIGNAL, ORDER_OPEN, ORDER_CLOSE, SIGNAL_SKIP, ORDER_FILL и т.д.). SIGNAL_SKIP — сигнал был, но не исполнен (фильтр давления стакана или фильтр аналитиков). ORDER_FILL — ордер исполнен через OrdersStream (не через поллинг).",
-      "<b>Фильтры:</b> живая фильтрация по тексту в каждом блоке — вводи тикер, тип события или ключевое слово.",
-    ])}
-    <section class="block">
+  // Параллельная загрузка статистики и сделок/логов
+  try {
+    await Promise.all([_histLoadStats(), _histLoadTradesAndLogs()]);
+  } catch (e) {
+    console.error("history load:", e);
+  }
+}
+
+function _histShell() {
+  const periods = [{d:7,l:"7 дней"},{d:30,l:"30 дней"},{d:90,l:"90 дней"},{d:0,l:"Всё время"}];
+  const tabs = [
+    ["trades","Сделки"],["broker","Операции брокера"],
+    ["journal","Журнал"],["errors","Ошибки"],["system","Система"],
+  ];
+  return `
+    <div class="block" style="padding:10px 16px;margin-bottom:12px">
       <div class="row between">
-        <h2>Операции брокера <span class="note">(GetOperationsByCursor)</span></h2>
-        <div class="row">
-          <select id="brokerOpsDays" class="field" style="width:auto">
-            <option value="7">7 дней</option>
-            <option value="30" selected>30 дней</option>
-            <option value="90">90 дней</option>
-          </select>
-          <button class="btn" id="btnLoadBrokerOps">Загрузить</button>
+        <div class="row" style="gap:6px">
+          ${periods.map(p => `
+            <button class="btn${_histPeriod===p.d?" btn-primary":""}" id="histPBtn${p.d}"
+                    onclick="histSetPeriod(${p.d})">${p.l}</button>`).join("")}
         </div>
+        <span class="note" id="histStatus">Загрузка…</span>
       </div>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>Дата</th><th>Тикер</th><th>Направление</th><th>Кол-во</th><th>Цена</th><th>Сумма</th><th>Комиссия</th><th>Тип</th></tr></thead>
-          <tbody id="brokerOpsBody"><tr><td colspan="8" class="note">Нажмите «Загрузить»</td></tr></tbody>
-        </table>
-      </div>
-      <div id="brokerOpsPager" class="row" style="margin-top:8px;"></div>
-    </section>
-    <section class="block">
-      <h2>Фильтры</h2>
-      <div class="form-grid">
-        <label>Сделки<input id="filterTrades" class="field" placeholder="тикер, причина, направление"></label>
-        <label>Система<input id="filterSystem" class="field" placeholder="тип события, текст"></label>
-        <label>Ошибки<input id="filterErrors" class="field" placeholder="ошибка, текст"></label>
-        <label>Журнал<input id="filterCommon" class="field" placeholder="любой текст"></label>
-      </div>
-    </section>
-    <section class="block">
-      <h2>Сделки</h2>
-      <div class="table-wrap">
-        <table data-filter-input="filterTrades">
-          <thead><tr><th>Время</th><th>Тикер</th><th>Напр.</th><th>Вход</th><th>Выход</th><th>Кол-во</th><th>Комиссия</th><th>ПнЛ</th><th>Причина</th></tr></thead>
-          <tbody>
-            ${(data.trades || []).map((t) => `
-              <tr>
-                <td>${esc(t.time)}</td><td>${esc(t.ticker)}</td><td>${esc(t.direction)}</td>
-                <td>${esc(t.entry_ui)}</td><td>${esc(t.exit_ui)}</td><td>${esc(t.qty)}</td>
-                <td>${esc(t.commission_ui)}</td><td>${esc(t.pnl_ui)}</td><td>${esc(t.reason)}</td>
-              </tr>
-            `).join("")}
-          </tbody>
-        </table>
-      </div>
-    </section>
-    <section class="block">
-      <h2>Система</h2>
-      <div class="table-wrap">
-        <table data-filter-input="filterSystem">
-          <thead><tr><th>Время</th><th>Событие</th><th>Тикер</th><th>Уровень</th><th>Сообщение</th></tr></thead>
-          <tbody>${mapLogs(data.system_logs)}</tbody>
-        </table>
-      </div>
-    </section>
-    <section class="block">
-      <h2>Ошибки</h2>
-      <div class="table-wrap">
-        <table data-filter-input="filterErrors">
-          <thead><tr><th>Время</th><th>Событие</th><th>Тикер</th><th>Уровень</th><th>Сообщение</th></tr></thead>
-          <tbody>${mapLogs(data.error_logs)}</tbody>
-        </table>
-      </div>
-    </section>
-    <section class="block">
-      <h2>Журнал</h2>
-      <div class="table-wrap">
-        <table data-filter-input="filterCommon">
-          <thead><tr><th>Время</th><th>Событие</th><th>Тикер</th><th>Уровень</th><th>Сообщение</th></tr></thead>
-          <tbody>${mapLogs(data.common_logs)}</tbody>
-        </table>
-      </div>
-    </section>
-  `;
-  attachTableFilters();
+    </div>
 
-  // Broker operations loader
-  let _brokerCursor = "";
-  async function _loadBrokerOps(cursor = "") {
-    const days = document.getElementById("brokerOpsDays")?.value || "30";
-    const body = document.getElementById("brokerOpsBody");
-    const pager = document.getElementById("brokerOpsPager");
-    if (!body) return;
-    body.innerHTML = `<tr><td colspan="8" class="note">Загрузка...</td></tr>`;
-    try {
-      const data = await apiGet(`/api/broker-operations?cursor=${encodeURIComponent(cursor)}&days=${days}&limit=50`);
-      const rows = (data.items || []).filter(x => !x.is_fee);
-      body.innerHTML = rows.length === 0
-        ? `<tr><td colspan="8" class="note">Нет операций</td></tr>`
-        : rows.map(op => `
-            <tr>
-              <td>${esc(op.date)}</td>
-              <td>${esc(op.ticker || op.figi)}</td>
-              <td>${op.direction === "BUY"
-                ? '<span class="badge" style="background:rgba(47,163,107,.2);color:#2fa36b">BUY</span>'
-                : op.direction === "SELL"
-                  ? '<span class="badge" style="background:rgba(191,77,90,.2);color:#ff7b7b">SELL</span>'
-                  : esc(op.direction)}</td>
+    <div class="summary-grid" id="histSummary" style="margin-bottom:18px">
+      ${Array(5).fill(0).map(() =>
+        `<div class="card"><div class="label">…</div><div class="value">—</div></div>`).join("")}
+    </div>
+
+    <div class="block" style="padding:14px">
+      <div class="row between" style="margin-bottom:4px">
+        <h2 style="margin:0">Динамика капитала</h2>
+        <span class="note">Накопленный PnL по сделкам</span>
+      </div>
+      <div id="histEquity" style="height:260px"></div>
+    </div>
+
+    <div class="two-cols">
+      <div class="block" style="padding:14px">
+        <h2 style="margin:0 0 4px">По инструментам</h2>
+        <div id="histTicker" style="height:210px"></div>
+      </div>
+      <div class="block" style="padding:14px">
+        <h2 style="margin:0 0 4px">По причине закрытия</h2>
+        <div id="histReason" style="height:210px"></div>
+      </div>
+    </div>
+
+    <div class="block">
+      <div class="row" style="gap:6px;margin-bottom:14px;flex-wrap:wrap">
+        ${tabs.map(([t,l]) => `
+          <button class="btn${_histActiveTab===t?" btn-primary":""}" id="histTBtn-${t}"
+                  onclick="histShowTab('${t}')">${l}</button>`).join("")}
+      </div>
+      <div id="histTabContent"></div>
+    </div>`;
+}
+
+function histSetPeriod(days) {
+  _histPeriod = days;
+  document.querySelectorAll("[id^='histPBtn']").forEach(b => {
+    const d = parseInt(b.id.replace("histPBtn",""));
+    b.classList.toggle("btn-primary", d === days);
+  });
+  _histLoadStats();
+  _histLoadTradesAndLogs();
+  if (_histActiveTab === "broker") _histLoadBroker(true);
+}
+
+async function _histLoadStats() {
+  try {
+    document.getElementById("histStatus").textContent = "Загрузка…";
+    const st = await apiGet(`/api/history/stats?days=${_histPeriod}`);
+    _histRenderSummary(st.summary || {});
+    _histRenderEquity(st.equity_curve || []);
+    _histRenderTickerChart(st.by_ticker || []);
+    _histRenderReasonChart(st.by_reason || {});
+    const label = _histPeriod > 0 ? `${_histPeriod} дней` : "всё время";
+    document.getElementById("histStatus").textContent = `Период: ${label}`;
+  } catch (e) {
+    const el = document.getElementById("histStatus");
+    if (el) el.textContent = "Ошибка статистики: " + e.message;
+  }
+}
+
+function _histRenderSummary(s) {
+  const pnl = parseFloat(s.total_pnl || 0);
+  const avg = parseFloat(s.avg_pnl || 0);
+  const wr  = parseFloat(s.win_rate || 0);
+  const cards = [
+    {label:"Сделок всего", value: s.trades_count || 0, cls:""},
+    {label:"Общий PnL",    value: s.total_pnl_ui || "—",
+     cls: pnl > 0 ? "status-ok" : pnl < 0 ? "status-problem" : ""},
+    {label:"Win Rate",     value: wr.toFixed(1) + "%",
+     cls: wr >= 50 ? "status-ok" : wr > 0 ? "status-problem" : ""},
+    {label:"Средний PnL",  value: s.avg_pnl_ui || "—",
+     cls: avg > 0 ? "status-ok" : avg < 0 ? "status-problem" : ""},
+    {label:"Комиссии уплачено", value: s.total_commission_ui || "—", cls:""},
+  ];
+  const el = document.getElementById("histSummary");
+  if (el) el.innerHTML = cards.map(c =>
+    `<div class="card"><div class="label">${c.label}</div>
+     <div class="value ${c.cls}">${c.value}</div></div>`).join("");
+}
+
+function _histRenderEquity(curve) {
+  const el = document.getElementById("histEquity");
+  if (!el || !window.Plotly) return;
+  if (!curve.length) {
+    Plotly.newPlot(el, [], {
+      paper_bgcolor:"rgba(0,0,0,0)", plot_bgcolor:"rgba(0,0,0,0)", font:{color:"#eef4ff"},
+      annotations:[{text:"Нет сделок за период",xref:"paper",yref:"paper",x:.5,y:.5,showarrow:false,font:{size:14}}]
+    }, {displayModeBar:false,responsive:true});
+    return;
+  }
+  const times   = curve.map(p => p.time);
+  const cumPnl  = curve.map(p => p.cumulative_pnl);
+  const perTrade= curve.map(p => p.pnl);
+  const barColors = perTrade.map(v => v >= 0 ? "rgba(47,163,107,.75)" : "rgba(191,77,90,.75)");
+  const hover = curve.map(p =>
+    `${p.ticker} ${p.direction}<br>Сделка: ${p.pnl >= 0 ? "+" : ""}${p.pnl.toFixed(2)} ₽` +
+    `<br>Накопл.: ${p.cumulative_pnl.toFixed(2)} ₽<br>Причина: ${p.reason || "—"}`);
+  Plotly.newPlot(el, [
+    {x:times, y:cumPnl, type:"scatter", mode:"lines", name:"Накопл. PnL",
+     line:{color:"#4c8dff",width:2}, fill:"tozeroy", fillcolor:"rgba(76,141,255,.07)",
+     hovertext:hover, hoverinfo:"text+x"},
+    {x:times, y:perTrade, type:"bar", name:"PnL сделки", yaxis:"y2",
+     marker:{color:barColors}, opacity:.75, hovertext:hover, hoverinfo:"text+x"},
+  ], {
+    paper_bgcolor:"rgba(0,0,0,0)", plot_bgcolor:"rgba(0,0,0,0)",
+    font:{color:"#eef4ff",size:11},
+    margin:{t:10,r:50,b:50,l:60},
+    legend:{orientation:"h",y:-0.2},
+    hovermode:"x unified",
+    xaxis:{gridcolor:"rgba(255,255,255,.05)", tickformat:"%d.%m %H:%M"},
+    yaxis:{title:"Накопл. PnL (₽)", gridcolor:"rgba(255,255,255,.05)",
+           zeroline:true, zerolinecolor:"rgba(255,255,255,.2)"},
+    yaxis2:{title:"PnL сделки", overlaying:"y", side:"right", showgrid:false, zeroline:false},
+  }, {displayModeBar:false, responsive:true});
+}
+
+function _histRenderTickerChart(byTicker) {
+  const el = document.getElementById("histTicker");
+  if (!el || !window.Plotly) return;
+  if (!byTicker.length) {
+    el.innerHTML = `<div class="note" style="text-align:center;padding:70px 0">Нет данных</div>`;
+    return;
+  }
+  const sorted = [...byTicker].sort((a,b) => a.pnl - b.pnl);
+  Plotly.newPlot(el, [{
+    x: sorted.map(t => t.pnl),
+    y: sorted.map(t => t.ticker),
+    type:"bar", orientation:"h",
+    text: sorted.map(t => `${t.pnl >= 0 ? "+" : ""}${t.pnl.toFixed(0)} ₽`),
+    textposition:"auto",
+    marker:{color: sorted.map(t => t.pnl >= 0 ? "rgba(47,163,107,.8)" : "rgba(191,77,90,.8)")},
+    hovertemplate:"%{y}: %{x:.2f} ₽<extra></extra>",
+  }], {
+    paper_bgcolor:"rgba(0,0,0,0)", plot_bgcolor:"rgba(0,0,0,0)",
+    font:{color:"#eef4ff",size:11}, margin:{t:6,r:10,b:30,l:60},
+    xaxis:{gridcolor:"rgba(255,255,255,.05)", zeroline:true, zerolinecolor:"rgba(255,255,255,.2)"},
+    yaxis:{gridcolor:"rgba(255,255,255,.05)"},
+  }, {displayModeBar:false, responsive:true});
+}
+
+function _histRenderReasonChart(byReason) {
+  const el = document.getElementById("histReason");
+  if (!el || !window.Plotly) return;
+  const keys = Object.keys(byReason);
+  if (!keys.length) {
+    el.innerHTML = `<div class="note" style="text-align:center;padding:70px 0">Нет данных</div>`;
+    return;
+  }
+  const palette = {TAKE_PROFIT:"rgba(47,163,107,.85)", STOP_LOSS:"rgba(191,77,90,.85)",
+                   TRAILING_STOP:"rgba(255,185,50,.85)"};
+  Plotly.newPlot(el, [{
+    labels: keys,
+    values: keys.map(k => byReason[k].count),
+    type:"pie", hole:.5,
+    marker:{colors: keys.map(k => palette[k] || "rgba(76,141,255,.8)")},
+    textinfo:"label+percent", textfont:{size:11},
+    customdata: keys.map(k => byReason[k].pnl),
+    hovertemplate:"%{label}: %{value} сд.<br>PnL: %{customdata:.2f} ₽<extra></extra>",
+  }], {
+    paper_bgcolor:"rgba(0,0,0,0)", font:{color:"#eef4ff",size:11},
+    margin:{t:10,r:10,b:30,l:10},
+    legend:{orientation:"h", y:-0.1},
+  }, {displayModeBar:false, responsive:true});
+}
+
+async function _histLoadTradesAndLogs() {
+  try {
+    const data = await apiGet(`/api/dashboard/history?days=${_histPeriod}`);
+    _histData = data;
+    _histRefreshActiveTab();
+  } catch (e) {
+    console.error("history trades/logs:", e);
+  }
+}
+
+function _histRefreshActiveTab() {
+  switch (_histActiveTab) {
+    case "trades":  _histRenderTrades(_histData.trades || []); break;
+    case "journal": _histRenderLogs(_histData.common_logs || [], "Нет событий в журнале"); break;
+    case "errors":  _histRenderLogs(_histData.error_logs  || [], "Ошибок нет"); break;
+    case "system":  _histRenderLogs(_histData.system_logs || [], "Нет системных событий"); break;
+  }
+}
+
+function histShowTab(name) {
+  _histActiveTab = name;
+  document.querySelectorAll("[id^='histTBtn-']").forEach(b => {
+    const t = b.id.replace("histTBtn-","");
+    b.classList.toggle("btn-primary", t === name);
+  });
+  if (name === "broker") { _histLoadBroker(false); return; }
+  _histRefreshActiveTab();
+}
+
+function _histRenderTrades(trades) {
+  const content = document.getElementById("histTabContent");
+  if (!content) return;
+  const rows = trades.map(t => {
+    const pnl = parseFloat(t.pnl || 0);
+    const bg  = pnl > 0 ? "rgba(47,163,107,.07)" : pnl < 0 ? "rgba(191,77,90,.07)" : "";
+    const col = pnl >= 0 ? "#2fa36b" : "#ff7b7b";
+    const badge = t.direction === "BUY"
+      ? `<span class="badge" style="background:rgba(47,163,107,.2);color:#2fa36b">BUY</span>`
+      : `<span class="badge" style="background:rgba(191,77,90,.2);color:#ff7b7b">SELL</span>`;
+    return `<tr style="background:${bg}">
+      <td class="muted" style="font-size:12px;white-space:nowrap">${esc(t.time)}</td>
+      <td><b>${esc(t.ticker)}</b></td>
+      <td>${badge}</td>
+      <td>${esc(t.entry_ui)}</td><td>${esc(t.exit_ui)}</td><td>${esc(t.qty)}</td>
+      <td class="muted">${esc(t.commission_ui)}</td>
+      <td style="font-weight:700;color:${col}">${pnl >= 0 ? "+" : ""}${esc(t.pnl_ui)}</td>
+      <td class="muted" style="font-size:12px">${esc(t.reason)}</td>
+    </tr>`;
+  }).join("") || `<tr><td colspan="9" class="note" style="text-align:center;padding:20px">
+    Нет сделок за период</td></tr>`;
+  content.innerHTML = `
+    <div class="row" style="margin-bottom:10px">
+      <input class="field" id="hfTrades" placeholder="Фильтр: тикер, направление, причина" style="flex:1">
+    </div>
+    <div class="table-wrap">
+      <table id="hTrades">
+        <thead><tr>
+          <th>Время</th><th>Тикер</th><th>Напр.</th>
+          <th>Вход</th><th>Выход</th><th>Лоты</th>
+          <th>Комиссия</th><th>PnL</th><th>Причина</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+  document.getElementById("hfTrades")?.addEventListener("input", e => {
+    const q = e.target.value.trim().toLowerCase();
+    document.querySelectorAll("#hTrades tbody tr").forEach(r => {
+      r.style.display = !q || r.innerText.toLowerCase().includes(q) ? "" : "none";
+    });
+  });
+}
+
+function _histRenderLogs(rows, emptyMsg) {
+  const content = document.getElementById("histTabContent");
+  if (!content) return;
+  const tbody = rows.map(r => {
+    const isErr = r.level === "ERROR";
+    return `<tr style="${isErr ? "background:rgba(191,77,90,.07)" : ""}">
+      <td class="muted" style="font-size:12px;white-space:nowrap">${esc(r.event_time)}</td>
+      <td>${esc(r.event_type)}</td>
+      <td>${esc(r.ticker)}</td>
+      <td style="color:${isErr ? "#ff7b7b" : ""}">${esc(r.level)}</td>
+      <td style="font-size:12px">${esc(r.message)}</td>
+    </tr>`;
+  }).join("") || `<tr><td colspan="5" class="note" style="text-align:center;padding:20px">${emptyMsg}</td></tr>`;
+  content.innerHTML = `
+    <div class="row" style="margin-bottom:10px">
+      <input class="field" id="hfLogs" placeholder="Фильтр по тексту" style="flex:1">
+    </div>
+    <div class="table-wrap">
+      <table id="hLogs">
+        <thead><tr><th>Время</th><th>Событие</th><th>Тикер</th><th>Уровень</th><th>Сообщение</th></tr></thead>
+        <tbody>${tbody}</tbody>
+      </table>
+    </div>`;
+  document.getElementById("hfLogs")?.addEventListener("input", e => {
+    const q = e.target.value.trim().toLowerCase();
+    document.querySelectorAll("#hLogs tbody tr").forEach(r => {
+      r.style.display = !q || r.innerText.toLowerCase().includes(q) ? "" : "none";
+    });
+  });
+}
+
+async function _histLoadBroker(reset = false) {
+  const content = document.getElementById("histTabContent");
+  if (!content) return;
+  if (reset || !document.getElementById("hBrokerBody")) {
+    _histBrokerCursor = "";
+    _histBrokerItems  = [];
+    content.innerHTML = `
+      <div class="row" style="margin-bottom:10px;gap:8px;flex-wrap:wrap">
+        <input class="field" id="hfBroker" placeholder="Фильтр: тикер, направление" style="flex:1">
+        <select class="field" id="hBrokerDays" style="width:auto">
+          <option value="7">7 дней</option>
+          <option value="30" selected>30 дней</option>
+          <option value="90">90 дней</option>
+          <option value="180">180 дней</option>
+        </select>
+        <button class="btn" onclick="_histLoadBroker(true)">Обновить</button>
+      </div>
+      <div class="table-wrap">
+        <table id="hBrokerTable">
+          <thead><tr>
+            <th>Дата</th><th>Тикер</th><th>Направление</th>
+            <th>Кол-во</th><th>Цена</th><th>Сумма</th><th>Комиссия</th>
+          </tr></thead>
+          <tbody id="hBrokerBody"><tr><td colspan="7" class="note" style="text-align:center;padding:20px">Загрузка…</td></tr></tbody>
+        </table>
+      </div>
+      <div id="hBrokerPager" style="margin-top:10px"></div>`;
+    document.getElementById("hfBroker")?.addEventListener("input", e => {
+      const q = e.target.value.trim().toLowerCase();
+      document.querySelectorAll("#hBrokerTable tbody tr").forEach(r => {
+        r.style.display = !q || r.innerText.toLowerCase().includes(q) ? "" : "none";
+      });
+    });
+    // Auto-sync period selector
+    const sel = document.getElementById("hBrokerDays");
+    if (sel && _histPeriod > 0) sel.value = String(_histPeriod);
+  }
+  const days = document.getElementById("hBrokerDays")?.value || 30;
+  const body = document.getElementById("hBrokerBody");
+  const pager= document.getElementById("hBrokerPager");
+  if (body) body.innerHTML = `<tr><td colspan="7" class="note" style="text-align:center;padding:20px">Загрузка…</td></tr>`;
+  try {
+    const data = await apiGet(
+      `/api/broker-operations?cursor=${encodeURIComponent(_histBrokerCursor)}&days=${days}&limit=50`);
+    const items = (data.items || []).filter(x => !x.is_fee);
+    _histBrokerItems = _histBrokerCursor === "" ? items : [..._histBrokerItems, ...items];
+    _histBrokerCursor = data.next_cursor || "";
+    if (body) {
+      body.innerHTML = _histBrokerItems.length === 0
+        ? `<tr><td colspan="7" class="note" style="text-align:center;padding:20px">Нет операций за период</td></tr>`
+        : _histBrokerItems.map(op => {
+            const badge = op.direction === "BUY"
+              ? `<span class="badge" style="background:rgba(47,163,107,.2);color:#2fa36b">BUY</span>`
+              : `<span class="badge" style="background:rgba(191,77,90,.2);color:#ff7b7b">SELL</span>`;
+            return `<tr>
+              <td class="muted" style="font-size:12px;white-space:nowrap">${esc(op.date)}</td>
+              <td><b>${esc(op.ticker || op.figi)}</b></td>
+              <td>${badge}</td>
               <td>${esc(op.quantity)}</td>
               <td>${esc(op.price_ui)}</td>
               <td>${esc(op.payment_ui)}</td>
-              <td>${esc(op.commission_ui)}</td>
-              <td class="muted" style="font-size:11px">${esc(op.type)}</td>
-            </tr>`).join("");
-      _brokerCursor = data.next_cursor || "";
-      if (pager) {
-        pager.innerHTML = data.has_next
-          ? `<button class="btn" id="btnBrokerOpsNext">Загрузить ещё</button>`
-          : `<span class="note">Все операции загружены</span>`;
-        document.getElementById("btnBrokerOpsNext")?.addEventListener("click", () => _loadBrokerOps(_brokerCursor));
-      }
-    } catch (e) {
-      body.innerHTML = `<tr><td colspan="8" class="health-error">Ошибка: ${esc(e.message)}</td></tr>`;
+              <td class="muted">${esc(op.commission_ui)}</td>
+            </tr>`;
+          }).join("");
     }
+    if (pager) {
+      pager.innerHTML = data.has_next
+        ? `<button class="btn" onclick="_histLoadBroker(false)">Загрузить ещё (${_histBrokerItems.length} загружено)</button>`
+        : `<span class="note">Всего операций: ${_histBrokerItems.length}</span>`;
+    }
+  } catch (e) {
+    if (body) body.innerHTML =
+      `<tr><td colspan="7" style="color:#ff7b7b;text-align:center;padding:20px">Ошибка: ${esc(e.message)}</td></tr>`;
   }
-  document.getElementById("btnLoadBrokerOps")?.addEventListener("click", () => _loadBrokerOps(""));
 }
 
 function attachTableFilters() {
@@ -2425,6 +2669,9 @@ async function bootstrapDashboard() {
   window.clearLocalPositions = clearLocalPositions;
   window.runBacktest = runBacktest;
   window._showBacktestTrades = _showBacktestTrades;
+  window.histSetPeriod = histSetPeriod;
+  window.histShowTab   = histShowTab;
+  window._histLoadBroker = _histLoadBroker;
   window.toggleParallel = toggleParallel;
   window.onParallelToggle = onParallelToggle;
   window.addParallelStrategy = addParallelStrategy;

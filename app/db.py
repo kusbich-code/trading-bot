@@ -902,6 +902,93 @@ def get_trade_stats_today(date_prefix: str | None = None):
         return dict(row) if row else {"trades_count": 0, "total_pnl": 0, "total_commission": 0}
 
 
+def get_history_stats(days: int | None = None) -> dict:
+    """Агрегированная статистика по сделкам для вкладки История."""
+    from datetime import datetime as _dt, timedelta as _td
+    params: list = []
+    where = ""
+    if days:
+        date_from = (_dt.now() - _td(days=days)).strftime("%Y-%m-%d")
+        where = " AND time >= ?"
+        params = [date_from]
+
+    with db_cursor() as cur:
+        cur.execute(
+            "SELECT COUNT(*) as trades_count,"
+            " COALESCE(SUM(pnl),0) as total_pnl,"
+            " COALESCE(SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END),0) as win_count,"
+            " COALESCE(SUM(CASE WHEN pnl<=0 THEN 1 ELSE 0 END),0) as loss_count,"
+            " COALESCE(AVG(pnl),0) as avg_pnl,"
+            " COALESCE(MAX(pnl),0) as best_trade,"
+            " COALESCE(MIN(pnl),0) as worst_trade,"
+            " COALESCE(SUM(commission),0) as total_commission"
+            f" FROM trades WHERE 1=1{where}", params
+        )
+        row = cur.fetchone()
+        summary = dict(row) if row else {}
+        total = summary.get("trades_count", 0)
+        wins  = summary.get("win_count", 0)
+        summary["win_rate"] = round(wins / total * 100, 1) if total > 0 else 0.0
+
+        cur.execute(
+            "SELECT time, ticker, direction, pnl, reason"
+            f" FROM trades WHERE 1=1{where} ORDER BY time ASC", params
+        )
+        equity_curve = []
+        cumulative = 0.0
+        for r in cur.fetchall():
+            cumulative += float(r["pnl"])
+            equity_curve.append({
+                "time": r["time"],
+                "ticker": r["ticker"],
+                "direction": r["direction"],
+                "pnl": round(float(r["pnl"]), 2),
+                "cumulative_pnl": round(cumulative, 2),
+                "reason": r["reason"] or "",
+            })
+
+        cur.execute(
+            "SELECT ticker, COUNT(*) as trades,"
+            " COALESCE(SUM(pnl),0) as pnl,"
+            " COALESCE(SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END),0) as win_count"
+            f" FROM trades WHERE 1=1{where} GROUP BY ticker ORDER BY pnl DESC", params
+        )
+        by_ticker = []
+        for r in cur.fetchall():
+            t = dict(r)
+            t["win_rate"] = round(t["win_count"] / t["trades"] * 100, 1) if t["trades"] > 0 else 0.0
+            t["pnl"] = round(t["pnl"], 2)
+            by_ticker.append(t)
+
+        cur.execute(
+            "SELECT COALESCE(reason,'') as reason, COUNT(*) as count,"
+            " COALESCE(SUM(pnl),0) as pnl"
+            f" FROM trades WHERE 1=1{where} GROUP BY reason", params
+        )
+        by_reason = {
+            (r["reason"] or "—"): {"count": r["count"], "pnl": round(r["pnl"], 2)}
+            for r in cur.fetchall()
+        }
+
+        cur.execute(
+            "SELECT substr(time,1,10) as date, COUNT(*) as trades,"
+            " COALESCE(SUM(pnl),0) as pnl"
+            f" FROM trades WHERE 1=1{where} GROUP BY date ORDER BY date ASC", params
+        )
+        daily_stats = [
+            {"date": r["date"], "trades": r["trades"], "pnl": round(r["pnl"], 2)}
+            for r in cur.fetchall()
+        ]
+
+    return {
+        "summary": summary,
+        "equity_curve": equity_curve,
+        "by_ticker": by_ticker,
+        "by_reason": by_reason,
+        "daily_stats": daily_stats,
+    }
+
+
 # ── profiles ──────────────────────────────────────────────────────────────────
 
 def list_profiles() -> list:

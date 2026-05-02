@@ -61,6 +61,7 @@ from app.db import (
     add_strategy_instrument,
     update_strategy_instrument,
     delete_strategy_instrument,
+    get_history_stats,
 )
 
 from app.config import settings
@@ -836,8 +837,28 @@ def api_dashboard_settings(profile_id: Optional[int] = None):
     })
 
 
+@app.get("/api/history/stats")
+def api_history_stats(days: int = 30):
+    """Агрегированная статистика по сделкам: кривая капитала, тикеры, причины."""
+    stats = get_history_stats(days=days if days > 0 else None)
+    s = stats["summary"]
+    s["total_pnl_ui"]       = fmt_money(s.get("total_pnl", 0))
+    s["avg_pnl_ui"]         = fmt_money(s.get("avg_pnl", 0))
+    s["best_trade_ui"]      = fmt_money(s.get("best_trade", 0))
+    s["worst_trade_ui"]     = fmt_money(s.get("worst_trade", 0))
+    s["total_commission_ui"] = fmt_money(s.get("total_commission", 0))
+    for item in stats["by_ticker"]:
+        item["pnl_ui"] = fmt_money(item["pnl"])
+    return JSONResponse(stats)
+
+
 @app.get("/api/dashboard/history")
-def api_dashboard_history():
+def api_dashboard_history(days: int = 0):
+    from datetime import datetime as _dt, timedelta as _td
+    date_from = None
+    if days > 0:
+        date_from = (_dt.now() - _td(days=days)).strftime("%Y-%m-%d")
+
     def norm(x):
         return {
             "event_time": x.get("event_time", ""),
@@ -854,10 +875,10 @@ def api_dashboard_history():
             "commission_ui": fmt_money(t.get("commission", 0)),
             "pnl_ui": fmt_money(t.get("pnl", 0)),
             "time": t.get("time", "") or "",
-        } for t in get_trades(limit=200)],
-        "system_logs": [norm(x) for x in get_system_logs(limit=200)],
-        "error_logs": [norm(x) for x in get_error_logs(limit=200)],
-        "common_logs": [norm(x) for x in get_logs(limit=300)],
+        } for t in get_trades(limit=500, date_from=date_from)],
+        "system_logs": [norm(x) for x in get_system_logs(limit=200, date_from=date_from)],
+        "error_logs":  [norm(x) for x in get_error_logs(limit=200,  date_from=date_from)],
+        "common_logs": [norm(x) for x in get_logs(limit=500,        date_from=date_from)],
     })
 
 
