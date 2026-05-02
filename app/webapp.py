@@ -62,6 +62,7 @@ from app.db import (
     update_strategy_instrument,
     delete_strategy_instrument,
     get_history_stats,
+    clear_history,
 )
 
 from app.config import settings
@@ -880,6 +881,16 @@ def api_dashboard_history(days: int = 0):
         "error_logs":  [norm(x) for x in get_error_logs(limit=200,  date_from=date_from)],
         "common_logs": [norm(x) for x in get_logs(limit=500,        date_from=date_from)],
     })
+
+
+@app.post("/api/history/clear")
+async def api_history_clear(request: Request):
+    body = await request.json()
+    trades = bool(body.get("trades", True))
+    logs   = bool(body.get("logs", False))
+    result = clear_history(clear_trades=trades, clear_logs=logs)
+    log_event("SERVICE_CONTROL", f"История очищена: {result}")
+    return JSONResponse({"ok": True, **result})
 
 
 @app.get("/api/broker-operations")

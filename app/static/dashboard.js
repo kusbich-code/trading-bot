@@ -1393,7 +1393,11 @@ function _histShell() {
             <button class="btn${_histPeriod===p.d?" btn-primary":""}" id="histPBtn${p.d}"
                     onclick="histSetPeriod(${p.d})">${p.l}</button>`).join("")}
         </div>
-        <span class="note" id="histStatus">Загрузка…</span>
+        <div class="row" style="gap:8px">
+          <span class="note" id="histStatus">Загрузка…</span>
+          <button class="btn btn-danger" onclick="histClearTrades()"
+                  style="font-size:12px;padding:6px 12px">🗑 Очистить сделки</button>
+        </div>
       </div>
     </div>
 
@@ -1429,6 +1433,22 @@ function _histShell() {
       </div>
       <div id="histTabContent"></div>
     </div>`;
+}
+
+async function histClearTrades() {
+  if (!confirm("Удалить ВСЕ сделки из локальной базы?\n\nЭто только локальный журнал бота — данные у брокера не затрагиваются.")) return;
+  try {
+    const r = await fetch("/api/history/clear", {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({trades: true, logs: false}),
+    });
+    const d = await r.json();
+    showToast(`Удалено сделок: ${d.trades_deleted ?? 0}`, "success");
+    await renderHistoryTab();
+  } catch (e) {
+    showToast("Ошибка: " + e.message, "error");
+  }
 }
 
 function histSetPeriod(days) {
@@ -1507,6 +1527,8 @@ function _histRenderEquity(curve) {
     margin:{t:10,r:50,b:50,l:60},
     legend:{orientation:"h",y:-0.2},
     hovermode:"x unified",
+    hoverlabel:{bgcolor:"rgba(14,27,52,.95)", bordercolor:"rgba(76,141,255,.5)",
+                font:{color:"#eef4ff",size:12}},
     xaxis:{gridcolor:"rgba(255,255,255,.05)", tickformat:"%d.%m %H:%M"},
     yaxis:{title:"Накопл. PnL (₽)", gridcolor:"rgba(255,255,255,.05)",
            zeroline:true, zerolinecolor:"rgba(255,255,255,.2)"},
@@ -1533,6 +1555,8 @@ function _histRenderTickerChart(byTicker) {
   }], {
     paper_bgcolor:"rgba(0,0,0,0)", plot_bgcolor:"rgba(0,0,0,0)",
     font:{color:"#eef4ff",size:11}, margin:{t:6,r:10,b:30,l:60},
+    hoverlabel:{bgcolor:"rgba(14,27,52,.95)", bordercolor:"rgba(76,141,255,.5)",
+                font:{color:"#eef4ff",size:12}},
     xaxis:{gridcolor:"rgba(255,255,255,.05)", zeroline:true, zerolinecolor:"rgba(255,255,255,.2)"},
     yaxis:{gridcolor:"rgba(255,255,255,.05)"},
   }, {displayModeBar:false, responsive:true});
@@ -2669,8 +2693,9 @@ async function bootstrapDashboard() {
   window.clearLocalPositions = clearLocalPositions;
   window.runBacktest = runBacktest;
   window._showBacktestTrades = _showBacktestTrades;
-  window.histSetPeriod = histSetPeriod;
-  window.histShowTab   = histShowTab;
+  window.histSetPeriod   = histSetPeriod;
+  window.histShowTab     = histShowTab;
+  window.histClearTrades = histClearTrades;
   window._histLoadBroker = _histLoadBroker;
   window.toggleParallel = toggleParallel;
   window.onParallelToggle = onParallelToggle;

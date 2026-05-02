@@ -902,6 +902,19 @@ def get_trade_stats_today(date_prefix: str | None = None):
         return dict(row) if row else {"trades_count": 0, "total_pnl": 0, "total_commission": 0}
 
 
+def clear_history(clear_trades: bool = True, clear_logs: bool = False) -> dict:
+    """Удаляет сделки и/или логи событий. Возвращает кол-во удалённых записей."""
+    result = {}
+    with db_cursor() as cur:
+        if clear_trades:
+            cur.execute("DELETE FROM trades")
+            result["trades_deleted"] = cur.rowcount
+        if clear_logs:
+            cur.execute("DELETE FROM event_logs")
+            result["logs_deleted"] = cur.rowcount
+    return result
+
+
 def get_history_stats(days: int | None = None) -> dict:
     """Агрегированная статистика по сделкам для вкладки История."""
     from datetime import datetime as _dt, timedelta as _td
