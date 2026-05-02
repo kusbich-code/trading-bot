@@ -1125,15 +1125,26 @@ def api_parallel_status():
 
     # Unified instruments table across all strategies
     all_instrs = []
+    seen_figis: set = set()
     for strat in parallel_strats:
         sid = strat["strategy_id"]
         for instr in list_strategy_instruments(sid):
             if str(instr.get("enabled", 1)) not in ("1", "true"):
                 continue
             figi = instr["figi"]
+            if figi in seen_figis:
+                continue
+            seen_figis.add(figi)
             mkt  = market_map.get(figi, {})
             pos  = open_pos.get(figi)
+            # Последний сигнал strategy_engine (сохраняется ботом в runtime_state)
+            sig_raw = get_runtime(f"last_signal_{figi}") or ""
+            try:
+                sig_info = json.loads(sig_raw)
+            except Exception:
+                sig_info = {}
             upnl = float(pos.get("unrealized_pnl", 0)) if pos else 0.0
+            volume = int(mkt.get("volume_1m", 0) or 0)
             all_instrs.append({
                 "figi":            figi,
                 "ticker":          instr["ticker"],
@@ -1143,9 +1154,14 @@ def api_parallel_status():
                 "sl_pct":          f"{float(instr.get('stop_loss_pct', 0))*100:.2f}%",
                 "tp_pct":          f"{float(instr.get('take_profit_pct', 0))*100:.2f}%",
                 "last_price_ui":   fmt_price(mkt.get("last_price", 0)),
-                "price_time":      mkt.get("price_time", "—"),
+                "price_time":      (mkt.get("price_time", "") or "")[-8:] or "—",
+                "volume_1m":       volume,
+                "volume_ui":       f"{volume:,}".replace(",", " ") if volume else "—",
+                "signal_action":   sig_info.get("action", "—"),
+                "signal_score":    sig_info.get("score", 0),
+                "signal_mode":     sig_info.get("mode", ""),
+                "signal_time":     sig_info.get("time", ""),
                 "unrealized_pnl":  upnl,
-                "unrealized_pnl_ui": fmt_money(upnl) if pos else "—",
                 "in_position":     pos is not None,
             })
 

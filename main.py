@@ -957,6 +957,17 @@ def process_instrument(client, item,
     sig   = sig_result["action"]   # "BUY" | "SELL" | "HOLD"
     score = sig_result["score"]
 
+    # Сохраняем последний сигнал для отображения в дашборде
+    try:
+        import json as _j
+        set_runtime(f"last_signal_{figi}", _j.dumps({
+            "action": sig, "score": score,
+            "mode": tradingmode,
+            "time": datetime.now().strftime("%H:%M:%S"),
+        }))
+    except Exception:
+        pass
+
     if sig == "HOLD":
         return
 

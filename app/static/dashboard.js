@@ -2057,22 +2057,25 @@ async function refreshParallelStatus() {
     };
 
     const instrRows = sorted.map((i, idx) => {
-      const th = threadStatus[i.strategy_id] || {};
-      const sc = statusColor[th.status] || "#555";
-      const pnlColor = i.in_position ? (i.unrealized_pnl >= 0 ? "#2fa36b" : "#ff7b7b") : "";
+      const action = i.signal_action || "—";
+      const score  = i.signal_score  || 0;
+      const sigColor = action === "BUY"  ? "#2fa36b"
+                     : action === "SELL" ? "#ff7b7b"
+                     : "#9fb3d8";
+      const sigLabel = action === "HOLD" ? "HOLD" : action;
       return `<tr style="${rowBg(idx)}">
         <td><b>${esc(i.ticker)}</b></td>
-        <td class="muted" style="font-size:12px">${esc(i.strategy_name)}</td>
-        <td><span style="display:inline-flex;align-items:center;gap:5px">
-          <span style="width:6px;height:6px;border-radius:50%;background:${sc};flex-shrink:0"></span>
-          <span style="color:${sc};font-size:11px">${esc(th.status||"—")}</span>
-        </span></td>
         <td>${esc(i.lots)}</td>
         <td class="muted">${esc(i.sl_pct)}</td>
         <td class="muted">${esc(i.tp_pct)}</td>
-        <td class="live-price" data-figi="${esc(i.figi)}">${esc(i.last_price_ui)}</td>
-        <td class="live-time muted" style="font-size:11px" data-figi="${esc(i.figi)}">${esc(i.price_time)}</td>
-        <td style="font-weight:700;color:${pnlColor}">${i.in_position ? esc(i.unrealized_pnl_ui) : "—"}</td>
+        <td>${esc(i.last_price_ui)}</td>
+        <td class="muted" style="font-size:11px">${esc(i.price_time)}</td>
+        <td class="muted" style="font-size:12px">${esc(i.volume_ui)}</td>
+        <td>
+          <span style="color:${sigColor};font-weight:700;font-size:12px">${sigLabel}</span>
+          ${score ? `<span class="muted" style="font-size:11px;margin-left:4px">${score > 0 ? "+" : ""}${score}</span>` : ""}
+          ${i.signal_time ? `<span class="muted" style="font-size:10px;margin-left:4px">${esc(i.signal_time)}</span>` : ""}
+        </td>
       </tr>`;
     }).join("");
 
@@ -2086,9 +2089,8 @@ async function refreshParallelStatus() {
       </div>
       <div class="table-wrap">
         <table><thead><tr>
-          <th>Тикер</th><th>Стратегия</th><th>Статус потока</th>
-          <th>Лоты</th><th>SL%</th><th>TP%</th>
-          <th>Цена</th><th>Обновлено</th><th>PnL позиции</th>
+          <th>Тикер</th><th>Лоты</th><th>SL%</th><th>TP%</th>
+          <th>Цена</th><th>Обновлено</th><th>Объём 1м</th><th>Сигнал</th>
         </tr></thead><tbody>${instrRows}</tbody></table>
       </div>
       ${coord.owner_strategy_id != null ? `<div class="note" style="margin-top:8px">
