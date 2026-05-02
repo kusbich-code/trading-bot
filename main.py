@@ -1174,7 +1174,7 @@ def _parallel_cfg_rows(strategy_id: int) -> list:
 
 
 def _parallel_instruments(strategy_id: int) -> list:
-    from app.db import list_strategy_instruments, get_instrument_meta
+    from app.db import list_strategy_instruments
     rows = list_strategy_instruments(strategy_id)
     result = []
     for item in rows:

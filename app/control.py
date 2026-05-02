@@ -18,8 +18,8 @@ def run_control(action: str) -> Dict[str, Any]:
     if system_name == "windows":
         return _windows_control(action)
 
-    # Linux: systemd
-    cmd = ["systemctl", action, "trading-bot.service"]
+    # Linux: systemd (через sudo — юзер webapp должен иметь NOPASSWD в sudoers)
+    cmd = ["sudo", "systemctl", action, "trading-bot.service"]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=15, check=False)
         ok = result.returncode == 0
