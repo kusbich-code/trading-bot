@@ -192,15 +192,26 @@ async function renderMainShell() {
   const host = document.getElementById("view-main");
   if (!host || host.dataset.initialized === "1") return;
   host.innerHTML = `
-    ${helpCard("Главное", [
-      "<b>Карточки сверху:</b> Статус сервиса (Запущен/Остановлен), Торговля (Ведётся/Остановлена/Проблема), Сделки сегодня, Реализованный ПнЛ (чистый денежный поток из операций T-Bank за сегодня), Нереализованный ПнЛ (переоценка открытых позиций), Комиссия, баланс счёта и итого — всё берётся из T-Bank API.",
-      "<b>Runtime:</b> текущий статус бота, режим API (Sandbox / Боевой), активный профиль и стратегия, последняя ошибка.",
-      "<b>Почему бот не торгует:</b> диагностика — показывает причины паузы (выключен, лимит сделок/убытка, нет инструментов, нет позиций для открытия).",
-      "<b>Управление:</b> Запустить / Остановить / Перезапустить — отправляет команду systemd-сервису (Linux) или процессу main.py.",
-      "<b>Инструменты:</b> список из активной стратегии. Цены обновляются в реальном времени через MarketDataStream (или поллинг каждые 5 с как fallback). SL% и TP% — индивидуальные настройки инструмента.",
-      "<b>Позиции:</b> открытые позиции из локальной БД (записывает сам бот при открытии сделки).",
-      "<b>Сделки:</b> последние операции из T-Bank API (GetOperations за сегодня) — реальные исполненные BUY/SELL. Fallback на локальную БД если API недоступен. Суммы в колонке ПнЛ — фактический денежный поток по операции.",
-    ])}
+    <!-- ── Статус + Управление (компактный единый блок) ── -->
+    <section class="block" style="padding:14px 18px">
+      <div class="row between" style="flex-wrap:wrap;gap:10px;margin-bottom:10px">
+        <div class="row" style="gap:6px;flex-wrap:wrap" id="statusPills">
+          <span class="note">Загрузка…</span>
+        </div>
+        <div class="row" style="gap:6px;flex-wrap:wrap">
+          <button class="btn btn-primary" onclick="serviceAction('start')">Запустить</button>
+          <button class="btn" onclick="serviceAction('stop')">Остановить</button>
+          <button class="btn" onclick="serviceAction('restart')">Перезапустить</button>
+          <button class="btn" id="btnTelegramDiag">Telegram</button>
+        </div>
+      </div>
+      <div id="runtimeGrid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:6px"></div>
+      <div id="botExplainInline" style="margin-top:8px"></div>
+      <div id="telegramDiagBox"></div>
+    </section>
+
+    <div id="balanceWarningsBox"></div>
+
     <section class="block" id="sandboxBlock" style="display:none">
       <div class="row between">
         <div class="row">
@@ -218,43 +229,34 @@ async function renderMainShell() {
         </div>
       </div>
     </section>
-    <div id="balanceWarningsBox"></div>
-    <section class="block">
-      <div class="row between">
-        <h2>Runtime</h2>
-        <button class="btn" id="btnTelegramDiag" title="Проверить настройки Telegram и отправить тестовое сообщение">Тест Telegram</button>
-      </div>
-      <div id="runtimeBox">Загрузка...</div>
-      <div id="telegramDiagBox"></div>
-    </section>
-    <section class="block">
-      <div class="row between"><h2>Почему бот сейчас не торгует</h2></div>
-      <div id="botExplainBox">Загрузка...</div>
-    </section>
-    <section class="block">
-      <div class="row between"><h2>Управление</h2><div class="note">Быстрые действия с сервисом</div></div>
-      <div class="row-buttons">
-        <button class="btn btn-primary" onclick="serviceAction('start')">Запустить</button>
-        <button class="btn" onclick="serviceAction('stop')">Остановить</button>
-        <button class="btn" onclick="serviceAction('restart')">Перезапустить</button>
-      </div>
-    </section>
+
+    <!-- ── Параллельные стратегии ── -->
     <section class="block" id="parallelStatusBlock" style="display:none">
-      <div class="row between">
-        <h2>Параллельные стратегии</h2>
-        <span class="note">Потоки работают независимо, одна позиция за раз</span>
+      <div class="row between" style="margin-bottom:12px">
+        <h2 style="margin:0">Параллельные стратегии</h2>
+        <span class="note">Одна позиция на все потоки</span>
       </div>
       <div id="parallelStatusBody"></div>
     </section>
+
+    <!-- ── Инструменты ── -->
     <section class="block">
-      <div class="row between"><h2>Инструменты</h2><div class="note">Активная стратегия</div></div>
+      <div class="row between">
+        <h2 id="instrumentsTitle">Инструменты</h2>
+        <span class="note" id="instrumentsNote">Активная стратегия</span>
+      </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Тикер</th><th>Название</th><th>Вкл</th><th>Лоты</th><th>SL%</th><th>TP%</th><th>Цена</th><th>Время</th></tr></thead>
+          <thead><tr><th>Тикер</th><th>Название</th><th>Стратегия</th><th>Лоты</th><th>SL%</th><th>TP%</th><th>Цена</th><th>Время</th></tr></thead>
           <tbody id="mainInstrumentsBody"></tbody>
         </table>
       </div>
     </section>
+
+    <!-- ── Мини-графики инструментов ── -->
+    <div id="mainChartsGrid"></div>
+
+    <!-- ── Позиции ── -->
     <section class="block">
       <div class="row between"><h2>Позиции <span class="note">(API брокера)</span></h2></div>
       <div class="table-wrap">
@@ -264,8 +266,10 @@ async function renderMainShell() {
         </table>
       </div>
     </section>
+
+    <!-- ── Сделки ── -->
     <section class="block">
-      <div class="row between"><h2>Сделки</h2><div class="note">Последние</div></div>
+      <div class="row between"><h2>Сделки</h2><div class="note">Сегодня</div></div>
       <div class="table-wrap">
         <table>
           <thead><tr><th>Время</th><th>Тикер</th><th>Напр.</th><th>Вход</th><th>Выход</th><th>Кол-во</th><th>ПнЛ</th><th>Причина</th></tr></thead>
@@ -281,21 +285,34 @@ async function renderMainShell() {
 
 async function renderMainData() {
   const data = await apiGet("/api/dashboard/main");
+  const parallelOn = !!data.parallel_on;
+
+  // ── Инструменты ──────────────────────────────────────────────────────────
+  const instrTitle = document.getElementById("instrumentsTitle");
+  const instrNote  = document.getElementById("instrumentsNote");
+  if (instrTitle) instrTitle.textContent = "Инструменты";
+  if (instrNote)  instrNote.textContent  = parallelOn ? "Все параллельные стратегии" : "Активная стратегия";
 
   diffTbody(document.getElementById("mainInstrumentsBody"),
     (data.instruments || []).map((i) => `
       <tr>
-        <td>${esc(i.ticker)}</td><td>${esc(i.name)}</td>
-        <td>${yesnoValue(i.enabled)}</td>
+        <td><b>${esc(i.ticker)}</b></td>
+        <td class="muted" style="font-size:12px">${esc(i.name)}</td>
+        <td class="muted" style="font-size:12px">${esc(i._strategy_name || "—")}</td>
         <td>${esc(i.lots_override || 1)}</td>
-        <td>${esc(i.stop_loss_pct_ui)}</td>
-        <td>${esc(i.take_profit_pct_ui)}</td>
+        <td class="muted">${esc(i.stop_loss_pct_ui)}</td>
+        <td class="muted">${esc(i.take_profit_pct_ui)}</td>
         <td class="live-price" data-figi="${esc(i.figi)}">${esc(i.last_price_ui)}</td>
-        <td class="live-time" data-figi="${esc(i.figi)}">${esc(i.price_time)}</td>
+        <td class="live-time muted" style="font-size:11px" data-figi="${esc(i.figi)}">${esc(i.price_time)}</td>
       </tr>
     `).join("")
   );
 
+  // ── Мини-графики ─────────────────────────────────────────────────────────
+  const figis = (data.instruments || []).map(i => i.figi).filter(Boolean);
+  _renderMiniCharts(figis, data.instruments || []);
+
+  // ── Позиции ──────────────────────────────────────────────────────────────
   diffTbody(document.getElementById("mainPositionsBody"),
     (data.positions || []).map((p) => {
       const dir = String(p.direction || "").toUpperCase();
@@ -304,14 +321,15 @@ async function renderMainData() {
         : dir === "SELL"
           ? '<span class="badge" style="background:rgba(191,77,90,.2);color:#ff7b7b;border:1px solid #bf4d5a">Шорт</span>'
           : esc(dir);
-      const pnlClass = parseFloat(p.unrealized_pnl_ui) >= 0 ? "color:#2fa36b" : "color:#ff7b7b";
+      const pnlVal = parseFloat(String(p.unrealized_pnl_ui).replace(/[^0-9.,\-]/g, "").replace(",", ".")) || 0;
+      const pnlColor = pnlVal >= 0 ? "#2fa36b" : "#ff7b7b";
       return `<tr>
         <td><b>${esc(p.ticker)}</b></td>
         <td>${dirBadge}</td>
         <td>${esc(p.qty)}</td>
         <td>${esc(p.entry_price_ui)}</td>
         <td>${esc(p.current_price_ui)}</td>
-        <td style="${pnlClass}">${esc(p.unrealized_pnl_ui)}</td>
+        <td style="font-weight:700;color:${pnlColor}">${esc(p.unrealized_pnl_ui)}</td>
         <td>${p.figi && p.qty && p.direction ? `
           <button class="btn btn-danger" style="padding:5px 10px"
             onclick="closeOnePosition('${esc(p.figi)}','${esc(p.qty)}','${esc(p.direction)}')">
@@ -321,79 +339,155 @@ async function renderMainData() {
     }).join("")
   );
 
-  // close buttons use inline onclick — no addEventListener needed
-
+  // ── Сделки — цветные строки как в Истории ────────────────────────────────
   const displayTrades = (data.api_trades && data.api_trades.length > 0)
-    ? data.api_trades
-    : (data.trades || []);
+    ? data.api_trades : (data.trades || []);
   diffTbody(document.getElementById("mainTradesBody"),
-    displayTrades.map((t) => `
-      <tr>
-        <td>${esc(t.time)}</td><td>${esc(t.ticker)}</td><td>${esc(t.direction)}</td>
+    displayTrades.map((t) => {
+      const raw = String(t.pnl_ui || "").replace(/[^0-9.,\-]/g, "").replace(",", ".");
+      const pnl = parseFloat(raw) || 0;
+      const bg  = pnl > 0 ? "rgba(47,163,107,.07)" : pnl < 0 ? "rgba(191,77,90,.07)" : "";
+      const col = pnl >= 0 ? "#2fa36b" : "#ff7b7b";
+      const dir = String(t.direction || "").toUpperCase();
+      const badge = dir === "BUY"
+        ? '<span class="badge" style="background:rgba(47,163,107,.2);color:#2fa36b">BUY</span>'
+        : dir === "SELL"
+          ? '<span class="badge" style="background:rgba(191,77,90,.2);color:#ff7b7b">SELL</span>'
+          : esc(t.direction);
+      return `<tr style="background:${bg}">
+        <td class="muted" style="font-size:12px;white-space:nowrap">${esc(t.time)}</td>
+        <td><b>${esc(t.ticker)}</b></td>
+        <td>${badge}</td>
         <td>${esc(t.entry_ui)}</td><td>${esc(t.exit_ui)}</td>
-        <td>${esc(t.qty)}</td><td>${esc(t.pnl_ui)}</td><td>${esc(t.reason)}</td>
-      </tr>
-    `).join("")
+        <td>${esc(t.qty)}</td>
+        <td style="font-weight:700;color:${col}">${pnl >= 0 && pnl !== 0 ? "+" : ""}${esc(t.pnl_ui)}</td>
+        <td class="muted" style="font-size:12px">${esc(t.reason)}</td>
+      </tr>`;
+    }).join("")
   );
 
   refreshParallelStatus();
 
-  // Balance check + sandbox visibility
+  // ── Balance check + sandbox ───────────────────────────────────────────────
   try {
     const bc = await apiGet("/api/dashboard/balance-check");
-
-    // Show/hide sandbox block
     const sandboxBlock = document.getElementById("sandboxBlock");
     if (sandboxBlock) sandboxBlock.style.display = bc.is_sandbox ? "block" : "none";
-
-    // Balance warnings
     const warnBox = document.getElementById("balanceWarningsBox");
     if (warnBox) {
       const blocked = (bc.checks || []).filter(c => !c.can_trade && c.has_price);
-      if (blocked.length > 0) {
-        warnBox.innerHTML = blocked.map(c => `
-          <div class="banner-warning" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-            <div>
-              <strong>${esc(c.ticker)}</strong> — недостаточно средств для открытия позиции.
-              Нужно: <strong>${esc(c.required_ui)} ₽</strong>
-              (${esc(c.lots)} лот × ${esc(c.lot_size)} шт × ${esc(c.price_ui)} ₽ + комиссия).
-              Свободно: <strong>${esc(bc.cash_ui)} ₽</strong>.
-              SL ${esc(c.sl_pct)}% / TP ${esc(c.tp_pct)}%.
-            </div>
-            ${bc.is_sandbox ? `<button class="btn btn-primary" onclick="sandboxPayIn()">Пополнить Sandbox</button>` : ""}
+      warnBox.innerHTML = blocked.map(c => `
+        <div class="banner-warning" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+          <div>
+            <strong>${esc(c.ticker)}</strong> — недостаточно средств.
+            Нужно: <strong>${esc(c.required_ui)} ₽</strong>
+            (${esc(c.lots)} лот × ${esc(c.lot_size)} шт × ${esc(c.price_ui)} ₽ + комиссия).
+            Свободно: <strong>${esc(bc.cash_ui)} ₽</strong>. SL ${esc(c.sl_pct)}% / TP ${esc(c.tp_pct)}%.
           </div>
-        `).join("");
-      } else {
-        warnBox.innerHTML = "";
-      }
+          ${bc.is_sandbox ? `<button class="btn btn-primary" onclick="sandboxPayIn()">Пополнить Sandbox</button>` : ""}
+        </div>`).join("");
     }
-  } catch (e) { /* balance check non-critical */ }
+  } catch {}
 
+  // ── Runtime — компактный ─────────────────────────────────────────────────
   try {
-    const runtime = await apiGet("/api/dashboard/runtime");
-    const box = document.getElementById("runtimeBox");
-    if (box) {
-      box.innerHTML = `
-        <div><strong>Статус:</strong> ${esc(runtime.status || "INIT")}</div>
-        <div><strong>API:</strong> ${String(runtime.tinvestusesandbox || "true") === "true" ? "Sandbox" : "Боевой"}</div>
-        <div><strong>Профиль:</strong> ${esc(runtime.activeprofilename || "—")}</div>
-        <div><strong>Стратегия:</strong> ${esc(runtime.activestrategyname || "—")}</div>
-        <div><strong>Последняя ошибка:</strong> ${esc(runtime.lasterror || "—")}</div>
-      `;
+    const rt = await apiGet("/api/dashboard/runtime");
+    const isSandbox = String(rt.tinvestusesandbox || "true") === "true";
+    const status = rt.status || "INIT";
+    const isOk   = ["SCANNING","RUNNING","ВЕДЁТСЯ"].includes(status.toUpperCase());
+    const pills = document.getElementById("statusPills");
+    if (pills) {
+      pills.innerHTML = [
+        {label: status,                            ok: isOk,   warn: false},
+        {label: isSandbox ? "Sandbox" : "Боевой", ok: !isSandbox, warn: isSandbox},
+      ].map(p => {
+        const bg  = p.ok ? "rgba(47,163,107,.2)" : p.warn ? "rgba(255,185,50,.2)" : "rgba(100,100,120,.2)";
+        const col = p.ok ? "#2fa36b" : p.warn ? "#f0c04a" : "#9fb3d8";
+        return `<span class="badge" style="background:${bg};color:${col};border:1px solid ${col};padding:5px 10px;font-size:12px">${esc(p.label)}</span>`;
+      }).join("");
+    }
+    const grid = document.getElementById("runtimeGrid");
+    if (grid) {
+      const cells = [
+        {k:"Профиль",         v: rt.activeprofilename  || "—"},
+        {k:"Стратегия",       v: rt.activestrategyname || "—"},
+        {k:"Последняя ошибка",v: rt.lasterror          || "—"},
+      ];
+      grid.innerHTML = cells.map(c => `
+        <div style="background:rgba(255,255,255,.03);border-radius:8px;padding:8px 12px">
+          <div class="note" style="font-size:11px;margin-bottom:2px">${c.k}</div>
+          <div style="font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+               title="${esc(c.v)}">${esc(c.v)}</div>
+        </div>`).join("");
     }
   } catch (e) {
-    const box = document.getElementById("runtimeBox");
-    if (box) box.innerHTML = `<span class="health-error">Ошибка runtime: ${esc(e.message)}</span>`;
+    const pills = document.getElementById("statusPills");
+    if (pills) pills.innerHTML = `<span class="note">Ошибка: ${esc(e.message)}</span>`;
   }
 
+  // ── Диагностика (почему не торгует) ──────────────────────────────────────
   try {
     const explain = await apiGet("/api/dashboard/bot-explain");
-    const box = document.getElementById("botExplainBox");
-    if (box) box.innerHTML = `<ul>${(explain.reasons || []).map(x => `<li>${esc(x)}</li>`).join("")}</ul>`;
-  } catch (e) {
-    const box = document.getElementById("botExplainBox");
-    if (box) box.innerHTML = `<span class="health-error">Ошибка: ${esc(e.message)}</span>`;
+    const box = document.getElementById("botExplainInline");
+    if (box) {
+      const reasons = explain.reasons || [];
+      box.innerHTML = reasons.length
+        ? `<details style="margin-top:4px"><summary class="note" style="cursor:pointer">
+            ⚠ Диагностика: ${reasons.length} причин${reasons.length > 1 ? "ы" : "а"}</summary>
+            <ul style="margin:6px 0 0 16px;padding:0">${reasons.map(x => `<li class="note">${esc(x)}</li>`).join("")}</ul>
+           </details>`
+        : `<span class="note" style="font-size:12px">✓ Все условия торговли выполнены</span>`;
+    }
+  } catch {}
+}
+
+async function _renderMiniCharts(figis, instruments) {
+  const grid = document.getElementById("mainChartsGrid");
+  if (!grid || !window.Plotly || !figis.length) {
+    if (grid) grid.innerHTML = "";
+    return;
   }
+  const count = Math.min(figis.length, 10);
+  const useFigis = figis.slice(0, count);
+
+  grid.innerHTML = `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:18px">
+      ${useFigis.map(figi => {
+        const instr = instruments.find(x => x.figi === figi) || {};
+        return `<div class="block" style="padding:10px;margin-bottom:0">
+          <div class="row between" style="margin-bottom:4px">
+            <span style="font-size:13px;font-weight:700">${esc(instr.ticker || figi)}</span>
+            <span class="note" style="font-size:11px" id="sc-price-${figi}">${esc(instr.last_price_ui || "")}</span>
+          </div>
+          <div id="sc-${figi}" style="height:80px"></div>
+        </div>`;
+      }).join("")}
+    </div>`;
+
+  try {
+    const sparkData = await apiGet(`/api/dashboard/sparklines?figis=${useFigis.join(",")}`);
+    for (const figi of useFigis) {
+      const el = document.getElementById(`sc-${figi}`);
+      if (!el) continue;
+      const closes = sparkData[figi] || [];
+      if (!closes.length) { el.innerHTML = `<div class="note" style="text-align:center;line-height:80px">Нет данных</div>`; continue; }
+      const up = closes[closes.length - 1] >= closes[0];
+      const color = up ? "#2fa36b" : "#ff7b7b";
+      Plotly.newPlot(el, [{
+        y: closes, type: "scatter", mode: "lines",
+        line: {color, width: 1.5},
+        fill: "tozeroy", fillcolor: up ? "rgba(47,163,107,.1)" : "rgba(191,77,90,.1)",
+        hoverinfo: "y",
+      }], {
+        paper_bgcolor:"rgba(0,0,0,0)", plot_bgcolor:"rgba(0,0,0,0)",
+        margin:{t:0,r:0,b:0,l:0},
+        xaxis:{visible:false, fixedrange:true},
+        yaxis:{visible:false, fixedrange:true},
+        showlegend:false,
+        hoverlabel:{bgcolor:"rgba(14,27,52,.95)", bordercolor:color, font:{color:"#eef4ff",size:11}},
+      }, {displayModeBar:false, responsive:true, staticPlot:false});
+    }
+  } catch (e) { console.error("sparklines:", e); }
 }
 
 async function refreshQuotesOnly() {
@@ -1940,39 +2034,70 @@ async function refreshParallelStatus() {
     const block = document.getElementById("parallelStatusBlock");
     const body  = document.getElementById("parallelStatusBody");
     if (!block || !body) return;
-
     if (!threads.length) { block.style.display = "none"; return; }
     block.style.display = "block";
 
     const coord = data.coord || {};
-    const statusColors = {
-      "ожидание сигнала": "#9fb3d8",
-      "сканирование": "#4c8dff",
-      "в позиции": "#2ecc71",
-      "ожидание — другая стратегия в позиции": "#f0c04a",
-      "остановлен": "#666",
-      "бот выключен": "#666",
+    const statusColor = {
+      "ожидание сигнала":                        "#9fb3d8",
+      "сканирование":                            "#4c8dff",
+      "в позиции":                               "#2ecc71",
+      "ожидание — другая стратегия в позиции":   "#f0c04a",
+      "остановлен":                              "#555",
+      "бот выключен":                            "#555",
+      "не запущен":                              "#555",
     };
 
-    body.innerHTML = threads.map(t => {
-      const color = statusColors[t.status] || "#eef4ff";
-      const ticker = t.ticker ? ` · ${esc(t.ticker)}` : "";
-      const updated = t.updated_at ? `<span class="note" style="font-size:11px">${esc(t.updated_at)}</span>` : "";
-      return `<div style="display:flex;align-items:center;gap:12px;padding:8px 0;border-bottom:1px solid rgba(255,255,255,.07)">
-        <div style="width:10px;height:10px;border-radius:50%;background:${color};flex-shrink:0"></div>
-        <div style="flex:1">
-          <b>${esc(t.name)}</b>
-          <span class="note" style="margin-left:8px">${esc(t.status)}${ticker}</span>
-        </div>
-        ${updated}
-      </div>`;
-    }).join("");
+    const fmtStat = (st, field) => {
+      if (!st || !st.trades) return '<span class="muted">—</span>';
+      if (field === "pnl") {
+        const v = st.pnl || 0;
+        const col = v >= 0 ? "#2fa36b" : "#ff7b7b";
+        return `<span style="color:${col};font-weight:600">${v >= 0 ? "+" : ""}${esc(st.pnl_ui || v.toFixed(0))}</span>`;
+      }
+      if (field === "wr")  return `${st.win_rate ?? 0}%`;
+      if (field === "cnt") return `${st.trades}`;
+      return "—";
+    };
 
-    if (coord.owner_strategy_id != null) {
-      body.innerHTML += `<div class="note" style="margin-top:8px">
-        Позиция занята: стратегия id=${esc(coord.owner_strategy_id)}, инструмент ${esc(coord.owner_ticker || coord.owner_figi || "?")}
-      </div>`;
-    }
+    body.innerHTML = `
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>Стратегия</th><th>Статус</th>
+            <th>PnL день</th><th>PnL нед.</th><th>PnL мес.</th>
+            <th>Win% мес.</th><th>Сделок мес.</th>
+            <th>Обновлено</th>
+          </tr></thead>
+          <tbody>
+            ${threads.map(t => {
+              const col  = statusColor[t.status] || "#eef4ff";
+              const tick = t.ticker ? ` · ${esc(t.ticker)}` : "";
+              const s    = t.stats || {};
+              return `<tr>
+                <td><b>${esc(t.name)}</b></td>
+                <td>
+                  <span style="display:inline-flex;align-items:center;gap:6px">
+                    <span style="width:8px;height:8px;border-radius:50%;background:${col};flex-shrink:0"></span>
+                    <span style="color:${col};font-size:12px">${esc(t.status)}${tick}</span>
+                  </span>
+                </td>
+                <td>${fmtStat(s.day,  "pnl")}</td>
+                <td>${fmtStat(s.week, "pnl")}</td>
+                <td>${fmtStat(s.month,"pnl")}</td>
+                <td class="muted">${fmtStat(s.month,"wr")}</td>
+                <td class="muted">${fmtStat(s.month,"cnt")}</td>
+                <td class="muted" style="font-size:11px">${esc(t.updated_at || "")}</td>
+              </tr>`;
+            }).join("")}
+          </tbody>
+        </table>
+      </div>
+      ${coord.owner_strategy_id != null ? `
+        <div class="note" style="margin-top:8px">
+          Позиция занята: стратегия id=${esc(coord.owner_strategy_id)},
+          инструмент ${esc(coord.owner_ticker || coord.owner_figi || "?")}
+        </div>` : ""}`;
   } catch {}
 }
 

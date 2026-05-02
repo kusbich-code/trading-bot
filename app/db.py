@@ -902,6 +902,28 @@ def get_trade_stats_today(date_prefix: str | None = None):
         return dict(row) if row else {"trades_count": 0, "total_pnl": 0, "total_commission": 0}
 
 
+def get_strategy_trade_stats(strategy_id: int, days: int) -> dict:
+    """PnL/win-rate по сделкам стратегии за N дней (по тикерам из strategy_instruments)."""
+    from datetime import datetime as _dt, timedelta as _td
+    date_from = (_dt.now() - _td(days=days)).strftime("%Y-%m-%d")
+    with db_cursor() as cur:
+        cur.execute("""
+        SELECT COUNT(*) as trades,
+               COALESCE(SUM(t.pnl),0) as pnl,
+               COALESCE(SUM(CASE WHEN t.pnl>0 THEN 1 ELSE 0 END),0) as wins
+        FROM trades t
+        WHERE t.time >= ?
+          AND t.ticker IN (SELECT ticker FROM strategy_instruments WHERE strategy_id=?)
+        """, (date_from, strategy_id))
+        row = cur.fetchone()
+        if not row or not row["trades"]:
+            return {"trades": 0, "pnl": 0.0, "wins": 0, "win_rate": 0.0}
+        d = dict(row)
+        d["win_rate"] = round(d["wins"] / d["trades"] * 100, 1)
+        d["pnl"] = round(d["pnl"], 2)
+        return d
+
+
 def clear_history(clear_trades: bool = True, clear_logs: bool = False) -> dict:
     """Удаляет сделки и/или логи событий. Возвращает кол-во удалённых записей."""
     result = {}

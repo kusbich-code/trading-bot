@@ -63,6 +63,7 @@ from app.db import (
     delete_strategy_instrument,
     get_history_stats,
     clear_history,
+    get_strategy_trade_stats,
 )
 
 from app.config import settings
@@ -456,7 +457,20 @@ def api_dashboard_main():
     market_map = get_instrument_market_state_map()
     figi_ticker_map = {figi: info.get("ticker", "") for figi, info in market_map.items()}
 
-    if active_strategy_id:
+    # Если параллельный режим — инструменты из всех стратегий профиля
+    active_profile_id = (s.get("active_profile_id", "") or "").strip()
+    parallel_on = False
+    if active_profile_id:
+        parallel_on = get_profile_setting(int(active_profile_id), "parallel_trading_enabled", "0") == "1"
+
+    if parallel_on and active_profile_id:
+        par_strats = list_profile_parallel_strategies(int(active_profile_id))
+        instruments = []
+        for st in par_strats:
+            for instr in list_strategy_instruments(st["strategy_id"]):
+                instr["_strategy_name"] = st["name"]
+                instruments.append(instr)
+    elif active_strategy_id:
         instruments = list_strategy_instruments(int(active_strategy_id))
     else:
         instruments = []
@@ -541,7 +555,22 @@ def api_dashboard_main():
         "positions": positions,
         "trades": db_trades,
         "api_trades": api_trades,
+        "parallel_on": parallel_on,
     })
+
+
+@app.get("/api/dashboard/sparklines")
+def api_sparklines(figis: str = ""):
+    """Последние 40 свечей 1-мин для мини-графиков инструментов (только close)."""
+    figi_list = [f.strip() for f in figis.split(",") if f.strip()][:10]
+    result: dict = {}
+    for figi in figi_list:
+        try:
+            candles = get_candles(figi, interval_name="1min", hours=1)
+            result[figi] = [round(float(c["close"]), 4) for c in candles[-40:] if c.get("close")]
+        except Exception:
+            result[figi] = []
+    return JSONResponse(result)
 
 
 @app.get("/api/dashboard/quotes")
@@ -1078,7 +1107,15 @@ def api_parallel_status():
             info = json.loads(raw)
         except Exception:
             info = {"status": "не запущен", "ticker": "", "updated_at": ""}
-        result.append({"strategy_id": sid, "name": name, **info})
+        stats = {
+            "day":   get_strategy_trade_stats(sid, 1),
+            "week":  get_strategy_trade_stats(sid, 7),
+            "month": get_strategy_trade_stats(sid, 30),
+        }
+        # Форматируем PnL для отображения
+        for period, st in stats.items():
+            st["pnl_ui"] = fmt_money(st["pnl"])
+        result.append({"strategy_id": sid, "name": name, **info, "stats": stats})
 
     # Coordinator snapshot is also stored in runtime_state
     coord_raw = get_runtime("parallel_coord") or ""
