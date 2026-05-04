@@ -699,11 +699,25 @@ def api_dashboard_stop_orders():
 def api_dashboard_runtime():
     settings_map = get_all_settings()
     runtime_map = get_all_runtime()
+
+    active_profile_id_str = (settings_map.get("active_profile_id", "") or "").strip()
+    active_profile_id = int(active_profile_id_str) if active_profile_id_str else None
+    parallel_on = False
+    parallel_count = 0
+    if active_profile_id:
+        parallel_on = get_profile_setting(active_profile_id, "parallel_trading_enabled", "0") == "1"
+        if parallel_on:
+            parallel_count = len(list_profile_parallel_strategies(active_profile_id))
+    if parallel_on and parallel_count >= 1:
+        strategy_display = f"Параллельный режим · {parallel_count} стратегий"
+    else:
+        strategy_display = (settings_map.get("active_strategy_name", "") or "").strip() or "—"
+
     return {
         "botenabled": settings_map.get("bot_enabled", "1"),
         "tinvestusesandbox": settings_map.get("tinvestusesandbox", "true"),
         "activeprofilename": settings_map.get("active_profile_name", ""),
-        "activestrategyname": settings_map.get("active_strategy_name", ""),
+        "activestrategyname": strategy_display,
         "lasterror": settings_map.get("last_error", ""),
         "status": runtime_map.get("status", settings_map.get("status", "INIT")),
         "runtime": runtime_map,

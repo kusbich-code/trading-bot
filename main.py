@@ -185,6 +185,8 @@ def _pset(sid: int, status: str, ticker: str = ""):
 
 
 class BotState:
+    ORDER_COOLDOWN_SEC = 90  # после ORDER_ERROR не трогать инструмент N секунд
+
     def __init__(self):
         self.status = "INIT"
         self.session_balance_start = 0.0
@@ -194,6 +196,7 @@ class BotState:
         self.open_positions = {}
         self.current_trade_date = str(date.today())
         self.instrument_meta = {}
+        self.order_cooldowns: Dict[str, datetime] = {}  # figi → время последней ошибки ордера
 
     def sync_runtime(self, last_error=""):
         set_runtime("status", self.status)
@@ -742,7 +745,7 @@ def place_order_checked(client, ticker: str, figi: str, lots: int, raw_price: De
             log_event("INVALID_FIGI", msg, ticker=ticker, level="WARNING")
             return None
         log_event("ORDER_ERROR", msg, ticker=ticker, level="ERROR")
-        raise
+        return None
 
 
 def process_instrument(client, item,
@@ -840,6 +843,11 @@ def process_instrument(client, item,
         raise
 
     if len(candles) < 5:
+        return
+
+    # Cooldown после ORDER_ERROR: пропускаем инструмент пока не истечёт пауза
+    _cd = state.order_cooldowns.get(figi)
+    if _cd and (_now() - _cd).total_seconds() < BotState.ORDER_COOLDOWN_SEC:
         return
 
     # Вычисляем сигнал всегда — до проверок сессии/торгуемости, чтобы дашборд показывал актуальный сигнал
@@ -1072,6 +1080,7 @@ def process_instrument(client, item,
 
         order_result = place_order_checked(client, ticker, figi, lot, price, OrderDirection.ORDER_DIRECTION_BUY)
         if not order_result:
+            state.order_cooldowns[figi] = _now()
             if _coord is not None:
                 _coord.release(_strategy_id)
             return
@@ -1110,6 +1119,7 @@ def process_instrument(client, item,
 
         order_result = place_order_checked(client, ticker, figi, lot, price, OrderDirection.ORDER_DIRECTION_SELL)
         if not order_result:
+            state.order_cooldowns[figi] = _now()
             if _coord is not None:
                 _coord.release(_strategy_id)
             return
