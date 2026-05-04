@@ -140,7 +140,9 @@ def _portfolio_stream_worker():
                     with _portfolio_cache_lock:
                         _portfolio_cache["positions"] = positions
                         _portfolio_cache["total_assets"] = str(_qts2(total_assets)) if total_assets else "0"
-                        _portfolio_cache["updated_at"] = __import__("datetime").datetime.now().isoformat()
+                        from datetime import datetime, timezone, timedelta as _td
+                        _msk = timezone(_td(hours=3))
+                        _portfolio_cache["updated_at"] = datetime.now(tz=_msk).replace(tzinfo=None).isoformat()
         except Exception as exc:
             logger.warning("PortfolioStream: ошибка %s, переподключение через 10 с", exc)
             import time; time.sleep(10)
@@ -249,10 +251,10 @@ def summary_payload() -> Dict[str, Any]:
         parallel_on = get_profile_setting(int(active_profile_id), "parallel_trading_enabled", "0") == "1"
         if parallel_on:
             parallel_count = len(list_profile_parallel_strategies(int(active_profile_id)))
-    active_strategy_name = (
-        f"{parallel_count} стратегий активно" if parallel_on and parallel_count > 1
-        else (s.get("active_strategy_name", "") or "").strip() or "—"
-    )
+    if parallel_on and parallel_count >= 1:
+        active_strategy_name = f"Параллельный режим · {parallel_count} стратегий"
+    else:
+        active_strategy_name = (s.get("active_strategy_name", "") or "").strip() or "—"
 
     active_strategy_id = (s.get("active_strategy_id", "") or "").strip()
     if active_strategy_id:
@@ -785,28 +787,71 @@ def api_balance_check():
 def api_dashboard_bot_explain():
     settings_map = get_all_settings()
     active_strategy_id = (settings_map.get("active_strategy_id", "") or "").strip()
-    if active_strategy_id:
+    active_profile_id_str = (settings_map.get("active_profile_id", "") or "").strip()
+    active_profile_id = int(active_profile_id_str) if active_profile_id_str else None
+
+    # Parallel mode check
+    parallel_on = False
+    parallel_instrs_count = 0
+    if active_profile_id:
+        parallel_on = get_profile_setting(active_profile_id, "parallel_trading_enabled", "0") == "1"
+        if parallel_on:
+            for ps in list_profile_parallel_strategies(active_profile_id):
+                for instr in list_strategy_instruments(ps["strategy_id"]):
+                    if str(instr.get("enabled", 0)) in ("1", "true"):
+                        parallel_instrs_count += 1
+
+    if parallel_on:
+        enabled_instruments_count = parallel_instrs_count
+    elif active_strategy_id:
         instruments = list_strategy_instruments(int(active_strategy_id))
-        enabled_instruments = [x for x in instruments if str(x.get("enabled", 0)) in ("1", "true")]
+        enabled_instruments_count = len([x for x in instruments if str(x.get("enabled", 0)) in ("1", "true")])
     else:
-        enabled_instruments = []
+        enabled_instruments_count = 0
+
     open_positions = get_open_positions()
+
+    # trade_only_session теперь на уровне профиля
+    trade_only_session = "0"
+    if active_profile_id:
+        trade_only_session = get_profile_setting(active_profile_id, "trade_only_session", "0")
 
     reasons = []
     if str(settings_map.get("bot_enabled", "1")) != "1":
         reasons.append("Бот выключен в настройках")
-    if not active_strategy_id:
+    if not active_profile_id:
+        reasons.append("Не выбран профиль")
+    elif not parallel_on and not active_strategy_id:
         reasons.append("Не выбрана стратегия")
-    elif not enabled_instruments:
-        reasons.append("Нет активных инструментов в стратегии")
-    if str(settings_map.get("trade_only_session", "0")) == "1":
-        reasons.append("Торговля ограничена торговой сессией")
-    if int(str(settings_map.get("max_open_positions", "2"))) <= len(open_positions):
-        reasons.append("Достигнут лимит открытых позиций")
-    if int(str(settings_map.get("max_trades_per_day", "15"))) <= int(str(settings_map.get("trades_today", "0"))):
-        reasons.append("Достигнут лимит сделок за день")
-    if not reasons:
-        reasons.append("Бот готов искать сигнал")
+    elif enabled_instruments_count == 0:
+        reasons.append("Нет активных инструментов" + (" в параллельных стратегиях" if parallel_on else " в стратегии"))
+    if trade_only_session == "1":
+        reasons.append("Торговля ограничена торговой сессией (trade_only_session=1)")
+
+    max_pos = int(str(settings_map.get("max_open_positions", "2")))
+    cur_pos = len(open_positions)
+    if cur_pos >= max_pos:
+        reasons.append(f"Достигнут лимит открытых позиций ({cur_pos}/{max_pos})")
+
+    max_trades = int(str(settings_map.get("max_trades_per_day", "15")))
+    trades_today_cnt = int(str(settings_map.get("trades_today", "0")))
+    if trades_today_cnt >= max_trades:
+        reasons.append(f"Достигнут лимит сделок за день ({trades_today_cnt}/{max_trades})")
+
+    # Параллельный координатор — показываем если заблокирован реальной позицией
+    if parallel_on:
+        coord_raw = get_runtime("parallel_coord") or ""
+        try:
+            coord = json.loads(coord_raw)
+            owner_figi = coord.get("owner_figi")
+            owner_ticker = coord.get("owner_ticker", "?")
+            if owner_figi:
+                pos_map = {p["figi"]: p for p in open_positions}
+                if owner_figi in pos_map:
+                    reasons.append(f"Координатор занят позицией {owner_ticker} — открытие новых заблокировано")
+        except Exception:
+            pass
+
     return {"ok": True, "reasons": reasons}
 
 
@@ -1158,12 +1203,22 @@ def api_parallel_status():
                 sig_info = {}
             upnl = float(pos.get("unrealized_pnl", 0)) if pos else 0.0
             volume = int(mkt.get("volume_1m", 0) or 0)
+            lot_count = int(instr.get("lots_override", 1) or 1)
+            lot_size  = int(instr.get("lot", 1) or 1)
+            last_price = float(mkt.get("last_price", 0) or 0)
+            lot_cost_rub = lot_count * lot_size * last_price
+            lot_cost_ui = (
+                f"{lot_cost_rub:,.0f} ₽".replace(",", " ") if lot_cost_rub > 0 else "—"
+            )
             all_instrs.append({
                 "figi":            figi,
                 "ticker":          instr["ticker"],
                 "strategy_id":     sid,
                 "strategy_name":   strat["name"],
-                "lots":            int(instr.get("lots_override", 1)),
+                "lots":            lot_count,
+                "lot_size":        lot_size,
+                "lot_cost_rub":    lot_cost_rub,
+                "lot_cost_ui":     lot_cost_ui,
                 "sl_pct":          f"{float(instr.get('stop_loss_pct', 0))*100:.2f}%",
                 "tp_pct":          f"{float(instr.get('take_profit_pct', 0))*100:.2f}%",
                 "last_price_ui":   fmt_price(mkt.get("last_price", 0)),
@@ -1181,6 +1236,9 @@ def api_parallel_status():
     coord_raw = get_runtime("parallel_coord") or ""
     try:
         coord = json.loads(coord_raw)
+        # Автоочистка устаревшего координатора: если фиги больше нет в открытых позициях
+        if coord.get("owner_figi") and coord["owner_figi"] not in open_pos:
+            coord = {}
     except Exception:
         coord = {}
 

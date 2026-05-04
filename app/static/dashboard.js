@@ -2113,9 +2113,13 @@ async function refreshParallelStatus() {
                      : action === "SELL" ? "#ff7b7b"
                      : "#9fb3d8";
       const sigLabel = action === "HOLD" ? "HOLD" : action;
+      const isCoordOwner = coord.owner_figi && coord.owner_figi === i.figi;
+      const tickerCell = isCoordOwner
+        ? `<b>${esc(i.ticker)}</b> <span style="color:#f5a623;font-size:10px">&#9679; позиция</span>`
+        : `<b>${esc(i.ticker)}</b>`;
       return `<tr style="${rowBg(idx)}">
-        <td><b>${esc(i.ticker)}</b></td>
-        <td>${esc(i.lots)}</td>
+        <td>${tickerCell}</td>
+        <td>${esc(i.lots)} <span class="muted" style="font-size:10px">(${esc(i.lot_cost_ui || "")})</span></td>
         <td class="muted">${esc(i.sl_pct)}</td>
         <td class="muted">${esc(i.tp_pct)}</td>
         <td>${esc(i.last_price_ui)}</td>
@@ -2139,12 +2143,12 @@ async function refreshParallelStatus() {
       </div>
       <div class="table-wrap">
         <table><thead><tr>
-          <th>Тикер</th><th>Лоты</th><th>SL%</th><th>TP%</th>
+          <th>Тикер</th><th>Лоты (стоимость)</th><th>SL%</th><th>TP%</th>
           <th>Цена</th><th>Обновлено</th><th>Объём 1м</th><th>Сигнал</th>
         </tr></thead><tbody>${instrRows}</tbody></table>
       </div>
-      ${coord.owner_strategy_id != null ? `<div class="note" style="margin-top:8px">
-        Позиция занята: стратегия ${esc(coord.owner_strategy_id)}, инструмент ${esc(coord.owner_ticker||coord.owner_figi||"?")}
+      ${coord.owner_strategy_id != null ? `<div class="note" style="margin-top:8px;color:#f5a623">
+        &#9679; Открыта позиция по ${esc(coord.owner_ticker || coord.owner_figi || "?")} — новые ордера заблокированы до её закрытия
       </div>` : ""}`;
 
     // Обновляем figis для графиков

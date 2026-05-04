@@ -73,6 +73,13 @@ logging.basicConfig(
 )
 log = logging.getLogger("trading-bot")
 
+_MSK = timezone(timedelta(hours=3))
+
+def _now() -> datetime:
+    """Текущее московское время (UTC+3), naive — для записи в БД и логи."""
+    return datetime.now(tz=_MSK).replace(tzinfo=None)
+
+
 init_db()
 notifier = TelegramNotifier()
 
@@ -165,7 +172,7 @@ def _pset(sid: int, status: str, ticker: str = ""):
     info = {
         "status":     status,
         "ticker":     ticker,
-        "updated_at": datetime.now().strftime("%H:%M:%S"),
+        "updated_at": _now().strftime("%H:%M:%S"),
     }
     with _parallel_status_lock:
         _parallel_status[sid] = info
@@ -507,7 +514,7 @@ def sync_portfolio_positions(client):
                 "entry_price": avg_price,
                 "current_price": current_price,
                 "unrealized_pnl": expected_yield,
-                "opened_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "opened_at": _now().strftime("%Y-%m-%d %H:%M:%S"),
                 "status": "OPEN",
                 "source": "PORTFOLIO",
             })
@@ -822,7 +829,7 @@ def process_instrument(client, item,
             figi=figi,
             ticker=ticker,
             last_price=price,
-            price_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            price_time=_now().strftime("%Y-%m-%d %H:%M:%S"),
             volume_1m=last_volume,
         )
     except Exception as e:
@@ -845,7 +852,7 @@ def process_instrument(client, item,
         set_runtime(f"last_signal_{figi}", _j.dumps({
             "action": sig, "score": score,
             "mode": tradingmode,
-            "time": datetime.now().strftime("%H:%M:%S"),
+            "time": _now().strftime("%H:%M:%S"),
         }))
     except Exception:
         pass
@@ -965,7 +972,7 @@ def process_instrument(client, item,
             state.trades_today += 1
 
             trade = {
-                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "time": _now().strftime("%Y-%m-%d %H:%M:%S"),
                 "ticker": ticker,
                 "figi": figi,
                 "direction": direction,
@@ -1074,7 +1081,7 @@ def process_instrument(client, item,
             "direction": "BUY",
             "entry_price": _ep,
             "qty": int(order_result["lots_executed"] or lot),
-            "opened_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "opened_at": _now().strftime("%Y-%m-%d %H:%M:%S"),
             "open_order_id": order_result["response_order_id"],
             "execution_status": order_result["execution_status"],
             "trailing_stop": _ep * (1 - float(stop_loss_pct)),
@@ -1088,7 +1095,7 @@ def process_instrument(client, item,
             "entry_price": float(order_result["executed_price"]),
             "current_price": float(order_result["executed_price"]),
             "unrealized_pnl": 0,
-            "opened_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "opened_at": _now().strftime("%Y-%m-%d %H:%M:%S"),
             "status": "OPEN",
             "source": "BOT",
         })
@@ -1112,7 +1119,7 @@ def process_instrument(client, item,
             "direction": "SELL",
             "entry_price": _ep,
             "qty": int(order_result["lots_executed"] or lot),
-            "opened_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "opened_at": _now().strftime("%Y-%m-%d %H:%M:%S"),
             "open_order_id": order_result["response_order_id"],
             "execution_status": order_result["execution_status"],
             "trailing_stop": _ep * (1 + float(stop_loss_pct)),
@@ -1126,7 +1133,7 @@ def process_instrument(client, item,
             "entry_price": float(order_result["executed_price"]),
             "current_price": float(order_result["executed_price"]),
             "unrealized_pnl": 0,
-            "opened_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "opened_at": _now().strftime("%Y-%m-%d %H:%M:%S"),
             "status": "OPEN",
             "source": "BOT",
         })
