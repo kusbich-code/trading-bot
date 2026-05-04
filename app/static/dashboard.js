@@ -599,8 +599,9 @@ async function renderSettingsTab() {
                 <td class="mono" style="font-size:12px">${esc(sl)} / ${esc(tp)}</td>
                 <td>${ps.instrument_count}</td>
                 <td style="white-space:nowrap">
-                  <button class="btn btn-small" onclick="expandParallelStrategy(${ps.strategy_id})">Инструменты</button>
-                  <button class="btn btn-small" style="margin-left:6px;color:#ff7b7b;border-color:#bf4d5a"
+                  <button class="btn btn-small" onclick="expandParallelStrategy(${ps.strategy_id},'settings')">Настройки</button>
+                  <button class="btn btn-small" style="margin-left:4px" onclick="expandParallelStrategy(${ps.strategy_id},'instruments')">Инструменты</button>
+                  <button class="btn btn-small btn-danger" style="margin-left:4px"
                     onclick="removeParallelStrategy(${esc(prof.id)}, ${ps.strategy_id})">Убрать</button>
                 </td>
               </tr>`;
@@ -818,46 +819,101 @@ async function removeParallelStrategy(profileId, strategyId) {
   }
 }
 
-async function expandParallelStrategy(strategyId) {
+async function expandParallelStrategy(strategyId, mode = "instruments") {
   const panel = document.getElementById("parallelInstrExpanded");
   const title = document.getElementById("parallelInstrTitle");
   const body  = document.getElementById("parallelInstrBody");
   if (!panel || !body) return;
 
-  // Toggle: close if same strategy already expanded
-  if (panel.dataset.strategyId === String(strategyId) && panel.style.display !== "none") {
+  // Toggle: close if same strategy + same mode already open
+  if (panel.dataset.strategyId === String(strategyId) &&
+      panel.dataset.mode === mode && panel.style.display !== "none") {
     panel.style.display = "none";
     return;
   }
 
   panel.dataset.strategyId = strategyId;
-  body.innerHTML = '<span class="note">Загрузка...</span>';
+  panel.dataset.mode = mode;
+  body.innerHTML = '<span class="note">Загрузка…</span>';
   panel.style.display = "block";
 
+  // "Добавить инструмент" всегда привязан к текущей стратегии
+  const btnAdd = document.getElementById("parallelBtnAddInstr");
+  if (btnAdd) btnAdd.onclick = () => openAddInstrumentModal(strategyId);
+
   try {
-    const data = await apiGet(`/api/dashboard/settings?profile_id=${viewedProfileId || ""}`);
-    // Find instruments for this strategy in parallel_strategies list
-    const ps = (data.parallel_strategies || []).find(p => p.strategy_id === strategyId);
-    if (title) title.textContent = `Инструменты — ${ps ? ps.name : "#" + strategyId}`;
+    const det = await apiGet(`/api/strategy/${strategyId}/details`);
+    const name = det.name || `#${strategyId}`;
 
-    // Load full instrument list with market data
-    const instrResp = await apiGet(`/api/strategy/${strategyId}/instruments`);
-    const instruments = instrResp.instruments || [];
+    if (mode === "settings") {
+      if (title) title.textContent = `Настройки — ${name}`;
+      if (btnAdd) btnAdd.style.display = "none";
+      const s = det.settings || {};
+      body.innerHTML = `
+        <form class="form-grid" id="parallelStratForm">
+          <input type="hidden" name="strategy_id_val" value="${strategyId}">
+          <label>Сделок/день<input class="field" name="max_trades_per_day" value="${esc(s.max_trades_per_day||15)}"></label>
+          <label>Лимит убытка ₽<input class="field" name="max_daily_loss_rub" value="${esc(s.max_daily_loss_rub_ui||200)}"></label>
+          <label>Позиций макс<input class="field" name="max_open_positions" value="${esc(s.max_open_positions||2)}"></label>
+          <label>Интервал, сек<input class="field" name="check_interval_sec" value="${esc(s.check_interval_sec||5)}"></label>
+          <label>SL %<input class="field" name="default_stop_loss_pct" value="${esc(s.default_stop_loss_pct_ui||0.25)}"></label>
+          <label>TP %<input class="field" name="default_take_profit_pct" value="${esc(s.default_take_profit_pct_ui||0.5)}"></label>
+          <label>Комиссия %<input class="field" name="estimated_commission_pct" value="${esc(s.estimated_commission_pct_ui||0.04)}"></label>
+          <label>Мин. score сигнала<input class="field" type="number" name="min_signal_score" min="0" max="100" value="${esc(s.min_signal_score||0)}"></label>
+          <label>Режим торговли
+            <select class="field" name="tradingmode">
+              <option value="trend" ${s.tradingmode==="trend"?"selected":""}>Тренд</option>
+              <option value="mean_reversion" ${s.tradingmode==="mean_reversion"?"selected":""}>Возврат к средней</option>
+              <option value="breakout" ${s.tradingmode==="breakout"?"selected":""}>Пробой</option>
+            </select>
+          </label>
+          <label>Лонг разрешён
+            <select class="field" name="allow_long_global">
+              <option value="1" ${s.allow_long_global!=="0"?"selected":""}>Да</option>
+              <option value="0" ${s.allow_long_global==="0"?"selected":""}>Нет</option>
+            </select>
+          </label>
+          <label>Шорт разрешён
+            <select class="field" name="allow_short_global">
+              <option value="1" ${s.allow_short_global==="1"?"selected":""}>Да</option>
+              <option value="0" ${s.allow_short_global!=="1"?"selected":""}>Нет</option>
+            </select>
+          </label>
+          <label>Только сессия MOEX
+            <select class="field" name="trade_only_session">
+              <option value="1" ${s.trade_only_session==="1"?"selected":""}>Да</option>
+              <option value="0" ${s.trade_only_session!=="1"?"selected":""}>Нет</option>
+            </select>
+          </label>
+          <label>Трейлинг-стоп
+            <select class="field" name="trailing_stop_enabled">
+              <option value="1" ${s.trailing_stop_enabled==="1"?"selected":""}>Вкл</option>
+              <option value="0" ${s.trailing_stop_enabled!=="1"?"selected":""}>Выкл</option>
+            </select>
+          </label>
+          <label>Фильтр аналитиков T-Bank
+            <select class="field" name="use_signal_service">
+              <option value="1" ${s.use_signal_service==="1"?"selected":""}>Вкл</option>
+              <option value="0" ${s.use_signal_service!=="1"?"selected":""}>Выкл</option>
+            </select>
+          </label>
+          <div class="row-buttons">
+            <button type="button" class="btn btn-primary" id="btnSaveParallelStrat">Сохранить настройки</button>
+          </div>
+        </form>`;
+      body.querySelector("#btnSaveParallelStrat")?.addEventListener("click", () => saveStrategySettings(strategyId));
 
-    body.innerHTML = instruments.length
-      ? _renderInstrumentForms(instruments, strategyId)
-      : '<p class="note">Инструменты не добавлены. Нажмите «Добавить инструмент».</p>';
-
-    // Bind forms
-    _bindInstrumentForms(panel, strategyId);
-
-    // Update "Add instrument" button
-    const btn = document.getElementById("parallelBtnAddInstr");
-    if (btn) {
-      btn.onclick = () => openAddInstrumentModal(strategyId);
+    } else {
+      if (title) title.textContent = `Инструменты — ${name}`;
+      if (btnAdd) btnAdd.style.display = "";
+      const instruments = det.instruments || [];
+      body.innerHTML = instruments.length
+        ? _renderInstrumentForms(instruments, strategyId)
+        : '<p class="note">Инструменты не добавлены. Нажмите «Добавить инструмент».</p>';
+      _bindInstrumentForms(panel, strategyId);
     }
   } catch (e) {
-    body.innerHTML = `<span class="note">Ошибка: ${esc(e.message)}</span>`;
+    body.innerHTML = `<span class="note" style="color:#ff7b7b">Ошибка: ${esc(e.message)}</span>`;
   }
 }
 

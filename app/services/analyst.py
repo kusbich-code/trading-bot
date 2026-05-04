@@ -285,14 +285,14 @@ def save_as_strategy(result_id: int, strategy_name: str) -> int:
         "default_stop_loss_pct":    str(sl),
         "default_take_profit_pct":  str(tp),
         "estimated_commission_pct": "0.0004",
-        "min_signal_score":         "50" if mode == "mean_reversion" else ("40" if mode == "breakout" else "0"),
+        "min_signal_score":         "0",   # фильтрация по score отключена — стратегия сама определяет качество сигнала
         "max_trades_per_day":       "10",
         "max_open_positions":       "2",
         "max_daily_loss_rub":       "500",
         "check_interval_sec":       "5",
         "allow_long_global":        "1",
         "allow_short_global":       "0",
-        "trade_only_session":       "1",
+        "trade_only_session":       "0",   # не ограничиваем торговой сессией (sandbox-совместимо)
         "pause_after_error_sec":    "10",
         "errorseriespausecount":    "3",
         "stopseriespausecount":     "3",

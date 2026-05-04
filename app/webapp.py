@@ -1457,6 +1457,46 @@ def api_strategies_delete(strategy_id: int):
 
 # ── strategy instruments API ──────────────────────────────────────────────────
 
+@app.get("/api/strategy/{strategy_id}/details")
+def api_strategy_details(strategy_id: int):
+    """Настройки + инструменты стратегии — для редактирования в параллельном режиме."""
+    strategy = get_strategy(strategy_id)
+    if not strategy:
+        raise HTTPException(status_code=404, detail="Strategy not found")
+    raw = get_strategy_settings(strategy_id)
+
+    def ss(key, default=""):
+        return raw.get(key, default)
+
+    market_map = get_instrument_market_state_map()
+    instr = list_strategy_instruments(strategy_id)
+    return JSONResponse({
+        "id":   strategy_id,
+        "name": strategy.get("name", ""),
+        "settings": {
+            "max_trades_per_day":        ss("max_trades_per_day", "15"),
+            "max_daily_loss_rub":        ss("max_daily_loss_rub", "200"),
+            "max_daily_loss_rub_ui":     fmt_money(ss("max_daily_loss_rub", "200")),
+            "max_open_positions":        ss("max_open_positions", "2"),
+            "check_interval_sec":        ss("check_interval_sec", "5"),
+            "default_stop_loss_pct_ui":  fmt_pct_fraction(ss("default_stop_loss_pct", "0.0025")),
+            "default_take_profit_pct_ui": fmt_pct_fraction(ss("default_take_profit_pct", "0.005")),
+            "estimated_commission_pct_ui": fmt_pct_fraction(ss("estimated_commission_pct", "0.0004")),
+            "allow_long_global":         ss("allow_long_global", "1"),
+            "allow_short_global":        ss("allow_short_global", "1"),
+            "trade_only_session":        ss("trade_only_session", "0"),
+            "pause_after_error_sec":     ss("pause_after_error_sec", "10"),
+            "tradingmode":               ss("tradingmode", "trend"),
+            "errorseriespausecount":     ss("errorseriespausecount", "3"),
+            "stopseriespausecount":      ss("stopseriespausecount", "3"),
+            "trailing_stop_enabled":     ss("trailing_stop_enabled", "0"),
+            "use_signal_service":        ss("use_signal_service", "0"),
+            "min_signal_score":          ss("min_signal_score", "0"),
+        },
+        "instruments": [strategy_instrument_row(i, market_map) for i in instr],
+    })
+
+
 @app.get("/api/strategy/{strategy_id}/instruments")
 def api_strategy_instruments_get(strategy_id: int):
     """Return instruments for a strategy with market data (for parallel expand panel)."""
