@@ -1619,30 +1619,30 @@ function _histRenderEquity(curve) {
   const barColors = perTrade.map(v => v >= 0 ? "rgba(47,163,107,.8)" : "rgba(191,77,90,.8)");
   // customdata: [ticker, direction, per_trade_pnl, cumulative_pnl, reason]
   const cd = curve.map(p => [p.ticker, p.direction, p.pnl, p.cumulative_pnl, p.reason || "—"]);
+  const hl = {bgcolor:"#0d1f3c", bordercolor:"#4c8dff", font:{color:"#ffffff", size:12}, align:"left"};
   const tmplLine = "<b>%{customdata[0]}</b> %{customdata[1]}<br>" +
                    "Сделка: %{customdata[2]:+.2f} ₽<br>" +
                    "Накопл.: %{y:.2f} ₽<br>" +
-                   "Причина: %{customdata[4]}<extra>Накопл. PnL</extra>";
+                   "Причина: %{customdata[4]}<extra></extra>";
   const tmplBar  = "<b>%{customdata[0]}</b> %{customdata[1]}<br>" +
                    "Сделка: %{y:+.2f} ₽<br>" +
                    "Накопл.: %{customdata[3]:.2f} ₽<br>" +
-                   "Причина: %{customdata[4]}<extra>PnL сделки</extra>";
+                   "Причина: %{customdata[4]}<extra></extra>";
   Plotly.newPlot(el, [
     {x:times, y:cumPnl, type:"scatter", mode:"lines+markers", name:"Накопл. PnL",
      line:{color:"#4c8dff",width:2}, marker:{size:5, color:"#4c8dff"},
      fill:"tozeroy", fillcolor:"rgba(76,141,255,.07)",
-     customdata:cd, hovertemplate:tmplLine},
+     customdata:cd, hovertemplate:tmplLine, hoverlabel:hl},
     {x:times, y:perTrade, type:"bar", name:"PnL сделки", yaxis:"y2",
      marker:{color:barColors}, opacity:.85,
-     customdata:cd, hovertemplate:tmplBar},
+     customdata:cd, hovertemplate:tmplBar, hoverlabel:hl},
   ], {
     paper_bgcolor:"rgba(0,0,0,0)", plot_bgcolor:"rgba(0,0,0,0)",
     font:{color:"#eef4ff",size:11},
     margin:{t:10,r:60,b:60,l:70},
     legend:{orientation:"h",y:-0.25},
     hovermode:"closest",
-    hoverlabel:{bgcolor:"#0e1b34", bordercolor:"#4c8dff",
-                font:{color:"#ffffff",size:12}, align:"left"},
+    hoverlabel: hl,
     xaxis:{gridcolor:"rgba(255,255,255,.05)", type:"date",
            tickformat:"%d.%m\n%H:%M", tickfont:{size:10}},
     yaxis:{title:"Накопл. PnL (₽)", gridcolor:"rgba(255,255,255,.06)",
