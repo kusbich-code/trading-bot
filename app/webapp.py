@@ -1046,6 +1046,96 @@ def api_dashboard_chart(figi: str = "", interval: str = "1min"):
 
 # ── backtest ──────────────────────────────────────────────────────────────────
 
+import threading as _bt_threading
+
+_bt_lock   = _bt_threading.Lock()
+_bt_state  = {"status": "idle", "progress": 0, "total": 0, "current": "", "error": ""}
+_bt_result = None
+
+
+def _bt_run_worker(strategy_ids: list, interval: str, days: int):
+    global _bt_result
+    results = {}
+    try:
+        for i, sid in enumerate(strategy_ids):
+            sid = int(sid)
+            with _bt_lock:
+                _bt_state["progress"] = i
+                _bt_state["current"]  = f"Загрузка стратегии {sid}…"
+
+            strat = get_strategy(sid)
+            if not strat:
+                results[str(sid)] = {"error": f"Стратегия {sid} не найдена"}
+                continue
+
+            cfg        = get_strategy_settings(sid)
+            mode       = cfg.get("tradingmode", "trend")
+            comm_pct   = float(cfg.get("estimated_commission_pct", "0.0004"))
+            strat_name = strat.get("name", f"Стратегия {sid}")
+
+            all_instr = list_strategy_instruments(sid)
+            inst_rows = [x for x in all_instr if str(x.get("enabled", 1)) in ("1", "true")]
+            if not inst_rows:
+                results[str(sid)] = {"error": "Нет активных инструментов", "strategy_name": strat_name}
+                continue
+
+            instr      = inst_rows[0]
+            figi       = instr["figi"]
+            ticker     = instr.get("ticker", "?")
+            sl_pct     = float(instr.get("stop_loss_pct")  or cfg.get("default_stop_loss_pct",  "0.0025"))
+            tp_pct     = float(instr.get("take_profit_pct") or cfg.get("default_take_profit_pct", "0.005"))
+            lots       = max(1, int(instr.get("lots_override") or 1))
+            lot_size   = max(1, int(instr.get("lot") or 1))
+            qty_shares = lots * lot_size
+
+            with _bt_lock:
+                _bt_state["current"] = f"{ticker}: загрузка свечей…"
+            try:
+                candles = get_candles_range(figi=figi, interval_name=interval, days=days)
+            except Exception as e:
+                results[str(sid)] = {"error": f"Ошибка свечей {ticker}: {e}", "strategy_name": strat_name}
+                with _bt_lock:
+                    _bt_state["progress"] = i + 1
+                continue
+
+            if len(candles) < 30:
+                results[str(sid)] = {"error": f"Мало свечей {ticker}: {len(candles)}", "strategy_name": strat_name}
+                with _bt_lock:
+                    _bt_state["progress"] = i + 1
+                continue
+
+            with _bt_lock:
+                _bt_state["current"] = f"{ticker}: прогон стратегии…"
+            try:
+                res = run_backtest(candles, mode=mode, stop_loss_pct=sl_pct,
+                                   take_profit_pct=tp_pct, commission_pct=comm_pct, qty=qty_shares)
+                d = result_to_dict(res, candles)
+                d.update({
+                    "strategy_name": strat_name, "ticker": ticker, "figi": figi,
+                    "mode": mode,
+                    "sl_pct_ui": f"{sl_pct * 100:.3f}%", "tp_pct_ui": f"{tp_pct * 100:.3f}%",
+                    "lots": lots, "lot_size": lot_size, "qty_shares": qty_shares,
+                    "qty_ui": f"{lots} лот × {lot_size} шт = {qty_shares} шт",
+                    "candles_loaded": len(candles),
+                })
+                results[str(sid)] = d
+            except Exception as e:
+                results[str(sid)] = {"error": str(e), "strategy_name": strat_name}
+
+            with _bt_lock:
+                _bt_state["progress"] = i + 1
+
+        with _bt_lock:
+            _bt_state["status"]  = "done"
+            _bt_state["current"] = ""
+        _bt_result = {"interval": interval, "days": days, "results": results}
+
+    except Exception as e:
+        with _bt_lock:
+            _bt_state["status"] = "error"
+            _bt_state["error"]  = str(e)
+            _bt_state["current"] = ""
+
 @app.get("/api/backtest/instruments")
 def api_backtest_instruments():
     """All instruments known to the bot, for the backtest instrument picker."""
@@ -1077,6 +1167,40 @@ def api_backtest_strategies():
             ],
         })
     return out
+
+
+@app.post("/api/backtest/start")
+async def api_backtest_start(request: Request):
+    global _bt_result
+    body = await request.json()
+    interval     = str(body.get("interval", "5min")).strip()
+    days         = max(1, min(int(body.get("days", 7)), 30))
+    strategy_ids = [int(x) for x in (body.get("strategy_ids") or [])]
+    if not strategy_ids:
+        raise HTTPException(400, "Выберите хотя бы одну стратегию")
+    with _bt_lock:
+        if _bt_state["status"] == "running":
+            raise HTTPException(400, "Бэктест уже выполняется")
+        _bt_state.update({"status": "running", "progress": 0,
+                          "total": len(strategy_ids), "current": "", "error": ""})
+    _bt_result = None
+    _bt_threading.Thread(target=_bt_run_worker, args=(strategy_ids, interval, days),
+                         daemon=True, name="backtest-worker").start()
+    return {"ok": True, "total": len(strategy_ids)}
+
+
+@app.get("/api/backtest/status")
+def api_backtest_status():
+    with _bt_lock:
+        return dict(_bt_state)
+
+
+@app.get("/api/backtest/result")
+def api_backtest_result():
+    global _bt_result
+    if _bt_result is None:
+        raise HTTPException(400, "Результат не готов")
+    return _bt_result
 
 
 @app.post("/api/backtest/run")

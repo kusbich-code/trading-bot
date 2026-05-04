@@ -2263,9 +2263,9 @@ async function serviceAction(action) {
 
 // ── Backtesting tab ───────────────────────────────────────────────────────────
 
-let _backtestInstruments = [];
 let _backtestStrategies  = [];
 let _backtestLastResult  = null;
+let _btPollTimer         = null;
 
 const _BT_MODE_LABELS = {
   trend: "Trend (SMA9/21)", mean_reversion: "Mean Reversion", breakout: "Breakout",
@@ -2359,8 +2359,18 @@ async function _btReloadForm(host) {
         <div id="btStratList">${stratCards}</div>
       </div>
 
-      <button class="btn btn-primary" onclick="runBacktest()">▶ Запустить бэктест</button>
-      <span id="btStatus" class="note" style="margin-left:12px"></span>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:4px">
+        <button class="btn btn-primary" id="btBtnStart" onclick="runBacktest()">▶ Запустить бэктест</button>
+        <button class="btn" id="btBtnStop" onclick="stopBacktest()" style="display:none">⏹ Остановить</button>
+        <span id="btStatus" class="note"></span>
+      </div>
+      <div id="btProgressBlock" style="display:none;margin-top:10px">
+        <div style="background:rgba(255,255,255,.08);border-radius:6px;height:8px;overflow:hidden;margin-bottom:6px">
+          <div id="btProgressBar" style="height:100%;background:#4c8dff;width:0%;transition:width .3s"></div>
+        </div>
+        <div id="btProgressLabel" class="note" style="font-size:11px"></div>
+        <div id="btProgressCurrent" class="note" style="font-size:11px;color:#a8c8ff"></div>
+      </div>
     </div>
 
     <div id="btResults" style="display:none">
@@ -2400,31 +2410,76 @@ async function _btReloadForm(host) {
 }
 
 async function runBacktest() {
-  const interval = (document.getElementById("btInterval") || {}).value || "15min";
-  const days     = parseInt((document.getElementById("btDays") || {}).value || "7");
+  const interval    = (document.getElementById("btInterval") || {}).value || "15min";
+  const days        = parseInt((document.getElementById("btDays") || {}).value || "7");
+  const strategyIds = Array.from(document.querySelectorAll(".bt-strat-cb:checked"))
+                          .map(cb => parseInt(cb.value));
 
-  const strategyIds = Array.from(
-    document.querySelectorAll(".bt-strat-cb:checked")
-  ).map(cb => parseInt(cb.value));
-
-  if (!figi)               { showToast("Выберите инструмент", "error"); return; }
   if (!strategyIds.length) { showToast("Отметьте хотя бы одну стратегию", "error"); return; }
 
-  const status  = document.getElementById("btStatus");
-  const results = document.getElementById("btResults");
-  if (status)  status.textContent = "Загружаю свечи и прогоняю стратегии…";
-  if (results) results.style.display = "none";
-
   try {
-    const data = await apiPostJson("/api/backtest/run", { interval, days, strategy_ids: strategyIds });
-    _backtestLastResult = data;
-    const total = Object.values(data.results || {}).reduce((s, r) => s + (r.candles_loaded || 0), 0);
-    if (status) status.textContent = `Готово. Период: ${data.days} дн., интервал: ${interval}`;
-    _renderBacktestResults(data);
-    if (results) results.style.display = "block";
+    await apiPostJson("/api/backtest/start", { interval, days, strategy_ids: strategyIds });
   } catch (e) {
-    if (status) status.textContent = "";
-    showToast(`Ошибка бэктеста: ${e.message}`, "error", 8000);
+    showToast("Ошибка запуска: " + e.message, "error"); return;
+  }
+
+  _btSetRunning(true);
+  document.getElementById("btResults").style.display = "none";
+  if (_btPollTimer) clearInterval(_btPollTimer);
+  _btPollTimer = setInterval(_btPoll, 1200);
+}
+
+async function stopBacktest() {
+  if (_btPollTimer) { clearInterval(_btPollTimer); _btPollTimer = null; }
+  _btSetRunning(false);
+}
+
+function _btSetRunning(on) {
+  const btnStart = document.getElementById("btBtnStart");
+  const btnStop  = document.getElementById("btBtnStop");
+  const prog     = document.getElementById("btProgressBlock");
+  if (btnStart) btnStart.style.display = on ? "none" : "";
+  if (btnStop)  btnStop.style.display  = on ? "" : "none";
+  if (prog)     prog.style.display     = on ? "block" : "none";
+  if (!on) {
+    const bar = document.getElementById("btProgressBar");
+    if (bar) bar.style.width = "0%";
+  }
+}
+
+async function _btPoll() {
+  try {
+    const s = await apiGet("/api/backtest/status");
+    const bar     = document.getElementById("btProgressBar");
+    const label   = document.getElementById("btProgressLabel");
+    const current = document.getElementById("btProgressCurrent");
+    const status  = document.getElementById("btStatus");
+
+    if (s.total > 0 && bar) {
+      const pct = Math.round(s.progress / s.total * 100);
+      bar.style.width = pct + "%";
+      if (label) label.textContent = `${s.progress} из ${s.total} стратегий (${pct}%)`;
+    }
+    if (current) current.textContent = s.current || "";
+    if (status)  status.textContent  = s.status === "running" ? "Выполняется…" : "";
+
+    if (s.status === "done") {
+      clearInterval(_btPollTimer); _btPollTimer = null;
+      _btSetRunning(false);
+      if (status) status.textContent = "Готово";
+      const data = await apiGet("/api/backtest/result");
+      _backtestLastResult = data;
+      _renderBacktestResults(data);
+      document.getElementById("btResults").style.display = "block";
+    } else if (s.status === "error") {
+      clearInterval(_btPollTimer); _btPollTimer = null;
+      _btSetRunning(false);
+      showToast("Ошибка бэктеста: " + (s.error || "неизвестно"), "error", 8000);
+    }
+  } catch (e) {
+    clearInterval(_btPollTimer); _btPollTimer = null;
+    _btSetRunning(false);
+    showToast("Ошибка опроса: " + e.message, "error");
   }
 }
 
@@ -3188,6 +3243,7 @@ async function bootstrapDashboard() {
   window.closeAllPositionsConfirm = closeAllPositionsConfirm;
   window.clearLocalPositions = clearLocalPositions;
   window.runBacktest = runBacktest;
+  window.stopBacktest = stopBacktest;
   window._showBacktestTrades = _showBacktestTrades;
   window.mainChartsApplySettings = mainChartsApplySettings;
   window.histSetPeriod   = histSetPeriod;
