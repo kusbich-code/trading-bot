@@ -628,7 +628,7 @@ def maybe_reset_daily():
 def place_order_checked(client, ticker: str, figi: str, lots: int, raw_price: Decimal, direction: OrderDirection):
     meta = state.instrument_meta.get(ticker)
     if not meta:
-        log_event("ORDER_ERROR", "NO_META_SKIP", ticker=ticker, level="WARNING")
+        log_event("ORDER_ERROR", "NO_META_SKIP", ticker=ticker, level="ERROR")
         return None
 
     step = meta["min_price_increment"]
@@ -764,6 +764,29 @@ def process_instrument(client, item,
     take_profit_pct = item["take_profit_pct"]
     allow_long = int(item.get("allow_long", 1))
     allow_short = int(item.get("allow_short", 1))
+
+    # Параллельный режим: place_order_checked ищет мету в state.instrument_meta.
+    # Если инструмент там не зарегистрирован (он не из основной стратегии) — добавляем.
+    if ticker not in state.instrument_meta:
+        state.instrument_meta[ticker] = {
+            "figi":              item["figi"],
+            "instrument_uid":    item.get("instrument_uid", "") or "",
+            "ticker":            ticker,
+            "lot":               item.get("lot", 1),
+            "name":              item.get("name", ""),
+            "class_code":        item.get("class_code", ""),
+            "instrument_type":   item.get("instrument_type", ""),
+            "currency":          item.get("currency", ""),
+            "min_price_increment": item["min_price_increment"],
+            "lots_override":     int(item.get("lots_override", 1)),
+            "stop_loss_pct":     item["stop_loss_pct"],
+            "take_profit_pct":   item["take_profit_pct"],
+            "max_spread_pct":    item.get("max_spread_pct", Decimal("0")),
+            "min_volume":        int(item.get("min_volume", 0)),
+            "allow_long":        int(item.get("allow_long", 1)),
+            "allow_short":       int(item.get("allow_short", 1)),
+            "priority":          int(item.get("priority", 100)),
+        }
 
     allow_long_global = get_setting("allow_long_global", "1") == "1"
     allow_short_global = get_setting("allow_short_global", "1") == "1"

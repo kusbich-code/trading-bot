@@ -760,7 +760,24 @@ def get_logs(limit=200, ticker=None, event_type=None, date_from=None, date_to=No
 
 
 def get_error_logs(limit=200, ticker=None, date_from=None, date_to=None):
-    return get_logs(limit=limit, ticker=ticker, date_from=date_from, date_to=date_to, level="ERROR")
+    """Возвращает ERROR-события + WARNING от критичных типов (ORDER_ERROR, INVALID_FIGI, BALANCE_WARNING)."""
+    with db_cursor() as cur:
+        query = """
+        SELECT * FROM event_logs
+        WHERE (level = 'ERROR'
+               OR (level = 'WARNING' AND event_type IN ('ORDER_ERROR','INVALID_FIGI','BALANCE_WARNING')))
+        """
+        params: list = []
+        if ticker:
+            query += " AND ticker = ?"; params.append(ticker)
+        if date_from:
+            query += " AND event_time >= ?"; params.append(date_from)
+        if date_to:
+            query += " AND event_time <= ?"; params.append(date_to)
+        query += " ORDER BY id DESC LIMIT ?"
+        params.append(limit)
+        cur.execute(query, params)
+        return [dict(row) for row in cur.fetchall()]
 
 
 def get_system_logs(limit=200, date_from=None, date_to=None):
