@@ -279,6 +279,11 @@ def init_db():
         except Exception:
             pass
 
+        try:
+            cur.execute("ALTER TABLE analyst_results ADD COLUMN instrument_uid TEXT DEFAULT ''")
+        except Exception:
+            pass
+
         cur.execute("""
         CREATE TABLE IF NOT EXISTS optimization_results (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -878,6 +883,17 @@ def save_instrument_uid(figi: str, uid: str):
     with db_cursor() as cur:
         cur.execute("UPDATE instruments SET instrument_uid = ? WHERE figi = ? AND (instrument_uid IS NULL OR instrument_uid = '')", (uid, figi))
         cur.execute("UPDATE strategy_instruments SET instrument_uid = ? WHERE figi = ? AND (instrument_uid IS NULL OR instrument_uid = '')", (uid, figi))
+
+
+def fix_ticker_by_figi(figi: str, canonical_ticker: str, canonical_name: str = "", uid: str = ""):
+    """Обновляет ticker/name/uid по canonical данным T-Bank API."""
+    with db_cursor() as cur:
+        cur.execute("UPDATE instruments SET ticker = ?, name = ?, instrument_uid = ? WHERE figi = ?",
+                    (canonical_ticker, canonical_name or canonical_ticker, uid, figi))
+        cur.execute("UPDATE strategy_instruments SET ticker = ?, name = ?, instrument_uid = ? WHERE figi = ?",
+                    (canonical_ticker, canonical_name or canonical_ticker, uid, figi))
+        cur.execute("UPDATE instrument_market_state SET ticker = ? WHERE figi = ?",
+                    (canonical_ticker, figi))
 
 
 # ── market state ──────────────────────────────────────────────────────────────

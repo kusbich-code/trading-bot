@@ -46,17 +46,17 @@ _opt_thread: Optional[threading.Thread] = None
 # ── Инструменты для перебора ─────────────────────────────────────────────────
 
 SEARCH_INSTRUMENTS = [
-    {"figi": "BBG004730N88", "ticker": "SBER", "name": "Сбербанк",         "lot": 1},
-    {"figi": "BBG004730RP0", "ticker": "GAZP", "name": "Газпром",          "lot": 1},
-    {"figi": "BBG004731032", "ticker": "LKOH", "name": "Лукойл",           "lot": 1},
-    {"figi": "BBG004731489", "ticker": "GMKN", "name": "Норникель",        "lot": 1},
-    {"figi": "BBG004731354", "ticker": "ROSN", "name": "Роснефть",         "lot": 1},
-    {"figi": "BBG004RVFN70", "ticker": "TATN", "name": "Татнефть",         "lot": 1},
-    {"figi": "BBG00475KHX6", "ticker": "NVTK", "name": "НОВАТЭК",          "lot": 1},
-    {"figi": "BBG004S68473", "ticker": "MTSS", "name": "МТС",              "lot": 1},
-    {"figi": "BBG004730JJ5", "ticker": "MOEX", "name": "Московская биржа", "lot": 1},
-    {"figi": "BBG004730ZJ9", "ticker": "VTBR", "name": "ВТБ",              "lot": 1},
-    {"figi": "BBG004S68B31", "ticker": "ALRS", "name": "АЛРОСА",           "lot": 1},
+    # ticker и name — canonical из T-Bank API (get_instrument_by figi)
+    {"figi": "BBG004730N88", "ticker": "SBER",  "name": "Сбер Банк",                    "lot": 1, "instrument_uid": "e6123145-9665-43e0-8413-cd61b8aa9b13"},
+    {"figi": "BBG004730RP0", "ticker": "GAZP",  "name": "Газпром",                      "lot": 1, "instrument_uid": "962e2a95-02a9-4171-abd7-aa198dbe643a"},
+    {"figi": "BBG004731032", "ticker": "LKOH",  "name": "ЛУКОЙЛ",                       "lot": 1, "instrument_uid": "02cfdf61-6298-4c0f-a9ca-9cabc82afaf3"},
+    {"figi": "BBG004731489", "ticker": "GMKN",  "name": "Норильский никель",             "lot": 1, "instrument_uid": "509edd0c-129c-4ee2-934d-7f6246126da1"},
+    {"figi": "BBG004731354", "ticker": "ROSN",  "name": "Роснефть",                     "lot": 1, "instrument_uid": "fd417230-19cf-4e7b-9623-f7c9ca18ec6b"},
+    {"figi": "BBG00475KHX6", "ticker": "TRNFP", "name": "Транснефть - привилегированные","lot": 1, "instrument_uid": "653d47e9-dbd4-407a-a1c3-47f897df4694"},
+    {"figi": "BBG004S68473", "ticker": "IRAO",  "name": "ИнтерРАО",                     "lot": 100, "instrument_uid": "2dfbc1fd-b92a-436e-b011-928c79e805f2"},
+    {"figi": "BBG004730JJ5", "ticker": "MOEX",  "name": "ПАО Московская Биржа",          "lot": 1, "instrument_uid": "5e1c2634-afc4-4e50-ad6d-f78fc14a539a"},
+    {"figi": "BBG004730ZJ9", "ticker": "VTBR",  "name": "Банк ВТБ",                     "lot": 1, "instrument_uid": "8e2b0325-0292-4654-8a18-4f63ed3b0e09"},
+    {"figi": "BBG004S68B31", "ticker": "ALRS",  "name": "АЛРОСА",                       "lot": 1, "instrument_uid": "30817fea-20e6-4fee-ab1f-d20fc1a1bb72"},
 ]
 
 MODES      = ["mean_reversion", "breakout", "trend"]
@@ -232,8 +232,9 @@ def _worker(budget_rub, min_win_rate, min_trades, days, interval, min_pnl, exclu
             # ── Загрузка свечей (кэшируется для каждого инструмента) ──────
             if figi not in candles_cache:
                 try:
+                    uid = inst.get("instrument_uid", "") or ""
                     candles_cache[figi] = get_candles_range(
-                        figi=figi, interval_name=interval, days=days
+                        figi=uid or figi, interval_name=interval, days=days
                     )
                 except Exception:
                     candles_cache[figi] = []
@@ -286,6 +287,7 @@ def _worker(budget_rub, min_win_rate, min_trades, days, interval, min_pnl, exclu
                 curve = curve[::step]
             eq_json = json.dumps([round(v, 2) for v in curve])
 
+            uid = inst.get("instrument_uid", "") or ""
             with db_cursor() as cur:
                 cur.execute("""
                 INSERT INTO analyst_results(
@@ -293,15 +295,15 @@ def _worker(budget_rub, min_win_rate, min_trades, days, interval, min_pnl, exclu
                     interval, days, sl_pct, tp_pct, budget_rub,
                     net_pnl, win_rate, profit_factor, total_trades,
                     max_drawdown, avg_r_multiple, sharpe_ratio,
-                    equity_curve, score, avg_price, min_signal_score_used
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    equity_curve, score, avg_price, min_signal_score_used, instrument_uid
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """, (
                     run_id, datetime.now().isoformat(),
                     mode, figi, ticker, inst["name"],
                     interval, days, str(sl), str(tp), float(budget_rub),
                     res.net_pnl, res.win_rate, res.profit_factor, res.total_trades,
                     res.max_drawdown, res.avg_r_multiple, res.sharpe_ratio,
-                    eq_json, score, avg_price, optimal_score,
+                    eq_json, score, avg_price, optimal_score, uid,
                 ))
 
             found += 1
@@ -597,15 +599,16 @@ def save_as_strategy(result_id: int, strategy_name: str) -> int:
                 ON CONFLICT(strategy_id, key) DO UPDATE SET value = excluded.value
                 """, (sid, key, value))
 
-        # Добавляем инструмент
+        # Добавляем инструмент с instrument_uid
+        uid = result.get("instrument_uid", "") or ""
         cur.execute("""
         INSERT OR IGNORE INTO strategy_instruments(
             strategy_id, figi, ticker, name,
             lot, lots_override, stop_loss_pct, take_profit_pct,
-            allow_long, allow_short, enabled, priority
-        ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, 1, 1, 1, 100)
+            allow_long, allow_short, enabled, priority, instrument_uid
+        ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, 1, 1, 1, 100, ?)
         """, (sid, result["figi"], result["ticker"], result["instrument_name"],
-              lots, str(sl), str(tp)))
+              lots, str(sl), str(tp), uid))
 
         # Помечаем результат как сохранённый
         cur.execute(

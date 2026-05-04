@@ -56,6 +56,7 @@ from app.db import (
     get_open_positions,
     get_instrument_market_state_map,
     save_instrument_uid,
+    fix_ticker_by_figi,
 )
 from app.instruments import get_instrument_meta, round_to_price_step
 from app.telegram_notify import TelegramNotifier
@@ -653,21 +654,26 @@ def get_money_balance(client) -> float:
 
 
 def _fill_all_instrument_uids(client):
-    """Заполняет instrument_uid для всех инструментов в БД у которых он пустой."""
+    """Запрашивает canonical ticker/name/uid для всех figi в БД и обновляет при расхождении."""
     from app.db import db_cursor as _dbc
     with _dbc() as cur:
-        cur.execute("SELECT DISTINCT figi FROM strategy_instruments WHERE figi != '' AND (instrument_uid IS NULL OR instrument_uid = '')")
+        cur.execute("SELECT DISTINCT figi FROM strategy_instruments WHERE figi != ''")
         figis = [r["figi"] for r in cur.fetchall()]
     for figi in figis:
         try:
             resp = client.instruments.get_instrument_by(id_type=1, id=figi)
             inst = getattr(resp, "instrument", None)
-            uid  = getattr(inst, "uid", "") or "" if inst else ""
-            if uid:
-                save_instrument_uid(figi, uid)
-                log.info("instrument_uid сохранён: figi=%s uid=%s", figi, uid[:20])
+            if not inst:
+                continue
+            uid          = getattr(inst, "uid", "") or ""
+            api_ticker   = getattr(inst, "ticker", "") or ""
+            api_name     = getattr(inst, "name", "") or ""
+            # Всегда обновляем ticker/name/uid по canonical данным API
+            if api_ticker:
+                fix_ticker_by_figi(figi, api_ticker, api_name, uid)
+                log.info("canonical: figi=%s ticker=%s uid=%s", figi, api_ticker, uid[:20])
         except Exception as e:
-            log.warning("Не удалось получить uid для figi=%s: %s", figi, e)
+            log.warning("_fill_all_instrument_uids figi=%s: %s", figi, e)
 
 
 def load_enabled_instruments(client):
