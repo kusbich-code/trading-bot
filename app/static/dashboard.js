@@ -538,6 +538,12 @@ async function renderSettingsTab() {
             <option value="prod" ${!sandboxSelected ? "selected" : ""}>Боевой</option>
           </select>
         </label>
+        <label>Только сессия MOEX
+          <select class="field" name="trade_only_session">
+            <option value="1" ${profSettings.trade_only_session === "1" ? "selected" : ""}>Да — только в торговую сессию</option>
+            <option value="0" ${profSettings.trade_only_session !== "1" ? "selected" : ""}>Нет — торговать всегда</option>
+          </select>
+        </label>
         <div class="row-buttons">
           <button type="button" class="btn btn-primary" id="btnSaveProfileSettings">Сохранить</button>
         </div>
@@ -655,12 +661,6 @@ async function renderSettingsTab() {
           <select class="field" name="allow_short_global">
             <option value="1" ${stratSettings.allow_short_global === "1" ? "selected" : ""}>Да</option>
             <option value="0" ${stratSettings.allow_short_global === "0" ? "selected" : ""}>Нет</option>
-          </select>
-        </label>
-        <label>Только сессия
-          <select class="field" name="trade_only_session">
-            <option value="1" ${stratSettings.trade_only_session === "1" ? "selected" : ""}>Да</option>
-            <option value="0" ${stratSettings.trade_only_session === "0" ? "selected" : ""}>Нет</option>
           </select>
         </label>
         <label>Пауза после ошибки, сек<input class="field" name="pause_after_error_sec" value="${esc(stratSettings.pause_after_error_sec || 10)}"></label>
@@ -877,12 +877,6 @@ async function expandParallelStrategy(strategyId, mode = "instruments") {
             <select class="field" name="allow_short_global">
               <option value="1" ${s.allow_short_global==="1"?"selected":""}>Да</option>
               <option value="0" ${s.allow_short_global!=="1"?"selected":""}>Нет</option>
-            </select>
-          </label>
-          <label>Только сессия MOEX
-            <select class="field" name="trade_only_session">
-              <option value="1" ${s.trade_only_session==="1"?"selected":""}>Да</option>
-              <option value="0" ${s.trade_only_session!=="1"?"selected":""}>Нет</option>
             </select>
           </label>
           <label>Трейлинг-стоп
@@ -2560,6 +2554,8 @@ function _showBacktestTrades(sid) {
 
 let _analystPollTimer = null;
 let _analystViewingId = null;
+let _analystMode = "search"; // "search" | "optimize"
+let _analystOptPollTimer = null;
 
 async function renderAnalystTab() {
   const host = document.getElementById("view-analyst");
@@ -2568,102 +2564,212 @@ async function renderAnalystTab() {
   if (host.dataset.initialized !== "1") {
     host.innerHTML = `
       ${helpCard("Аналитик", [
-        "<b>Что делает:</b> перебирает комбинации инструментов × режимов торговли × SL × TP, запускает бэктест на каждой и сохраняет те где PnL положительный. Поиск идёт в фоне — вы можете пользоваться другими вкладками.",
-        "<b>Инструменты поиска:</b> SBER, GAZP, LKOH, GMKN, ROSN, TATN, NVTK, MTSS, MOEX, VTBR, ALRS. Режимы: Mean Reversion, Breakout, Trend. Комбинации SL (0.2–0.5%) × TP (0.4–1.5%). Итого до 600 бэктестов.",
-        "<b>Бюджет:</b> сумма используется как начальный капитал в бэктесте — PnL будет реалистичен для вашего депозита.",
-        "<b>Фильтры:</b> мин. Win Rate, мин. количество сделок, мин. PnL. Результаты сортируются по составному score = Profit Factor × Win Rate × (1 − Drawdown%).",
-        "<b>Как сохранить:</b> нажмите «Подробнее» — проверьте кривую капитала и сделки. Если всё устраивает — введите название и нажмите «Сохранить как стратегию». Стратегия появится в Настройках.",
+        "<b>Поиск новых стратегий:</b> перебирает комбинации инструментов × режимов × SL × TP, запускает бэктест на каждой и сохраняет прибыльные. Поиск идёт в фоне.",
+        "<b>Оптимизация текущих стратегий:</b> анализирует инструменты из активных параллельных стратегий профиля, находит лучшие режим/SL/TP/score и предлагает применить.",
+        "<b>Score-оптимизация:</b> для каждой найденной комбинации аналитик автоматически подбирает оптимальный порог min_signal_score (0–60).",
         "<b>Важно:</b> бэктест не учитывает проскальзывание. Перед боевым запуском проверьте стратегию в Sandbox хотя бы 1–2 дня.",
       ])}
 
-      <div class="block" style="margin-bottom:16px">
-        <h2>Параметры поиска</h2>
-        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;margin-bottom:16px">
-          <label class="field-label">Бюджет (₽)
-            <input id="anBudget" class="field" type="number" min="1000" step="1000" value="60000">
-          </label>
-          <label class="field-label">Интервал свечей
-            <select id="anInterval" class="field">
-              <option value="5min">5 минут</option>
-              <option value="15min" selected>15 минут</option>
-              <option value="hour">1 час</option>
-            </select>
-          </label>
-          <label class="field-label">Период бэктеста (дней)
-            <select id="anDays" class="field">
-              <option value="7">7 дней</option>
-              <option value="14" selected>14 дней</option>
-              <option value="30">30 дней</option>
-            </select>
-          </label>
-          <label class="field-label">Мин. Win Rate (%)
-            <input id="anWinRate" class="field" type="number" min="0" max="100" value="45">
-          </label>
-          <label class="field-label">Мин. сделок
-            <input id="anMinTrades" class="field" type="number" min="1" value="5">
-          </label>
-          <label class="field-label">Мин. PnL (₽)
-            <input id="anMinPnl" class="field" type="number" value="0">
-          </label>
-        </div>
-        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-          <button class="btn btn-primary" id="anBtnStart" onclick="analystStart()">▶ Запустить поиск</button>
-          <button class="btn" id="anBtnStop" onclick="analystStop()" style="display:none">⏹ Остановить</button>
-          <span id="anStatusText" class="note"></span>
-        </div>
+      <!-- Mode switcher -->
+      <div style="display:flex;gap:8px;margin-bottom:16px">
+        <button class="btn" id="anTabSearch" onclick="analystSwitchMode('search')"
+          style="font-weight:600">Поиск новых</button>
+        <button class="btn" id="anTabOptimize" onclick="analystSwitchMode('optimize')">Оптимизация текущих</button>
       </div>
 
-      <div class="block" id="anProgressBlock" style="display:none;margin-bottom:16px">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-          <b>Прогресс поиска</b>
-          <span id="anProgressLabel" class="note"></span>
-        </div>
-        <div style="background:rgba(255,255,255,.08);border-radius:8px;height:12px;overflow:hidden">
-          <div id="anProgressBar" style="height:100%;background:#4c8dff;border-radius:8px;width:0%;transition:width .4s"></div>
-        </div>
-        <div id="anCurrentCombo" class="note" style="margin-top:6px"></div>
-      </div>
-
-      <div id="anResultsBlock" style="display:none">
+      <!-- ── SEARCH MODE ── -->
+      <div id="anModeSearch">
         <div class="block" style="margin-bottom:16px">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-            <h2>Найденные стратегии <span id="anResultCount" class="note"></span></h2>
-            <span class="note">Сортировка по составному score</span>
+          <h2>Параметры поиска</h2>
+          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;margin-bottom:16px">
+            <label class="field-label">Бюджет (₽)
+              <input id="anBudget" class="field" type="number" min="1000" step="1000" value="60000">
+            </label>
+            <label class="field-label">Интервал свечей
+              <select id="anInterval" class="field">
+                <option value="5min">5 минут</option>
+                <option value="15min" selected>15 минут</option>
+                <option value="hour">1 час</option>
+              </select>
+            </label>
+            <label class="field-label">Период бэктеста (дней)
+              <select id="anDays" class="field">
+                <option value="7">7 дней</option>
+                <option value="14" selected>14 дней</option>
+                <option value="30">30 дней</option>
+              </select>
+            </label>
+            <label class="field-label">Мин. Win Rate (%)
+              <input id="anWinRate" class="field" type="number" min="0" max="100" value="45">
+            </label>
+            <label class="field-label">Мин. сделок
+              <input id="anMinTrades" class="field" type="number" min="1" value="5">
+            </label>
+            <label class="field-label">Мин. PnL (₽)
+              <input id="anMinPnl" class="field" type="number" value="0">
+            </label>
           </div>
-          <div style="overflow-x:auto">
-            <table class="table">
-              <thead>
-                <tr>
-                  <th>Score</th><th>Инструмент</th><th>Режим</th>
-                  <th>SL / TP</th><th>Лотов</th><th>Сделок</th><th>Win Rate</th>
-                  <th>PnL (₽)</th><th>Profit Factor</th><th>Drawdown</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody id="anResultsTbody"></tbody>
-            </table>
+          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+            <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer">
+              <input type="checkbox" id="anExcludeActive" checked style="width:15px;height:15px">
+              Исключить активные инструменты
+            </label>
+          </div>
+          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px">
+            <button class="btn btn-primary" id="anBtnStart" onclick="analystStart()">▶ Запустить поиск</button>
+            <button class="btn" id="anBtnStop" onclick="analystStop()" style="display:none">⏹ Остановить</button>
+            <span id="anStatusText" class="note"></span>
           </div>
         </div>
 
-        <!-- Detail panel -->
-        <div class="block" id="anDetailBlock" style="display:none">
-          <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px">
-            <h2 id="anDetailTitle">Детали</h2>
-            <button class="btn" onclick="document.getElementById('anDetailBlock').style.display='none'">✕</button>
+        <div class="block" id="anProgressBlock" style="display:none;margin-bottom:16px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+            <b>Прогресс поиска</b>
+            <span id="anProgressLabel" class="note"></span>
           </div>
-          <div id="anDetailMeta" style="margin-bottom:12px;display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:8px"></div>
-          <div id="anDetailChart" style="height:240px;margin-bottom:16px"></div>
-          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
-            <input id="anSaveName" class="field" placeholder="Название новой стратегии" style="flex:1;min-width:220px">
-            <button class="btn btn-primary" onclick="analystSave()">💾 Сохранить как стратегию</button>
+          <div style="background:rgba(255,255,255,.08);border-radius:8px;height:12px;overflow:hidden">
+            <div id="anProgressBar" style="height:100%;background:#4c8dff;border-radius:8px;width:0%;transition:width .4s"></div>
+          </div>
+          <div id="anCurrentCombo" class="note" style="margin-top:6px"></div>
+        </div>
+
+        <div id="anResultsBlock" style="display:none">
+          <div class="block" style="margin-bottom:16px">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+              <h2>Найденные стратегии <span id="anResultCount" class="note"></span></h2>
+              <span class="note">Сортировка по составному score</span>
+            </div>
+            <div style="overflow-x:auto">
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th>Score</th><th>Инструмент</th><th>Режим</th>
+                    <th>SL / TP</th><th>Лотов</th><th>Сделок</th><th>Win Rate</th>
+                    <th>PnL (₽)</th><th>Profit Factor</th><th>Drawdown</th><th>Min Score</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="anResultsTbody"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Detail panel -->
+          <div class="block" id="anDetailBlock" style="display:none">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px">
+              <h2 id="anDetailTitle">Детали</h2>
+              <button class="btn" onclick="document.getElementById('anDetailBlock').style.display='none'">✕</button>
+            </div>
+            <div id="anDetailMeta" style="margin-bottom:12px;display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:8px"></div>
+            <div id="anDetailChart" style="height:240px;margin-bottom:16px"></div>
+            <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
+              <input id="anSaveName" class="field" placeholder="Название новой стратегии" style="flex:1;min-width:220px">
+              <button class="btn btn-primary" onclick="analystSave()">Сохранить как стратегию</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── OPTIMIZE MODE ── -->
+      <div id="anModeOptimize" style="display:none">
+        <div class="block" style="margin-bottom:16px">
+          <h2>Параметры оптимизации</h2>
+          <p class="note" style="margin-bottom:12px">Анализирует инструменты из параллельных стратегий активного профиля. Подбирает оптимальные режим/SL/TP/score для каждого инструмента.</p>
+          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;margin-bottom:16px">
+            <label class="field-label">Бюджет (₽)
+              <input id="anOptBudget" class="field" type="number" min="1000" step="1000" value="60000">
+            </label>
+            <label class="field-label">Интервал свечей
+              <select id="anOptInterval" class="field">
+                <option value="5min">5 минут</option>
+                <option value="15min" selected>15 минут</option>
+                <option value="hour">1 час</option>
+              </select>
+            </label>
+            <label class="field-label">Период бэктеста (дней)
+              <select id="anOptDays" class="field">
+                <option value="7">7 дней</option>
+                <option value="14" selected>14 дней</option>
+                <option value="30">30 дней</option>
+              </select>
+            </label>
+          </div>
+          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+            <button class="btn btn-primary" id="anOptBtnStart" onclick="analystOptStart()">▶ Запустить оптимизацию</button>
+            <button class="btn" id="anOptBtnStop" onclick="analystOptStop()" style="display:none">⏹ Остановить</button>
+            <span id="anOptStatusText" class="note"></span>
+          </div>
+        </div>
+
+        <div class="block" id="anOptProgressBlock" style="display:none;margin-bottom:16px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+            <b>Прогресс оптимизации</b>
+            <span id="anOptProgressLabel" class="note"></span>
+          </div>
+          <div style="background:rgba(255,255,255,.08);border-radius:8px;height:12px;overflow:hidden">
+            <div id="anOptProgressBar" style="height:100%;background:#2ecc71;border-radius:8px;width:0%;transition:width .4s"></div>
+          </div>
+          <div id="anOptCurrentCombo" class="note" style="margin-top:6px"></div>
+        </div>
+
+        <div id="anOptResultsBlock" style="display:none">
+          <div class="block">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+              <h2>Результаты оптимизации <span id="anOptResultCount" class="note"></span></h2>
+              <span class="note">Сортировка по улучшению PnL</span>
+            </div>
+            <div style="overflow-x:auto">
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th>Инструмент</th><th>Стратегия</th>
+                    <th>Текущий режим</th><th>Текущий SL/TP</th><th>Текущий PnL</th>
+                    <th>Лучший режим</th><th>Лучший SL/TP</th><th>Лучший PnL</th>
+                    <th>Улучшение</th><th>Min Score</th>
+                    <th>Статус</th><th></th>
+                  </tr>
+                </thead>
+                <tbody id="anOptResultsTbody"></tbody>
+              </table>
+            </div>
           </div>
         </div>
       </div>
     `;
     host.dataset.initialized = "1";
+    _analystApplyModeStyle();
   }
 
-  await _analystRefresh();
+  if (_analystMode === "search") {
+    await _analystRefresh();
+  } else {
+    await _analystOptRefresh();
+  }
+}
+
+function _analystApplyModeStyle() {
+  const btnSearch   = document.getElementById("anTabSearch");
+  const btnOptimize = document.getElementById("anTabOptimize");
+  const divSearch   = document.getElementById("anModeSearch");
+  const divOptimize = document.getElementById("anModeOptimize");
+  if (!btnSearch) return;
+  const isSearch = _analystMode === "search";
+  btnSearch.style.background   = isSearch   ? "var(--accent, #4c8dff)" : "";
+  btnSearch.style.color        = isSearch   ? "#fff" : "";
+  btnOptimize.style.background = !isSearch  ? "var(--accent, #4c8dff)" : "";
+  btnOptimize.style.color      = !isSearch  ? "#fff" : "";
+  if (divSearch)   divSearch.style.display   = isSearch  ? "" : "none";
+  if (divOptimize) divOptimize.style.display = !isSearch ? "" : "none";
+}
+
+function analystSwitchMode(mode) {
+  _analystMode = mode;
+  _analystApplyModeStyle();
+  if (mode === "search") {
+    _analystRefresh();
+  } else {
+    _analystOptRefresh();
+  }
 }
 
 async function _analystRefresh() {
@@ -2735,7 +2841,7 @@ async function _analystLoadResults() {
     if (cnt) cnt.textContent = `(${results.length})`;
 
     if (!results.length) {
-      tbody.innerHTML = `<tr><td colspan="10" class="note">Нет результатов. Попробуйте снизить фильтры или увеличить период.</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="12" class="note">Нет результатов. Попробуйте снизить фильтры или увеличить период.</td></tr>`;
       return;
     }
 
@@ -2747,6 +2853,7 @@ async function _analystLoadResults() {
       const lotsCalc   = (r.avg_price > 0 && r.budget_rub > 0)
         ? Math.max(1, Math.floor(r.budget_rub * 0.95 / r.avg_price))
         : "—";
+      const minScore = r.min_signal_score_used != null ? r.min_signal_score_used : 0;
       return `<tr>
         <td><b style="color:${scoreColor}">${r.score.toFixed(1)}</b></td>
         <td><b>${esc(r.ticker)}</b><div class="note" style="font-size:11px">${esc(r.instrument_name)}</div></td>
@@ -2758,6 +2865,7 @@ async function _analystLoadResults() {
         <td class="mono ${r.net_pnl >= 0 ? "pnl-pos" : "pnl-neg"}">${r.net_pnl.toFixed(2)}</td>
         <td class="mono ${r.profit_factor >= 1 ? "pnl-pos" : "pnl-neg"}">${r.profit_factor.toFixed(2)}</td>
         <td class="mono">${r.max_drawdown.toFixed(2)}</td>
+        <td class="mono">${minScore}</td>
         <td>${saved}</td>
       </tr>`;
     }).join("");
@@ -2767,15 +2875,16 @@ async function _analystLoadResults() {
 }
 
 async function analystStart() {
-  const budget    = parseFloat((document.getElementById("anBudget")    || {}).value || "60000");
-  const interval  = (document.getElementById("anInterval")  || {}).value || "15min";
-  const days      = parseInt((document.getElementById("anDays")      || {}).value || "14");
-  const winRate   = parseFloat((document.getElementById("anWinRate")   || {}).value || "45");
-  const minTrades = parseInt((document.getElementById("anMinTrades") || {}).value || "5");
-  const minPnl    = parseFloat((document.getElementById("anMinPnl")    || {}).value || "0");
+  const budget       = parseFloat((document.getElementById("anBudget")    || {}).value || "60000");
+  const interval     = (document.getElementById("anInterval")  || {}).value || "15min";
+  const days         = parseInt((document.getElementById("anDays")      || {}).value || "14");
+  const winRate      = parseFloat((document.getElementById("anWinRate")   || {}).value || "45");
+  const minTrades    = parseInt((document.getElementById("anMinTrades") || {}).value || "5");
+  const minPnl       = parseFloat((document.getElementById("anMinPnl")    || {}).value || "0");
+  const excludeActive = !!(document.getElementById("anExcludeActive") || {}).checked;
 
   try {
-    await apiPostJson("/api/analyst/start", { budget_rub: budget, min_win_rate: winRate, min_trades: minTrades, days, interval, min_pnl: minPnl });
+    await apiPostJson("/api/analyst/start", { budget_rub: budget, min_win_rate: winRate, min_trades: minTrades, days, interval, min_pnl: minPnl, exclude_active: excludeActive });
     showToast("Поиск запущен", "success");
     // Reset results block
     const block = document.getElementById("anResultsBlock");
@@ -2785,6 +2894,139 @@ async function analystStart() {
     await _analystRefresh();
   } catch (e) {
     showToast(`Ошибка запуска: ${e.message}`, "error", 6000);
+  }
+}
+
+async function analystOptStart() {
+  const budget   = parseFloat((document.getElementById("anOptBudget")   || {}).value || "60000");
+  const interval = (document.getElementById("anOptInterval") || {}).value || "15min";
+  const days     = parseInt((document.getElementById("anOptDays")     || {}).value || "14");
+  try {
+    const res = await apiPostJson("/api/analyst/optimize-start", { budget_rub: budget, days, interval });
+    if (res.ok) {
+      showToast("Оптимизация запущена", "success");
+      const block = document.getElementById("anOptResultsBlock");
+      if (block) block.style.display = "none";
+      await _analystOptRefresh();
+    } else {
+      showToast(res.message || "Ошибка", "error");
+    }
+  } catch (e) {
+    showToast(`Ошибка: ${e.message}`, "error", 6000);
+  }
+}
+
+async function analystOptStop() {
+  try {
+    await fetch("/api/analyst/optimize-stop", { method: "POST", credentials: "same-origin" });
+    showToast("Остановка оптимизации запрошена", "info");
+  } catch {}
+}
+
+async function _analystOptRefresh() {
+  try {
+    const s = await apiGet("/api/analyst/optimize-status");
+    _analystOptUpdateStatus(s);
+    if (s.status === "running") {
+      if (!_analystOptPollTimer) {
+        _analystOptPollTimer = setInterval(async () => {
+          if (getTabFromHash() !== "аналитик") { _analystOptStopPoll(); return; }
+          try {
+            const st = await apiGet("/api/analyst/optimize-status");
+            _analystOptUpdateStatus(st);
+            if (st.status !== "running") { _analystOptStopPoll(); await _analystOptLoadResults(); }
+          } catch {}
+        }, 2000);
+      }
+    } else {
+      _analystOptStopPoll();
+      if (s.status === "done" || s.status === "stopped") await _analystOptLoadResults();
+    }
+  } catch {}
+}
+
+function _analystOptStopPoll() {
+  if (_analystOptPollTimer) { clearInterval(_analystOptPollTimer); _analystOptPollTimer = null; }
+}
+
+function _analystOptUpdateStatus(s) {
+  const prog     = document.getElementById("anOptProgressBlock");
+  const bar      = document.getElementById("anOptProgressBar");
+  const label    = document.getElementById("anOptProgressLabel");
+  const combo    = document.getElementById("anOptCurrentCombo");
+  const txt      = document.getElementById("anOptStatusText");
+  const btnStart = document.getElementById("anOptBtnStart");
+  const btnStop  = document.getElementById("anOptBtnStop");
+
+  const running = s.status === "running";
+  if (prog)     prog.style.display     = running ? "block" : "none";
+  if (btnStart) btnStart.style.display = running ? "none"  : "";
+  if (btnStop)  btnStop.style.display  = running ? ""      : "none";
+
+  if (s.total > 0 && bar) {
+    const pct = Math.round(s.progress / s.total * 100);
+    bar.style.width = pct + "%";
+    if (label) label.textContent = `${s.progress} / ${s.total} (${pct}%) · улучшено: ${s.found}`;
+  }
+  if (combo) combo.textContent = s.current || "";
+
+  const statusMap = {
+    idle: "Ожидание", running: "Идёт оптимизация…", done: "Завершена",
+    stopped: "Остановлена", error: "Ошибка",
+  };
+  if (txt) {
+    txt.textContent = statusMap[s.status] || s.status;
+    if (s.error) txt.textContent += ": " + s.error;
+  }
+}
+
+async function _analystOptLoadResults() {
+  try {
+    const results = await apiGet("/api/analyst/optimize-results");
+    const block = document.getElementById("anOptResultsBlock");
+    const tbody = document.getElementById("anOptResultsTbody");
+    const cnt   = document.getElementById("anOptResultCount");
+    if (!tbody) return;
+    if (block) block.style.display = results.length ? "block" : "none";
+    if (cnt) cnt.textContent = `(${results.length})`;
+    if (!results.length) {
+      tbody.innerHTML = `<tr><td colspan="12" class="note">Нет результатов. Убедитесь что у профиля есть параллельные стратегии.</td></tr>`;
+      return;
+    }
+    const modeLabels = {mean_reversion: "Возврат к средней", breakout: "Пробой", trend: "Тренд"};
+    const modeColors = {mean_reversion: "#a8c8ff", breakout: "#2ecc71", trend: "#f0c04a"};
+    tbody.innerHTML = results.map(r => {
+      const impColor = r.improvement_pct > 0 ? "#2ecc71" : r.improvement_pct < 0 ? "#ff7b7b" : "#aaa";
+      const applied = r.applied ? `<span class="badge badge-active">Применено</span>` :
+        `<button class="btn btn-small btn-primary" onclick="analystOptApply(${r.id})">Применить</button>`;
+      return `<tr>
+        <td><b>${esc(r.ticker)}</b><div class="note" style="font-size:11px">${esc(r.instrument_name)}</div></td>
+        <td style="font-size:12px">${esc(r.strategy_name)}</td>
+        <td style="color:${modeColors[r.base_mode]||'#eef4ff'};font-size:12px">${esc(modeLabels[r.base_mode]||r.base_mode)}</td>
+        <td class="mono" style="font-size:12px">${esc(r.base_sl_ui)} / ${esc(r.base_tp_ui)}</td>
+        <td class="mono ${r.base_pnl>=0?'pnl-pos':'pnl-neg'}">${esc(r.base_pnl_ui)}</td>
+        <td style="color:${modeColors[r.best_mode]||'#eef4ff'};font-size:12px">${esc(modeLabels[r.best_mode]||r.best_mode)}</td>
+        <td class="mono" style="font-size:12px">${esc(r.best_sl_ui)} / ${esc(r.best_tp_ui)}</td>
+        <td class="mono ${r.best_pnl>=0?'pnl-pos':'pnl-neg'}">${esc(r.best_pnl_ui)}</td>
+        <td style="color:${impColor};font-weight:600">${esc(r.improvement_ui)}</td>
+        <td class="mono">${r.best_min_signal_score}</td>
+        <td>${applied}</td>
+        <td></td>
+      </tr>`;
+    }).join("");
+  } catch (e) {
+    console.error("opt results error", e);
+  }
+}
+
+async function analystOptApply(resultId) {
+  if (!confirm("Применить найденные параметры к стратегии?")) return;
+  try {
+    await fetch(`/api/analyst/optimize-apply/${resultId}`, { method: "POST", credentials: "same-origin" });
+    showToast("Параметры применены", "success");
+    await _analystOptLoadResults();
+  } catch (e) {
+    showToast(`Ошибка: ${e.message}`, "error");
   }
 }
 
@@ -2823,6 +3065,7 @@ async function analystDetail(id) {
       ["R-Multiple",    r.avg_r_multiple?.toFixed(2)],
       ["Sharpe",        r.sharpe_ratio?.toFixed(2)],
       ["Score",          r.score?.toFixed(1)],
+      ["Мин. score сигнала", r.min_signal_score_used != null ? r.min_signal_score_used : 0],
       ["Ср. цена инстр.", r.avg_price_ui || "—"],
       ["Лотов (бюджет)",  r.lots_calc != null ? `${r.lots_calc} лот` : "—"],
       ["Бюджет",          r.budget_ui || "—"],
@@ -2958,6 +3201,10 @@ async function bootstrapDashboard() {
   window.analystStop  = analystStop;
   window.analystDetail = analystDetail;
   window.analystSave  = analystSave;
+  window.analystSwitchMode = analystSwitchMode;
+  window.analystOptStart = analystOptStart;
+  window.analystOptStop  = analystOptStop;
+  window.analystOptApply = analystOptApply;
   window.searchInstruments = searchInstruments;
   window.loadTopVolumeInstruments = loadTopVolumeInstruments;
   window.acceptSelectedInstruments = acceptSelectedInstruments;

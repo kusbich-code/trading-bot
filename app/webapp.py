@@ -849,6 +849,7 @@ def api_dashboard_settings(profile_id: Optional[int] = None):
                 "auto_reload_settings": ps("auto_reload_settings", "1"),
                 "tinvestusesandbox": ps("tinvestusesandbox", "true"),
                 "parallel_trading_enabled": ps("parallel_trading_enabled", "0"),
+                "trade_only_session": ps("trade_only_session", "1"),
             },
         },
         "view_strategy": {
@@ -1228,12 +1229,13 @@ async def api_analyst_start(request: Request):
         body = await request.json()
     except Exception:
         body = {}
-    budget      = float(body.get("budget_rub",      get_setting("analyst_budget_rub",    "60000")))
-    win_rate    = float(body.get("min_win_rate",     get_setting("analyst_min_win_rate",  "45")))
-    min_trades  = int(body.get("min_trades",         get_setting("analyst_min_trades",    "5")))
-    days        = int(body.get("days",               get_setting("analyst_days",          "14")))
-    interval    = str(body.get("interval",           get_setting("analyst_interval",      "15min")))
-    min_pnl     = float(body.get("min_pnl",         get_setting("analyst_min_pnl",       "0")))
+    budget        = float(body.get("budget_rub",      get_setting("analyst_budget_rub",    "60000")))
+    win_rate      = float(body.get("min_win_rate",     get_setting("analyst_min_win_rate",  "45")))
+    min_trades    = int(body.get("min_trades",         get_setting("analyst_min_trades",    "5")))
+    days          = int(body.get("days",               get_setting("analyst_days",          "14")))
+    interval      = str(body.get("interval",           get_setting("analyst_interval",      "15min")))
+    min_pnl       = float(body.get("min_pnl",         get_setting("analyst_min_pnl",       "0")))
+    exclude_active = bool(body.get("exclude_active", True))
 
     # Persist settings
     from app.db import db_cursor as _dbc
@@ -1245,7 +1247,7 @@ async def api_analyst_start(request: Request):
         ]:
             cur.execute("INSERT INTO bot_settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (k, v))
 
-    ok, msg = _analyst.start(budget, win_rate, min_trades, days, interval, min_pnl)
+    ok, msg = _analyst.start(budget, win_rate, min_trades, days, interval, min_pnl, exclude_active=exclude_active)
     if not ok:
         raise HTTPException(status_code=409, detail=msg)
     return {"ok": True, "message": msg}
@@ -1280,11 +1282,12 @@ def api_analyst_results(limit: int = 50):
             "max_drawdown":    round(r["max_drawdown"], 2),
             "avg_r_multiple":  round(r["avg_r_multiple"], 2),
             "sharpe_ratio":    round(r["sharpe_ratio"], 2),
-            "score":           round(r["score"], 1),
-            "avg_price":       round(float(r.get("avg_price") or 0), 4),
-            "budget_rub":      float(r.get("budget_rub") or 0),
-            "equity_curve":    json.loads(r["equity_curve"] or "[]"),
-            "saved":           r["saved_strategy_id"] is not None,
+            "score":                 round(r["score"], 1),
+            "avg_price":             round(float(r.get("avg_price") or 0), 4),
+            "budget_rub":            float(r.get("budget_rub") or 0),
+            "equity_curve":          json.loads(r["equity_curve"] or "[]"),
+            "saved":                 r["saved_strategy_id"] is not None,
+            "min_signal_score_used": int(r.get("min_signal_score_used") or 0),
         })
     return out
 
@@ -1324,6 +1327,57 @@ async def api_analyst_save(result_id: int, request: Request):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"ok": True, "strategy_id": sid, "strategy_name": name}
+
+
+@app.post("/api/analyst/optimize-start")
+async def api_analyst_optimize_start(request: Request):
+    body = await request.json()
+    ok, msg = _analyst.start_optimize(
+        budget_rub=float(body.get("budget_rub", 60000)),
+        days=int(body.get("days", 14)),
+        interval=body.get("interval", "15min"),
+    )
+    return JSONResponse({"ok": ok, "message": msg})
+
+
+@app.post("/api/analyst/optimize-stop")
+async def api_analyst_optimize_stop():
+    ok, msg = _analyst.stop_optimize()
+    return JSONResponse({"ok": ok, "message": msg})
+
+
+@app.get("/api/analyst/optimize-status")
+def api_analyst_optimize_status():
+    return JSONResponse(_analyst.get_opt_state())
+
+
+@app.get("/api/analyst/optimize-results")
+def api_analyst_optimize_results():
+    from app.db import get_optimization_results
+    results = get_optimization_results()
+    out = []
+    for r in results:
+        out.append({
+            **r,
+            "base_sl_ui": f"{r['base_sl']*100:.2f}%",
+            "base_tp_ui": f"{r['base_tp']*100:.2f}%",
+            "best_sl_ui": f"{r['best_sl']*100:.2f}%",
+            "best_tp_ui": f"{r['best_tp']*100:.2f}%",
+            "base_pnl_ui": fmt_money(r["base_pnl"]),
+            "best_pnl_ui": fmt_money(r["best_pnl"]),
+            "improvement_ui": f"+{r['improvement_pct']:.1f}%" if r["improvement_pct"] >= 0 else f"{r['improvement_pct']:.1f}%",
+        })
+    return JSONResponse(out)
+
+
+@app.post("/api/analyst/optimize-apply/{result_id}")
+async def api_analyst_optimize_apply(result_id: int):
+    from app.db import apply_optimization_result
+    try:
+        apply_optimization_result(result_id)
+        return JSONResponse({"ok": True})
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 # ── control ───────────────────────────────────────────────────────────────────
@@ -1374,6 +1428,7 @@ def api_profiles_save_settings(
     telegram_errors_only: str = Form("0"),
     auto_reload_settings: str = Form("1"),
     runtime_mode: str = Form("sandbox"),
+    trade_only_session: str = Form("1"),
 ):
     use_sandbox = "true" if runtime_mode == "sandbox" else "false"
     update_profile_settings(profile_id, {
@@ -1381,6 +1436,7 @@ def api_profiles_save_settings(
         "telegram_errors_only": bool01(telegram_errors_only),
         "auto_reload_settings": bool01(auto_reload_settings),
         "tinvestusesandbox": use_sandbox,
+        "trade_only_session": bool01(trade_only_session),
     })
     return JSONResponse({"ok": True})
 
@@ -1417,7 +1473,6 @@ def api_strategies_save_settings(
     estimated_commission_pct: str = Form("0.04"),
     allow_long_global: str = Form("1"),
     allow_short_global: str = Form("1"),
-    trade_only_session: str = Form("0"),
     pause_after_error_sec: str = Form("10"),
     tradingmode: str = Form("trend"),
     errorseriespausecount: str = Form("3"),
@@ -1435,7 +1490,6 @@ def api_strategies_save_settings(
         "estimated_commission_pct": str(safe_decimal(estimated_commission_pct) / Decimal("100")),
         "allow_long_global": bool01(allow_long_global),
         "allow_short_global": bool01(allow_short_global),
-        "trade_only_session": bool01(trade_only_session),
         "pause_after_error_sec": pause_after_error_sec,
         "tradingmode": tradingmode,
         "errorseriespausecount": errorseriespausecount,

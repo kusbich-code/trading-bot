@@ -5,7 +5,7 @@ from datetime import datetime
 from app.config import settings
 
 
-PROFILE_SETTING_KEYS = {"bot_enabled", "telegram_errors_only", "auto_reload_settings", "tinvestusesandbox", "parallel_trading_enabled"}
+PROFILE_SETTING_KEYS = {"bot_enabled", "telegram_errors_only", "auto_reload_settings", "tinvestusesandbox", "parallel_trading_enabled", "trade_only_session"}
 
 STRATEGY_SETTING_KEYS = {
     "max_trades_per_day", "max_daily_loss_rub", "max_open_positions", "check_interval_sec",
@@ -269,6 +269,58 @@ def init_db():
         except Exception:
             pass
 
+        try:
+            cur.execute("ALTER TABLE analyst_results ADD COLUMN min_signal_score_used INTEGER DEFAULT 0")
+        except Exception:
+            pass
+
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS optimization_results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT,
+            created_at TEXT,
+            strategy_id INTEGER,
+            strategy_name TEXT,
+            figi TEXT,
+            ticker TEXT,
+            instrument_name TEXT DEFAULT '',
+            base_mode TEXT DEFAULT '',
+            base_sl REAL DEFAULT 0,
+            base_tp REAL DEFAULT 0,
+            base_pnl REAL DEFAULT 0,
+            base_trades INTEGER DEFAULT 0,
+            base_win_rate REAL DEFAULT 0,
+            best_mode TEXT DEFAULT '',
+            best_sl REAL DEFAULT 0,
+            best_tp REAL DEFAULT 0,
+            best_pnl REAL DEFAULT 0,
+            best_trades INTEGER DEFAULT 0,
+            best_win_rate REAL DEFAULT 0,
+            best_profit_factor REAL DEFAULT 0,
+            best_min_signal_score INTEGER DEFAULT 0,
+            improvement_pct REAL DEFAULT 0,
+            applied INTEGER DEFAULT 0,
+            applied_at TEXT DEFAULT ''
+        )
+        """)
+
+        # Migration: seed trade_only_session for existing profiles that don't have it
+        try:
+            cur.execute("SELECT id FROM profiles")
+            profile_ids = [row[0] for row in cur.fetchall()]
+            for pid in profile_ids:
+                cur.execute(
+                    "SELECT 1 FROM profile_settings WHERE profile_id=? AND key='trade_only_session'",
+                    (pid,)
+                )
+                if not cur.fetchone():
+                    cur.execute(
+                        "INSERT INTO profile_settings(profile_id, key, value) VALUES(?,?,?)",
+                        (pid, "trade_only_session", "1")
+                    )
+        except Exception:
+            pass
+
         ensure_instruments_columns(cur)
         seed_instruments(cur)
         _seed_defaults(cur)
@@ -342,6 +394,7 @@ def _seed_default_profile_and_strategy(cur):
         "auto_reload_settings": "1",
         "tinvestusesandbox": "true",
         "parallel_trading_enabled": "0",
+        "trade_only_session": "1",
     }
 
     cur.execute("SELECT id FROM strategies WHERE name = 'Основная'")
@@ -1423,3 +1476,47 @@ def list_enabled_instruments():
     with db_cursor() as cur:
         cur.execute("SELECT * FROM instruments WHERE enabled=1 ORDER BY priority ASC, ticker ASC")
         return [dict(row) for row in cur.fetchall()]
+
+
+# ── optimization results ──────────────────────────────────────────────────────
+
+def get_optimization_results(run_id: str = None) -> list:
+    with db_cursor() as cur:
+        if run_id:
+            cur.execute("SELECT * FROM optimization_results WHERE run_id=? ORDER BY improvement_pct DESC", (run_id,))
+        else:
+            cur.execute("SELECT * FROM optimization_results ORDER BY id DESC LIMIT 100")
+        return [dict(r) for r in cur.fetchall()]
+
+
+def apply_optimization_result(result_id: int):
+    """Apply best settings from optimization result to the strategy."""
+    with db_cursor() as cur:
+        cur.execute("SELECT * FROM optimization_results WHERE id=?", (result_id,))
+        row = cur.fetchone()
+        if not row:
+            raise ValueError(f"Result {result_id} not found")
+        r = dict(row)
+        sid = r["strategy_id"]
+        # Update strategy settings
+        for key, val in [
+            ("tradingmode", r["best_mode"]),
+            ("default_stop_loss_pct", str(r["best_sl"])),
+            ("default_take_profit_pct", str(r["best_tp"])),
+            ("min_signal_score", str(r["best_min_signal_score"])),
+        ]:
+            if key in STRATEGY_SETTING_KEYS:
+                cur.execute("""
+                INSERT INTO strategy_settings(strategy_id, key, value)
+                VALUES(?,?,?)
+                ON CONFLICT(strategy_id,key) DO UPDATE SET value=excluded.value
+                """, (sid, key, val))
+        # Update instrument SL/TP
+        cur.execute("""
+        UPDATE strategy_instruments
+        SET stop_loss_pct=?, take_profit_pct=?
+        WHERE strategy_id=? AND figi=?
+        """, (str(r["best_sl"]), str(r["best_tp"]), sid, r["figi"]))
+        # Mark as applied
+        cur.execute("UPDATE optimization_results SET applied=1, applied_at=? WHERE id=?",
+                    (datetime.now().isoformat(), result_id))

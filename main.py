@@ -410,7 +410,18 @@ def _candles_to_dicts(candles) -> list:
 
 
 def is_session_allowed(client, figi: str) -> bool:
-    trade_only_session = get_setting("trade_only_session", "0") == "1"
+    """
+    Проверяет, разрешена ли торговля в текущей сессии.
+    Читает trade_only_session из настроек активного профиля (profile_settings),
+    с откатом на bot_settings для обратной совместимости.
+    """
+    # Читаем из профиля если возможно
+    active_pid_str = get_setting("active_profile_id", "").strip()
+    if active_pid_str:
+        trade_only_session = get_profile_setting(int(active_pid_str), "trade_only_session", "0") == "1"
+    else:
+        trade_only_session = get_setting("trade_only_session", "0") == "1"
+
     if not trade_only_session:
         return True
 
@@ -802,10 +813,9 @@ def process_instrument(client, item,
         return
 
     # Session и tradable-проверки — после сохранения цены в market_state
-    # Используем _cfg чтобы параллельные стратегии читали свои настройки
-    if _cfg("trade_only_session", "0") == "1":
-        if not is_session_allowed(client, figi):
-            return
+    # is_session_allowed читает trade_only_session из профиля (profile level)
+    if not is_session_allowed(client, figi):
+        return
 
     trading_status = get_trading_status(client, figi)
     if not is_tradable(trading_status):

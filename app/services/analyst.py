@@ -33,6 +33,16 @@ _state: Dict[str, Any] = {
 _stop_event = threading.Event()
 _thread: Optional[threading.Thread] = None
 
+# ── Состояние оптимизации ─────────────────────────────────────────────────────
+
+_opt_lock = threading.Lock()
+_opt_state: Dict[str, Any] = {
+    "status": "idle", "run_id": None, "progress": 0, "total": 0,
+    "current": "", "found": 0, "error": None,
+}
+_opt_stop = threading.Event()
+_opt_thread: Optional[threading.Thread] = None
+
 # ── Инструменты для перебора ─────────────────────────────────────────────────
 
 SEARCH_INSTRUMENTS = [
@@ -47,15 +57,45 @@ SEARCH_INSTRUMENTS = [
     {"figi": "BBG004730JJ5", "ticker": "MOEX", "name": "Московская биржа", "lot": 1},
     {"figi": "BBG004730ZJ9", "ticker": "VTBR", "name": "ВТБ",              "lot": 1},
     {"figi": "BBG004S68B31", "ticker": "ALRS", "name": "АЛРОСА",           "lot": 1},
-    {"figi": "BBG004731354", "ticker": "ROSN", "name": "Роснефть",         "lot": 1},
 ]
 
 MODES      = ["mean_reversion", "breakout", "trend"]
 SL_OPTIONS = [0.002, 0.003, 0.004, 0.005]
 TP_OPTIONS = [0.004, 0.006, 0.008, 0.010, 0.015]
 
+SCORE_THRESHOLDS = [0, 10, 20, 30, 40, 50, 60]
 
-# ── Публичный API ────────────────────────────────────────────────────────────
+
+# ── Вспомогательная функция подбора оптимального score ───────────────────────
+
+def _find_optimal_score(candles, mode, sl, tp, lots, budget_rub) -> int:
+    """Run backtests at different score thresholds, pick the one that maximizes net_pnl × win_rate × (1-drawdown)."""
+    from app.services.backtest_engine import run_backtest
+    best_threshold = 0
+    best_metric = -99999.0
+    for threshold in SCORE_THRESHOLDS:
+        try:
+            res = run_backtest(
+                candles=candles, mode=mode,
+                stop_loss_pct=sl, take_profit_pct=tp,
+                commission_pct=0.0004,
+                initial_capital=float(budget_rub),
+                qty=lots,
+                min_signal_score=threshold,
+            )
+        except Exception:
+            continue
+        if res.total_trades < 3:
+            continue
+        dd_factor = 1.0 - min(res.max_drawdown_pct / 100.0, 0.9)
+        metric = res.net_pnl * (res.win_rate / 100.0) * dd_factor
+        if metric > best_metric:
+            best_metric = metric
+            best_threshold = threshold
+    return best_threshold
+
+
+# ── Публичный API (поиск) ────────────────────────────────────────────────────
 
 def get_state() -> Dict[str, Any]:
     with _lock:
@@ -69,6 +109,7 @@ def start(
     days: int,
     interval: str,
     min_pnl: float,
+    exclude_active: bool = True,
 ) -> tuple[bool, str]:
     global _thread
     with _lock:
@@ -77,7 +118,7 @@ def start(
     _stop_event.clear()
     _thread = threading.Thread(
         target=_worker,
-        args=(budget_rub, min_win_rate, min_trades, days, interval, min_pnl),
+        args=(budget_rub, min_win_rate, min_trades, days, interval, min_pnl, exclude_active),
         daemon=True,
         name="analyst-worker",
     )
@@ -90,14 +131,41 @@ def stop() -> tuple[bool, str]:
     return True, "Остановка запрошена"
 
 
-# ── Воркер ───────────────────────────────────────────────────────────────────
+# ── Публичный API (оптимизация) ──────────────────────────────────────────────
+
+def get_opt_state() -> Dict[str, Any]:
+    with _opt_lock:
+        return dict(_opt_state)
+
+
+def start_optimize(budget_rub: float, days: int, interval: str) -> tuple[bool, str]:
+    global _opt_thread
+    with _opt_lock:
+        if _opt_state["status"] == "running":
+            return False, "Оптимизация уже запущена"
+    _opt_stop.clear()
+    _opt_thread = threading.Thread(
+        target=_optimization_worker,
+        args=(budget_rub, days, interval),
+        daemon=True, name="analyst-optimize",
+    )
+    _opt_thread.start()
+    return True, "Оптимизация запущена"
+
+
+def stop_optimize() -> tuple[bool, str]:
+    _opt_stop.set()
+    return True, "Остановка оптимизации запрошена"
+
+
+# ── Воркер (поиск) ───────────────────────────────────────────────────────────
 
 def _upd(**kwargs):
     with _lock:
         _state.update(kwargs)
 
 
-def _worker(budget_rub, min_win_rate, min_trades, days, interval, min_pnl):
+def _worker(budget_rub, min_win_rate, min_trades, days, interval, min_pnl, exclude_active: bool = True):
     from app.services.tbank_client import get_candles_range
     from app.services.backtest_engine import run_backtest
     from app.db import log_event, db_cursor
@@ -110,11 +178,28 @@ def _worker(budget_rub, min_win_rate, min_trades, days, interval, min_pnl):
     try:
         # Дедуплицируем инструменты по figi
         seen: set = set()
-        instruments = []
+        all_instruments = []
         for inst in SEARCH_INSTRUMENTS:
             if inst["figi"] not in seen:
                 seen.add(inst["figi"])
-                instruments.append(inst)
+                all_instruments.append(inst)
+
+        # Исключаем инструменты из активных параллельных стратегий
+        excluded_figis: set = set()
+        if exclude_active:
+            from app.db import get_setting, list_profile_parallel_strategies, list_strategy_instruments
+            active_pid = get_setting("active_profile_id", "").strip()
+            if active_pid:
+                try:
+                    for strat in list_profile_parallel_strategies(int(active_pid)):
+                        for instr in list_strategy_instruments(strat["strategy_id"]):
+                            excluded_figis.add(instr["figi"])
+                except Exception:
+                    pass
+
+        instruments = [i for i in all_instruments if i["figi"] not in excluded_figis]
+        if not instruments:
+            instruments = list(all_instruments)  # fallback: don't exclude if all are excluded
 
         # Строим сетку поиска (только TP > SL × 1.5 для минимального risk:reward 1.5)
         combos: List[tuple] = []
@@ -187,6 +272,9 @@ def _worker(budget_rub, min_win_rate, min_trades, days, interval, min_pnl):
             if res.win_rate < min_win_rate:
                 continue
 
+            # Подбираем оптимальный score для этой комбинации
+            optimal_score = _find_optimal_score(candles, mode, sl, tp, lots, float(budget_rub))
+
             # Комплексный скор: profit_factor × win_rate × (1 - max_dd%)
             dd_penalty = 1.0 - min(res.max_drawdown_pct / 100.0, 0.9)
             score = round(res.profit_factor * (res.win_rate / 100) * dd_penalty * 100, 2)
@@ -205,17 +293,16 @@ def _worker(budget_rub, min_win_rate, min_trades, days, interval, min_pnl):
                     interval, days, sl_pct, tp_pct, budget_rub,
                     net_pnl, win_rate, profit_factor, total_trades,
                     max_drawdown, avg_r_multiple, sharpe_ratio,
-                    equity_curve, score, avg_price
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    equity_curve, score, avg_price, min_signal_score_used
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """, (
                     run_id, datetime.now().isoformat(),
                     mode, figi, ticker, inst["name"],
                     interval, days, str(sl), str(tp), float(budget_rub),
                     res.net_pnl, res.win_rate, res.profit_factor, res.total_trades,
                     res.max_drawdown, res.avg_r_multiple, res.sharpe_ratio,
-                    eq_json, score, avg_price,
+                    eq_json, score, avg_price, optimal_score,
                 ))
-            # лоты хранятся в avg_price → пересчитываются при сохранении; доп. колонка не нужна
 
             found += 1
             _upd(found=found)
@@ -229,6 +316,200 @@ def _worker(budget_rub, min_win_rate, min_trades, days, interval, min_pnl):
         try:
             from app.db import log_event
             log_event("ANALYST", f"Ошибка: {exc}", level="ERROR")
+        except Exception:
+            pass
+
+
+# ── Воркер оптимизации ───────────────────────────────────────────────────────
+
+def _opt_upd(**kwargs):
+    with _opt_lock:
+        _opt_state.update(kwargs)
+
+
+def _optimization_worker(budget_rub: float, days: int, interval: str):
+    from app.services.tbank_client import get_candles_range
+    from app.services.backtest_engine import run_backtest
+    from app.db import (db_cursor, get_setting, log_event,
+                        list_profile_parallel_strategies, list_strategy_instruments,
+                        get_strategy_settings)
+
+    run_id = str(uuid.uuid4())[:8]
+    _opt_upd(status="running", run_id=run_id, progress=0, total=0,
+             current="Инициализация…", found=0, error=None)
+
+    try:
+        # Get active profile's parallel strategies and instruments
+        active_pid = get_setting("active_profile_id", "").strip()
+        if not active_pid:
+            _opt_upd(status="error", error="Нет активного профиля")
+            return
+
+        parallel_strats = list_profile_parallel_strategies(int(active_pid))
+        if not parallel_strats:
+            _opt_upd(status="error", error="Нет параллельных стратегий в профиле")
+            return
+
+        # Build work items: (strategy_id, strategy_name, instrument, current_settings)
+        work_items = []
+        for strat in parallel_strats:
+            sid = strat["strategy_id"]
+            strat_settings = get_strategy_settings(sid)
+            instruments = list_strategy_instruments(sid)
+            for instr in instruments:
+                if str(instr.get("enabled", 1)) not in ("1", "true"):
+                    continue
+                work_items.append({
+                    "strategy_id": sid,
+                    "strategy_name": strat["name"],
+                    "figi": instr["figi"],
+                    "ticker": instr["ticker"],
+                    "name": instr.get("name", instr["ticker"]),
+                    "current_mode": strat_settings.get("tradingmode", "trend"),
+                    "current_sl": float(strat_settings.get("default_stop_loss_pct", "0.0025")),
+                    "current_tp": float(strat_settings.get("default_take_profit_pct", "0.005")),
+                })
+
+        _opt_upd(total=len(work_items))
+
+        # Clear old optimization results
+        with db_cursor() as cur:
+            cur.execute("DELETE FROM optimization_results")
+
+        candles_cache: Dict[str, list] = {}
+
+        # Param grid for alternatives
+        opt_modes = ["mean_reversion", "breakout", "trend"]
+        opt_sl = [0.002, 0.003, 0.004, 0.005]
+        opt_tp = [0.004, 0.006, 0.008, 0.010, 0.015]
+
+        found = 0
+        for idx, item in enumerate(work_items):
+            if _opt_stop.is_set():
+                _opt_upd(status="stopped", current="Остановлено пользователем")
+                return
+
+            figi = item["figi"]
+            ticker = item["ticker"]
+            _opt_upd(progress=idx + 1, current=f"{ticker} — загрузка свечей…")
+
+            # Load candles (cached per figi)
+            if figi not in candles_cache:
+                try:
+                    candles_cache[figi] = get_candles_range(figi=figi, interval_name=interval, days=days)
+                except Exception:
+                    candles_cache[figi] = []
+            candles = candles_cache.get(figi, [])
+            if len(candles) < 30:
+                continue
+
+            # Calculate lots
+            closes = [c["close"] for c in candles if c.get("close")]
+            avg_price = round(sum(closes) / len(closes), 4) if closes else 0.0
+            lots = max(1, int((budget_rub * 0.95) // avg_price)) if avg_price > 0 else 1
+
+            # Baseline with current settings
+            _opt_upd(current=f"{ticker} — бэктест с текущими настройками…")
+            try:
+                base_res = run_backtest(
+                    candles=candles,
+                    mode=item["current_mode"],
+                    stop_loss_pct=item["current_sl"],
+                    take_profit_pct=item["current_tp"],
+                    commission_pct=0.0004,
+                    initial_capital=float(budget_rub),
+                    qty=lots,
+                )
+            except Exception:
+                base_res = None
+
+            base_pnl = base_res.net_pnl if base_res else 0.0
+            base_trades = base_res.total_trades if base_res else 0
+            base_wr = base_res.win_rate if base_res else 0.0
+
+            # Grid search for best alternative
+            best_res = None
+            best_mode_found = item["current_mode"]
+            best_sl_found = item["current_sl"]
+            best_tp_found = item["current_tp"]
+            best_score_found = 0
+            best_metric = -99999.0
+
+            combos_count = sum(1 for m in opt_modes for sl in opt_sl for tp in opt_tp if tp >= sl * 1.5)
+            processed = 0
+
+            for mode in opt_modes:
+                for sl in opt_sl:
+                    for tp in opt_tp:
+                        if _opt_stop.is_set():
+                            break
+                        if tp < sl * 1.5:
+                            continue
+                        processed += 1
+                        _opt_upd(current=f"{ticker} — {mode} SL={sl*100:.1f}% TP={tp*100:.1f}% ({processed}/{combos_count})")
+                        try:
+                            res = run_backtest(
+                                candles=candles, mode=mode,
+                                stop_loss_pct=sl, take_profit_pct=tp,
+                                commission_pct=0.0004,
+                                initial_capital=float(budget_rub),
+                                qty=lots,
+                            )
+                        except Exception:
+                            continue
+                        if res.total_trades < 3:
+                            continue
+                        dd_factor = 1.0 - min(res.max_drawdown_pct / 100.0, 0.9)
+                        metric = res.profit_factor * (res.win_rate / 100) * dd_factor * res.net_pnl
+                        if metric > best_metric:
+                            best_metric = metric
+                            best_res = res
+                            best_mode_found = mode
+                            best_sl_found = sl
+                            best_tp_found = tp
+
+            if best_res is None:
+                continue
+
+            # Find optimal score for best settings
+            _opt_upd(current=f"{ticker} — подбор оптимального score…")
+            best_score_found = _find_optimal_score(candles, best_mode_found, best_sl_found, best_tp_found, lots, float(budget_rub))
+
+            improvement_pct = 0.0
+            if abs(base_pnl) > 0.01:
+                improvement_pct = round((best_res.net_pnl - base_pnl) / abs(base_pnl) * 100, 1)
+            elif best_res.net_pnl > 0:
+                improvement_pct = 100.0
+
+            with db_cursor() as cur:
+                cur.execute("""
+                INSERT INTO optimization_results(
+                    run_id, created_at, strategy_id, strategy_name, figi, ticker, instrument_name,
+                    base_mode, base_sl, base_tp, base_pnl, base_trades, base_win_rate,
+                    best_mode, best_sl, best_tp, best_pnl, best_trades, best_win_rate,
+                    best_profit_factor, best_min_signal_score, improvement_pct
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """, (
+                    run_id, datetime.now().isoformat(),
+                    item["strategy_id"], item["strategy_name"],
+                    figi, ticker, item["name"],
+                    item["current_mode"], item["current_sl"], item["current_tp"],
+                    base_pnl, base_trades, base_wr,
+                    best_mode_found, best_sl_found, best_tp_found,
+                    best_res.net_pnl, best_res.total_trades, best_res.win_rate,
+                    best_res.profit_factor, best_score_found, improvement_pct,
+                ))
+            found += 1
+            _opt_upd(found=found)
+
+        _opt_upd(status="done", current=f"Оптимизация завершена. Проверено: {len(work_items)}")
+        log_event("ANALYST", f"Оптимизация завершена, run_id={run_id}, улучшено={found}")
+
+    except Exception as exc:
+        _opt_upd(status="error", error=str(exc))
+        try:
+            from app.db import log_event
+            log_event("ANALYST", f"Ошибка оптимизации: {exc}", level="ERROR")
         except Exception:
             pass
 
@@ -273,6 +554,7 @@ def save_as_strategy(result_id: int, strategy_name: str) -> int:
     mode       = result["tradingmode"]
     budget_rub = float(result.get("budget_rub") or 0)
     avg_price  = float(result.get("avg_price") or 0)
+    min_score  = int(result.get("min_signal_score_used") or 0)
 
     # Лоты, помещающиеся в бюджет с запасом безопасности 5%, гарантирующим покрытие
     if avg_price > 0 and budget_rub > 0:
@@ -285,14 +567,13 @@ def save_as_strategy(result_id: int, strategy_name: str) -> int:
         "default_stop_loss_pct":    str(sl),
         "default_take_profit_pct":  str(tp),
         "estimated_commission_pct": "0.0004",
-        "min_signal_score":         "0",   # фильтрация по score отключена — стратегия сама определяет качество сигнала
+        "min_signal_score":         str(min_score),
         "max_trades_per_day":       "10",
         "max_open_positions":       "2",
         "max_daily_loss_rub":       "500",
         "check_interval_sec":       "5",
         "allow_long_global":        "1",
         "allow_short_global":       "0",
-        "trade_only_session":       "0",   # не ограничиваем торговой сессией (sandbox-совместимо)
         "pause_after_error_sec":    "10",
         "errorseriespausecount":    "3",
         "stopseriespausecount":     "3",

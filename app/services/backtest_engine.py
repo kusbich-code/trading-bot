@@ -47,6 +47,7 @@ def run_backtest(
     commission_pct: float = 0.0004,
     initial_capital: float = 100_000.0,
     qty: int = 1,
+    min_signal_score: int = 0,
 ) -> BacktestResult:
     """
     Событийно-управляемый бэктест на OHLCV свечах с сигналами strategy_engine.
@@ -55,7 +56,8 @@ def run_backtest(
     На каждом баре:
       1. Если позиция открыта — проверяем SL/TP по high/low бара.
       2. Если нет позиции — оцениваем сигнал на candles[0..i].
-      3. При сигнале BUY/SELL — открываем позицию по закрытию бара.
+      3. Если min_signal_score > 0 и score < порога — пропускаем бар.
+      4. При сигнале BUY/SELL — открываем позицию по закрытию бара.
     Одна позиция одновременно; комиссия взимается при входе и выходе.
     """
     from app.services.strategy_engine import evaluate_signal
@@ -127,6 +129,9 @@ def run_backtest(
             window = candles[: i + 1]
             sig = evaluate_signal(mode, window)
             action = sig.get("action", "HOLD")
+            score = sig.get("score", 0)
+            if min_signal_score > 0 and score < min_signal_score:
+                continue  # skip to next bar without opening position
 
             if action in ("BUY", "SELL"):
                 entry_comm = bar_close * qty * commission_pct
