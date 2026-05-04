@@ -79,7 +79,7 @@ def with_client():
 
 def get_last_price(figi: str) -> Decimal:
     with with_client() as client:
-        resp = client.market_data.get_last_prices(figi=[figi])
+        resp = client.market_data.get_last_prices(instrument_id=[figi])
         last = resp.last_prices[0].price
         return quotation_to_decimal_safe(last)
 
@@ -180,7 +180,7 @@ def get_candles_range(
         for chunk_from, chunk_to in chunks:
             try:
                 resp = client.market_data.get_candles(
-                    figi=figi,
+                    instrument_id=figi,
                     from_=chunk_from,
                     to=chunk_to,
                     interval=interval,
@@ -217,7 +217,7 @@ def get_candles(figi: str, interval_name: str = "1min", hours: int = 8) -> List[
     from_dt = datetime.utcnow() - timedelta(hours=hours)
     out: List[Dict[str, Any]] = []
     with with_client() as client:
-        candles = client.market_data.get_candles(figi=figi, from_=from_dt, to=datetime.utcnow(), interval=interval).candles
+        candles = client.market_data.get_candles(instrument_id=figi, from_=from_dt, to=datetime.utcnow(), interval=interval).candles
         for c in candles:
             out.append(
                 {

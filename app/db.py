@@ -871,6 +871,15 @@ def delete_instrument(figi):
         cur.execute("UPDATE instruments SET enabled = 0 WHERE figi = ?", (figi,))
 
 
+def save_instrument_uid(figi: str, uid: str):
+    """Сохраняет instrument_uid по figi в instruments и strategy_instruments."""
+    if not uid:
+        return
+    with db_cursor() as cur:
+        cur.execute("UPDATE instruments SET instrument_uid = ? WHERE figi = ? AND (instrument_uid IS NULL OR instrument_uid = '')", (uid, figi))
+        cur.execute("UPDATE strategy_instruments SET instrument_uid = ? WHERE figi = ? AND (instrument_uid IS NULL OR instrument_uid = '')", (uid, figi))
+
+
 # ── market state ──────────────────────────────────────────────────────────────
 
 def upsert_instrument_market_state(figi: str, ticker: str, last_price, price_time: str, volume_1m: int = 0):

@@ -55,6 +55,7 @@ from app.db import (
     get_profile_setting,
     get_open_positions,
     get_instrument_market_state_map,
+    save_instrument_uid,
 )
 from app.instruments import get_instrument_meta, round_to_price_step
 from app.telegram_notify import TelegramNotifier
@@ -367,13 +368,13 @@ def quotation_from_decimal(price: Decimal) -> Quotation:
     return Quotation(units=units, nano=nano)
 
 
-def get_last_price(client, figi: str) -> Decimal:
-    resp = client.market_data.get_last_prices(figi=[figi])
+def get_last_price(client, figi: str, instrument_uid: str = "") -> Decimal:
+    resp = client.market_data.get_last_prices(instrument_id=[instrument_uid or figi])
     return quotation_to_decimal(resp.last_prices[0].price)
 
-def get_order_book_spread_pct(client, figi: str) -> Decimal:
+def get_order_book_spread_pct(client, figi: str, instrument_uid: str = "") -> Decimal:
     try:
-        book = client.market_data.get_order_book(figi=figi, depth=1)
+        book = client.market_data.get_order_book(instrument_id=instrument_uid or figi, depth=1)
         bids = getattr(book, "bids", []) or []
         asks = getattr(book, "asks", []) or []
 
@@ -516,11 +517,19 @@ def sync_portfolio_positions(client):
         portfolio = client.operations.get_portfolio(account_id=settings.TINVEST_ACCOUNT_ID)
         positions = getattr(portfolio, "positions", []) or []
 
+        # Карта figi→ticker из нашей БД (market_state) — надёжнее чем тикер от брокера
+        _figi_to_ticker = {
+            row["figi"]: row["ticker"]
+            for row in get_instrument_market_state_map().values()
+            if row.get("figi") and row.get("ticker")
+        }
+
         broker_figis: set = set()
         for p in positions:
             figi = getattr(p, "figi", "") or ""
             instrument_type = str(getattr(p, "instrument_type", "") or "").lower()
-            ticker = getattr(p, "ticker", "") or figi[:8]
+            # Тикер из нашей БД по figi — брокер в Sandbox может вернуть неверный тикер
+            ticker = _figi_to_ticker.get(figi) or getattr(p, "ticker", "") or figi[:8]
 
             if not figi or "currency" in instrument_type or ticker.upper().startswith("RUB"):
                 continue
@@ -585,10 +594,10 @@ def sync_portfolio_positions(client):
     except Exception as e:
         log.warning(f"sync_portfolio_positions error: {e}")
 
-def get_candles(client, figi: str, n=20):
+def get_candles(client, figi: str, n=20, instrument_uid: str = ""):
     now = datetime.now(timezone.utc)
     resp = client.market_data.get_candles(
-        figi=figi,
+        instrument_id=instrument_uid or figi,
         from_=now - timedelta(minutes=n + 5),
         to=now,
         interval=CandleInterval.CANDLE_INTERVAL_1_MIN,
@@ -653,9 +662,14 @@ def load_enabled_instruments(client):
             log_event("INVALID_FIGI", f"Meta not loaded for figi={item['figi']}", ticker=item["ticker"], level="WARNING")
             continue
 
+        # uid из БД или из API-ответа; сохраняем если не было
+        uid = item.get("instrument_uid", "") or meta.get("uid", "")
+        if uid and not item.get("instrument_uid"):
+            save_instrument_uid(item["figi"], uid)
+
         state.instrument_meta[item["ticker"]] = {
             "figi": item["figi"],
-            "instrument_uid": item.get("instrument_uid", "") or "",
+            "instrument_uid": uid,
             "ticker": item["ticker"],
             "lot": item["lot"],
             "name": item["name"],
@@ -708,8 +722,9 @@ def place_order_checked(client, ticker: str, figi: str, lots: int, raw_price: De
     request_order_id = str(uuid.uuid4())
 
     try:
+        uid = meta.get("instrument_uid", "") or ""
         resp = client.orders.post_order(
-            figi=figi,
+            instrument_id=uid or figi,
             quantity=lots,
             price=q,
             direction=direction,
@@ -866,16 +881,18 @@ def process_instrument(client, item,
     trailing_stop_enabled = _cfg("trailing_stop_enabled", "0") == "1"
     use_signal_service    = _cfg("use_signal_service", "0") == "1"
 
+    instrument_uid = item.get("instrument_uid", "") or ""
+
     try:
         # ── Цена: стрим (быстро) → REST резервный вариант ────────────────────
         with _md_lock:
             stream_md = _md.get(figi, {})
         stream_price = stream_md.get("price")
-        price = stream_price if (stream_price and stream_price > 0) else get_last_price(client, figi)
+        price = stream_price if (stream_price and stream_price > 0) else get_last_price(client, figi, instrument_uid=instrument_uid)
 
         # ── Свечи: 50 баров достаточно для всех режимов strategy_engine ──────
         candle_n = 50
-        candles = get_candles(client, figi, n=candle_n)
+        candles = get_candles(client, figi, n=candle_n, instrument_uid=instrument_uid)
         last_volume = get_last_candle_volume(candles)
 
         # ── Стакан: стрим depth=10 → REST depth=1 резервный вариант ─────────
@@ -885,7 +902,7 @@ def process_instrument(client, item,
             bid_vol: int = ob_stream["bid_vol"]
             ask_vol: int = ob_stream["ask_vol"]
         else:
-            spread_pct = get_order_book_spread_pct(client, figi)
+            spread_pct = get_order_book_spread_pct(client, figi, instrument_uid=instrument_uid)
             bid_vol = ask_vol = 0
 
         # Сохраняем цену всегда — до любых дальнейших проверок
