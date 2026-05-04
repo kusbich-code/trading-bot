@@ -823,7 +823,7 @@ def api_dashboard_bot_explain():
     else:
         enabled_instruments_count = 0
 
-    open_positions = get_open_positions()
+    open_positions = get_open_positions(source="BOT")
 
     # trade_only_session теперь на уровне профиля
     trade_only_session = "0"
@@ -1296,7 +1296,8 @@ def api_parallel_status():
     pid = int(active_profile_id)
     parallel_strats = list_profile_parallel_strategies(pid)
     market_map = get_instrument_market_state_map()
-    open_pos = {p["figi"]: p for p in get_open_positions()}
+    # Только BOT позиции — PORTFOLIO может содержать стейл данные или неверные тикеры из Sandbox
+    open_pos = {p["figi"]: p for p in get_open_positions(source="BOT")}
 
     # Thread statuses + stats
     result = []
@@ -2011,9 +2012,27 @@ async def api_instruments_top(limit: int = 20):
 @app.post("/api/позиции/закрыть")
 def api_close_position(figi: str = Form(...), qty: int = Form(...), direction: str = Form(...)):
     close_direction = "LONG_CLOSE" if str(direction).upper() == "BUY" else "SHORT_CLOSE"
-    result = post_market_close(figi=figi, quantity=int(qty), direction=close_direction)
-    log_event("POSITION_CLOSE", f"close order posted figi={figi} qty={qty} direction={close_direction}", ticker=figi)
-    return {"ok": True, "message": "close order posted", "order_id": getattr(result, "order_id", "")}
+    # Берём instrument_uid из нашей БД для этого figi
+    mmap = get_instrument_market_state_map()
+    uid  = next((v.get("instrument_uid", "") or "" for v in mmap.values() if v.get("figi") == figi), "")
+    if not uid:
+        from app.db import db_cursor as _dbc
+        with _dbc() as _cur:
+            _cur.execute("SELECT instrument_uid FROM strategy_instruments WHERE figi = ? LIMIT 1", (figi,))
+            row = _cur.fetchone()
+            uid = (row["instrument_uid"] or "") if row else ""
+    try:
+        result = post_market_close(figi=figi, quantity=int(qty), direction=close_direction, instrument_uid=uid)
+        log_event("POSITION_CLOSE", f"close order posted figi={figi} qty={qty} direction={close_direction}", ticker=figi)
+        return {"ok": True, "message": "close order posted", "order_id": getattr(result, "order_id", "")}
+    except Exception as e:
+        msg = str(e)
+        # Извлекаем человекочитаемое сообщение из RequestError
+        import re as _re
+        m = _re.search(r"message='([^']+)'", msg)
+        readable = m.group(1) if m else msg[:120]
+        log_event("ORDER_ERROR", f"manual close figi={figi}: {readable}", ticker=figi, level="ERROR")
+        raise HTTPException(status_code=422, detail=readable)
 
 
 @app.post("/api/позиции/очистить-локальные")
@@ -2027,21 +2046,29 @@ def api_clear_local_positions():
 @app.post("/api/позиции/закрыть-все")
 def api_close_all_positions():
     positions = get_open_positions(source="BOT")
+    from app.db import db_cursor as _dbc2
     closed = 0
     errors = []
     for p in positions:
         try:
-            figi = p.get("figi", "")
-            qty = int(p.get("qty", 0))
+            figi      = p.get("figi", "")
+            qty       = int(p.get("qty", 0))
             direction = str(p.get("direction", "BUY")).upper()
             if not figi or qty <= 0:
                 continue
+            # instrument_uid из strategy_instruments
+            with _dbc2() as _cur:
+                _cur.execute("SELECT instrument_uid FROM strategy_instruments WHERE figi = ? LIMIT 1", (figi,))
+                row = _cur.fetchone()
+                uid = (row["instrument_uid"] or "") if row else ""
             close_direction = "LONG_CLOSE" if direction == "BUY" else "SHORT_CLOSE"
-            post_market_close(figi=figi, quantity=qty, direction=close_direction)
+            post_market_close(figi=figi, quantity=qty, direction=close_direction, instrument_uid=uid)
             log_event("POSITION_CLOSE", f"close-all: figi={figi} qty={qty}", ticker=figi)
             closed += 1
         except Exception as e:
-            errors.append(str(e))
+            import re as _re2
+            m = _re2.search(r"message='([^']+)'", str(e))
+            errors.append(m.group(1) if m else str(e)[:80])
     return JSONResponse({"ok": True, "closed": closed, "errors": errors})
 
 

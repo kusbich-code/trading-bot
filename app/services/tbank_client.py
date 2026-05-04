@@ -233,7 +233,7 @@ def get_candles(figi: str, interval_name: str = "1min", hours: int = 8) -> List[
     return out
 
 
-def post_market_close(figi: str, quantity: int, direction: str):
+def post_market_close(figi: str, quantity: int, direction: str, instrument_uid: str = ""):
     import uuid as _uuid
     dir_map = {
         "BUY": OrderDirection.ORDER_DIRECTION_BUY,
@@ -245,9 +245,10 @@ def post_market_close(figi: str, quantity: int, direction: str):
         raise ValueError(f"Неизвестное направление: {direction}")
     order_direction = dir_map[direction]
     order_id = str(_uuid.uuid4())
+    instrument_id = instrument_uid or figi
     with with_client() as client:
         resp = client.orders.post_order(
-            figi=figi,
+            instrument_id=instrument_id,
             quantity=int(quantity),
             direction=order_direction,
             account_id=_account_id(),
