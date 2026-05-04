@@ -757,13 +757,6 @@ def process_instrument(client, item,
     allow_long_global = get_setting("allow_long_global", "1") == "1"
     allow_short_global = get_setting("allow_short_global", "1") == "1"
 
-    if not is_session_allowed(client, figi):
-        return
-
-    trading_status = get_trading_status(client, figi)
-    if not is_tradable(trading_status):
-        return
-
     tradingmode           = _cfg("tradingmode", "trend")
     trailing_stop_enabled = _cfg("trailing_stop_enabled", "0") == "1"
     use_signal_service    = _cfg("use_signal_service", "0") == "1"
@@ -790,6 +783,7 @@ def process_instrument(client, item,
             spread_pct = get_order_book_spread_pct(client, figi)
             bid_vol = ask_vol = 0
 
+        # Сохраняем цену всегда — до любых дальнейших проверок
         upsert_instrument_market_state(
             figi=figi,
             ticker=ticker,
@@ -805,6 +799,16 @@ def process_instrument(client, item,
         raise
 
     if len(candles) < 5:
+        return
+
+    # Session и tradable-проверки — после сохранения цены в market_state
+    # Используем _cfg чтобы параллельные стратегии читали свои настройки
+    if _cfg("trade_only_session", "0") == "1":
+        if not is_session_allowed(client, figi):
+            return
+
+    trading_status = get_trading_status(client, figi)
+    if not is_tradable(trading_status):
         return
 
     last_volume = get_last_candle_volume(candles)

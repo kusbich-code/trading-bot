@@ -239,8 +239,20 @@ def summary_payload() -> Dict[str, Any]:
     st = get_trade_stats_today()
 
     active_profile_name = (s.get("active_profile_name", "") or "").strip() or "—"
-    active_strategy_name = (s.get("active_strategy_name", "") or "").strip() or "—"
     bot_enabled = is_truthy(s.get("bot_enabled", "1"))
+
+    # В параллельном режиме показываем число активных стратегий
+    active_profile_id = (s.get("active_profile_id", "") or "").strip()
+    parallel_on = False
+    parallel_count = 0
+    if active_profile_id:
+        parallel_on = get_profile_setting(int(active_profile_id), "parallel_trading_enabled", "0") == "1"
+        if parallel_on:
+            parallel_count = len(list_profile_parallel_strategies(int(active_profile_id)))
+    active_strategy_name = (
+        f"{parallel_count} стратегий активно" if parallel_on and parallel_count > 1
+        else (s.get("active_strategy_name", "") or "").strip() or "—"
+    )
 
     active_strategy_id = (s.get("active_strategy_id", "") or "").strip()
     if active_strategy_id:
