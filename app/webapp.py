@@ -1086,88 +1086,78 @@ async def api_backtest_run(request: Request):
     except Exception:
         raise HTTPException(status_code=400, detail="Некорректный JSON")
 
-    figi = str(body.get("figi", "")).strip()
-    interval = str(body.get("interval", "5min")).strip()
-    days = max(1, min(int(body.get("days", 7)), 30))
-
-    # strategy_ids: list of strategy IDs to compare; falls back to legacy modes list
+    interval     = str(body.get("interval", "5min")).strip()
+    days         = max(1, min(int(body.get("days", 7)), 30))
     strategy_ids = body.get("strategy_ids") or []
-    if not figi:
-        raise HTTPException(status_code=400, detail="Укажите figi")
+
     if not strategy_ids:
         raise HTTPException(status_code=400, detail="Выберите хотя бы одну стратегию")
 
-    try:
-        candles = get_candles_range(figi=figi, interval_name=interval, days=days)
-    except Exception as e:
-        log_event("BOT_ERROR", f"backtest candles error: {e}", level="ERROR")
-        raise HTTPException(status_code=502, detail=f"Ошибка загрузки свечей: {e}")
-
-    if len(candles) < 30:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Недостаточно свечей: загружено {len(candles)}, нужно минимум 30. "
-                   "Увеличьте период или выберите другой интервал.",
-        )
-
     results = {}
     for sid in strategy_ids:
-        sid = int(sid)
-        strat = get_strategy(sid)
+        sid        = int(sid)
+        strat      = get_strategy(sid)
         if not strat:
             results[str(sid)] = {"error": f"Стратегия {sid} не найдена"}
             continue
-        cfg = get_strategy_settings(sid)
-        mode     = cfg.get("tradingmode", "trend")
-        comm_pct = float(cfg.get("estimated_commission_pct", "0.0004"))
+
+        cfg        = get_strategy_settings(sid)
+        mode       = cfg.get("tradingmode", "trend")
+        comm_pct   = float(cfg.get("estimated_commission_pct", "0.0004"))
         strat_name = strat.get("name", f"Стратегия {sid}")
 
-        # Per-instrument sl/tp/lots — override strategy defaults if set at instrument level
-        inst_rows = list_strategy_instruments(sid)
-        inst_cfg  = next((i for i in inst_rows if i.get("figi") == figi), None)
-        if inst_cfg:
-            sl_pct   = float(inst_cfg.get("stop_loss_pct")  or cfg.get("default_stop_loss_pct",  "0.0025"))
-            tp_pct   = float(inst_cfg.get("take_profit_pct") or cfg.get("default_take_profit_pct", "0.005"))
-            lots     = max(1, int(inst_cfg.get("lots_override") or 1))
-            lot_size = max(1, int(inst_cfg.get("lot") or 1))
-        else:
-            sl_pct   = float(cfg.get("default_stop_loss_pct",  "0.0025"))
-            tp_pct   = float(cfg.get("default_take_profit_pct", "0.005"))
-            lots     = 1
-            lot_size = 1
+        # Берём первый включённый инструмент стратегии
+        all_instr  = list_strategy_instruments(sid)
+        inst_rows  = [i for i in all_instr if str(i.get("enabled", 1)) in ("1", "true")]
+        if not inst_rows:
+            results[str(sid)] = {"error": "Нет активных инструментов", "strategy_name": strat_name}
+            continue
 
-        # qty в штуках = лоты × размер лота → equity_curve в реальных рублях
+        instr      = inst_rows[0]
+        figi       = instr["figi"]
+        ticker     = instr.get("ticker", "?")
+        sl_pct     = float(instr.get("stop_loss_pct")  or cfg.get("default_stop_loss_pct",  "0.0025"))
+        tp_pct     = float(instr.get("take_profit_pct") or cfg.get("default_take_profit_pct", "0.005"))
+        lots       = max(1, int(instr.get("lots_override") or 1))
+        lot_size   = max(1, int(instr.get("lot") or 1))
         qty_shares = lots * lot_size
 
         try:
+            candles = get_candles_range(figi=figi, interval_name=interval, days=days)
+        except Exception as e:
+            results[str(sid)] = {"error": f"Ошибка свечей {ticker}: {e}", "strategy_name": strat_name}
+            continue
+
+        if len(candles) < 30:
+            results[str(sid)] = {
+                "error": f"Мало свечей для {ticker}: {len(candles)}, нужно ≥30",
+                "strategy_name": strat_name,
+            }
+            continue
+
+        try:
             res = run_backtest(
-                candles=candles,
-                mode=mode,
-                stop_loss_pct=sl_pct,
-                take_profit_pct=tp_pct,
-                commission_pct=comm_pct,
-                qty=qty_shares,
+                candles=candles, mode=mode,
+                stop_loss_pct=sl_pct, take_profit_pct=tp_pct,
+                commission_pct=comm_pct, qty=qty_shares,
             )
             d = result_to_dict(res, candles)
             d["strategy_name"] = strat_name
-            d["mode"] = mode
-            d["sl_pct_ui"] = f"{sl_pct * 100:.3f}%"
-            d["tp_pct_ui"] = f"{tp_pct * 100:.3f}%"
-            d["lots"] = lots
-            d["lot_size"] = lot_size
-            d["qty_shares"] = qty_shares
-            d["qty_ui"] = f"{lots} лот × {lot_size} шт = {qty_shares} шт"
-            results[str(sid)] = d
+            d["ticker"]        = ticker
+            d["figi"]          = figi
+            d["mode"]          = mode
+            d["sl_pct_ui"]     = f"{sl_pct * 100:.3f}%"
+            d["tp_pct_ui"]     = f"{tp_pct * 100:.3f}%"
+            d["lots"]          = lots
+            d["lot_size"]      = lot_size
+            d["qty_shares"]    = qty_shares
+            d["qty_ui"]        = f"{lots} лот × {lot_size} шт = {qty_shares} шт"
+            d["candles_loaded"] = len(candles)
+            results[str(sid)]  = d
         except Exception as e:
             results[str(sid)] = {"error": str(e), "strategy_name": strat_name}
 
-    return {
-        "figi": figi,
-        "interval": interval,
-        "days": days,
-        "candles_loaded": len(candles),
-        "results": results,
-    }
+    return {"interval": interval, "days": days, "results": results}
 
 
 # ── parallel strategies ────────────────────────────────────────────────────────

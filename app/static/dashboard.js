@@ -2284,20 +2284,10 @@ async function renderBacktestTab() {
 
 async function _btReloadForm(host) {
   try {
-    [_backtestInstruments, _backtestStrategies] = await Promise.all([
-      apiGet("/api/backtest/instruments"),
-      apiGet("/api/backtest/strategies"),
-    ]);
+    _backtestStrategies = await apiGet("/api/backtest/strategies");
   } catch {
-    _backtestInstruments = [];
     _backtestStrategies = [];
   }
-
-  const instrOptions = _backtestInstruments.length
-    ? _backtestInstruments.map(i =>
-        `<option value="${esc(i.figi)}">${esc(i.ticker)} — ${esc(i.name)}</option>`
-      ).join("")
-    : `<option value="">Нет инструментов (добавьте в Настройках)</option>`;
 
   const modeHints = { trend: "Trend", mean_reversion: "MeanRev", breakout: "Breakout" };
   const stratCards = _backtestStrategies.length
@@ -2339,11 +2329,8 @@ async function _btReloadForm(host) {
 
     <div class="block" style="margin-bottom:16px">
       <h2>Параметры бэктеста</h2>
+      <div class="note" style="margin-bottom:12px">Инструмент и объём берутся из настроек каждой стратегии автоматически</div>
       <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;margin-bottom:20px">
-        <label class="field-label">
-          Инструмент
-          <select id="btFigi" class="field" style="width:100%">${instrOptions}</select>
-        </label>
         <label class="field-label">
           Интервал свечей
           <select id="btInterval" class="field" style="width:100%">
@@ -2413,7 +2400,6 @@ async function _btReloadForm(host) {
 }
 
 async function runBacktest() {
-  const figi     = (document.getElementById("btFigi")     || {}).value || "";
   const interval = (document.getElementById("btInterval") || {}).value || "15min";
   const days     = parseInt((document.getElementById("btDays") || {}).value || "7");
 
@@ -2430,10 +2416,10 @@ async function runBacktest() {
   if (results) results.style.display = "none";
 
   try {
-    const data = await apiPostJson("/api/backtest/run", { figi, interval, days, strategy_ids: strategyIds });
+    const data = await apiPostJson("/api/backtest/run", { interval, days, strategy_ids: strategyIds });
     _backtestLastResult = data;
-    const n = data.candles_loaded;
-    if (status) status.textContent = `Готово. Свечей: ${n}, период: ${data.days} дн.`;
+    const total = Object.values(data.results || {}).reduce((s, r) => s + (r.candles_loaded || 0), 0);
+    if (status) status.textContent = `Готово. Период: ${data.days} дн., интервал: ${interval}`;
     _renderBacktestResults(data);
     if (results) results.style.display = "block";
   } catch (e) {
@@ -2452,9 +2438,10 @@ function _renderBacktestResults(data) {
     head.innerHTML = `<th>Метрика</th>` + sids.map(sid => {
       const r = results[sid];
       const name = r.strategy_name || `Стратегия ${sid}`;
+      const tickerBadge = r.ticker ? `<span class="badge badge-active" style="font-size:11px;margin-left:4px">${esc(r.ticker)}</span>` : "";
       const lotsInfo = r.qty_ui ? ` · ${esc(r.qty_ui)}` : (r.lots ? ` · ${r.lots} лот` : "");
       const mode = r.mode ? `<div class="note" style="font-weight:400;font-size:11px">${esc(r.mode)} · SL ${esc(r.sl_pct_ui || "")} · TP ${esc(r.tp_pct_ui || "")}${lotsInfo}</div>` : "";
-      return `<th style="min-width:140px">${esc(name)}${mode}</th>`;
+      return `<th style="min-width:160px">${esc(name)}${tickerBadge}${mode}</th>`;
     }).join("");
   }
 
