@@ -652,6 +652,24 @@ def get_money_balance(client) -> float:
     return 0.0
 
 
+def _fill_all_instrument_uids(client):
+    """Заполняет instrument_uid для всех инструментов в БД у которых он пустой."""
+    from app.db import db_cursor as _dbc
+    with _dbc() as cur:
+        cur.execute("SELECT DISTINCT figi FROM strategy_instruments WHERE figi != '' AND (instrument_uid IS NULL OR instrument_uid = '')")
+        figis = [r["figi"] for r in cur.fetchall()]
+    for figi in figis:
+        try:
+            resp = client.instruments.get_instrument_by(id_type=1, id=figi)
+            inst = getattr(resp, "instrument", None)
+            uid  = getattr(inst, "uid", "") or "" if inst else ""
+            if uid:
+                save_instrument_uid(figi, uid)
+                log.info("instrument_uid сохранён: figi=%s uid=%s", figi, uid[:20])
+        except Exception as e:
+            log.warning("Не удалось получить uid для figi=%s: %s", figi, e)
+
+
 def load_enabled_instruments(client):
     items = list_active_strategy_instruments()
     state.instrument_meta = {}
@@ -1465,6 +1483,13 @@ def main():
     state.sync_runtime()
 
     client_cls = SandboxClient if settings.TINVEST_USE_SANDBOX else Client
+
+    # Заполняем instrument_uid для всех инструментов при старте (однократно)
+    try:
+        with client_cls(settings.TINVEST_TOKEN) as _uid_client:
+            _fill_all_instrument_uids(_uid_client)
+    except Exception as _e:
+        log.warning("_fill_all_instrument_uids error: %s", _e)
 
     global _bot_client_cls
     _bot_client_cls = client_cls
