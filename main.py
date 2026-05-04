@@ -53,6 +53,8 @@ from app.db import (
     list_parallel_strategies,
     list_profile_parallel_strategies,
     get_profile_setting,
+    get_open_positions,
+    get_instrument_market_state_map,
 )
 from app.instruments import get_instrument_meta, round_to_price_step
 from app.telegram_notify import TelegramNotifier
@@ -456,14 +458,65 @@ def notify(message: str, is_error: bool = False):
     notifier.send(message)
 
 
+def _handle_manual_close(bp: dict, market_map: dict):
+    """Закрывает BOT-позицию закрытую вручную: пишет сделку MANUAL_CLOSE, освобождает координатор."""
+    figi      = bp["figi"]
+    ticker    = bp["ticker"]
+    direction = bp["direction"]
+    entry_price = Decimal(str(bp["entry_price"]))
+    qty       = int(bp["qty"])
+
+    mkt = market_map.get(figi, {})
+    last_price = float(mkt.get("last_price", 0) or 0)
+    exit_price = Decimal(str(last_price)) if last_price > 0 else entry_price
+
+    commission_pct = Decimal(str(settings.ESTIMATED_COMMISSION_PCT))
+    commission = (entry_price * qty + exit_price * qty) * commission_pct
+
+    if direction == "BUY":
+        pnl = (exit_price - entry_price) * qty - commission
+    else:
+        pnl = (entry_price - exit_price) * qty - commission
+
+    add_trade({
+        "time":             _now().strftime("%Y-%m-%d %H:%M:%S"),
+        "ticker":           ticker,
+        "figi":             figi,
+        "direction":        direction,
+        "entry":            float(entry_price),
+        "exit":             float(exit_price),
+        "qty":              qty,
+        "gross_amount":     float(exit_price * qty),
+        "commission":       float(commission),
+        "pnl":              float(pnl),
+        "reason":           "MANUAL_CLOSE",
+        "close_order_id":   "",
+        "execution_status": "manual",
+    })
+    close_position(figi, source="BOT")
+    log_event("ORDER_CLOSE", f"{ticker} MANUAL_CLOSE pnl={float(pnl):.2f}", ticker=ticker)
+    notify(f"Позиция закрыта вручную\n{ticker} | {direction}\nPnL ≈ {float(pnl):.2f} ₽")
+
+    # Освобождаем координатор если он был заблокирован на этой позиции
+    try:
+        import json as _jc
+        coord_data = _jc.loads(get_runtime("parallel_coord") or "{}")
+        if coord_data.get("owner_figi") == figi:
+            _parallel_coord.release(coord_data.get("owner_strategy_id"))
+    except Exception:
+        pass
+
+
 def sync_portfolio_positions(client):
-    """Синхронизирует позиции PORTFOLIO из API брокера в локальную БД (source=PORTFOLIO)."""
+    """Синхронизирует позиции PORTFOLIO из API брокера в локальную БД (source=PORTFOLIO).
+    Дополнительно детектирует BOT-позиции закрытые вручную и записывает их как MANUAL_CLOSE."""
     try:
         clear_open_positions(source="PORTFOLIO")
 
         portfolio = client.operations.get_portfolio(account_id=settings.TINVEST_ACCOUNT_ID)
         positions = getattr(portfolio, "positions", []) or []
 
+        broker_figis: set = set()
         for p in positions:
             figi = getattr(p, "figi", "") or ""
             instrument_type = str(getattr(p, "instrument_type", "") or "").lower()
@@ -471,6 +524,7 @@ def sync_portfolio_positions(client):
 
             if not figi or "currency" in instrument_type or ticker.upper().startswith("RUB"):
                 continue
+            broker_figis.add(figi)
 
             # qty в ЛОТАХ (quantity_lots), не в штуках (quantity)
             qty_lots_obj = getattr(p, "quantity_lots", None)
@@ -521,6 +575,13 @@ def sync_portfolio_positions(client):
                 "status": "OPEN",
                 "source": "PORTFOLIO",
             })
+        # Детектируем BOT-позиции которых нет в реальном портфеле → закрыты вручную
+        market_map = get_instrument_market_state_map()
+        for bp in get_open_positions(source="BOT"):
+            if bp["figi"] not in broker_figis:
+                log.info("MANUAL_CLOSE detected: %s не найден в портфеле", bp["ticker"])
+                _handle_manual_close(bp, market_map)
+
     except Exception as e:
         log.warning(f"sync_portfolio_positions error: {e}")
 
@@ -1174,6 +1235,16 @@ def _parallel_strategy_worker(strategy_id: int, strat_name: str, stop_ev: thread
             instr = _parallel_instruments(strategy_id)
 
             interval = int(cfg.get("check_interval_sec", "5"))
+
+            # Синхронизируем in-memory dict с БД: если позиция исчезла (закрыта вручную
+            # или через sync_portfolio_positions) — забываем её и освобождаем координатор
+            if positions:
+                db_bot_figis = {p["figi"] for p in get_open_positions(source="BOT")}
+                for tk in list(positions.keys()):
+                    if positions[tk].get("figi", "") not in db_bot_figis:
+                        log.info("Parallel [%s] %s: позиция закрыта снаружи, сбрасываем", strat_name, tk)
+                        del positions[tk]
+                        _parallel_coord.release(strategy_id)
 
             # Если нет открытых позиций и координатор занят → ждём
             if not positions and not _parallel_coord.is_free and not _parallel_coord.is_owner(strategy_id):
