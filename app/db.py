@@ -1,8 +1,13 @@
 import os
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from app.config import settings
+
+_MSK = timezone(timedelta(hours=3))
+
+def _now_msk() -> str:
+    return datetime.now(tz=_MSK).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
 
 
 PROFILE_SETTING_KEYS = {"bot_enabled", "telegram_errors_only", "auto_reload_settings", "tinvestusesandbox", "parallel_trading_enabled", "trade_only_session"}
@@ -695,7 +700,7 @@ def log_event(event_type, message, ticker="", level="INFO"):
         cur.execute("""
         INSERT INTO event_logs(event_time, event_type, ticker, level, message)
         VALUES (?, ?, ?, ?, ?)
-        """, (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), event_type, ticker, level, message))
+        """, (_now_msk(), event_type, ticker, level, message))
 
 
 # ── trades ────────────────────────────────────────────────────────────────────
@@ -760,12 +765,11 @@ def get_logs(limit=200, ticker=None, event_type=None, date_from=None, date_to=No
 
 
 def get_error_logs(limit=200, ticker=None, date_from=None, date_to=None):
-    """Возвращает ERROR-события + WARNING от критичных типов (ORDER_ERROR, INVALID_FIGI, BALANCE_WARNING)."""
+    """Возвращает ERROR и все WARNING события."""
     with db_cursor() as cur:
         query = """
         SELECT * FROM event_logs
-        WHERE (level = 'ERROR'
-               OR (level = 'WARNING' AND event_type IN ('ORDER_ERROR','INVALID_FIGI','BALANCE_WARNING')))
+        WHERE level IN ('ERROR', 'WARNING')
         """
         params: list = []
         if ticker:

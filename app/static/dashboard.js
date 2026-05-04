@@ -1613,31 +1613,42 @@ function _histRenderEquity(curve) {
     }, {displayModeBar:false,responsive:true});
     return;
   }
-  const times   = curve.map(p => p.time);
-  const cumPnl  = curve.map(p => p.cumulative_pnl);
-  const perTrade= curve.map(p => p.pnl);
-  const barColors = perTrade.map(v => v >= 0 ? "rgba(47,163,107,.75)" : "rgba(191,77,90,.75)");
-  const hover = curve.map(p =>
-    `${p.ticker} ${p.direction}<br>Сделка: ${p.pnl >= 0 ? "+" : ""}${p.pnl.toFixed(2)} ₽` +
-    `<br>Накопл.: ${p.cumulative_pnl.toFixed(2)} ₽<br>Причина: ${p.reason || "—"}`);
+  const times    = curve.map(p => p.time);
+  const cumPnl   = curve.map(p => p.cumulative_pnl);
+  const perTrade = curve.map(p => p.pnl);
+  const barColors = perTrade.map(v => v >= 0 ? "rgba(47,163,107,.8)" : "rgba(191,77,90,.8)");
+  // customdata: [ticker, direction, per_trade_pnl, cumulative_pnl, reason]
+  const cd = curve.map(p => [p.ticker, p.direction, p.pnl, p.cumulative_pnl, p.reason || "—"]);
+  const tmplLine = "<b>%{customdata[0]}</b> %{customdata[1]}<br>" +
+                   "Сделка: %{customdata[2]:+.2f} ₽<br>" +
+                   "Накопл.: %{y:.2f} ₽<br>" +
+                   "Причина: %{customdata[4]}<extra>Накопл. PnL</extra>";
+  const tmplBar  = "<b>%{customdata[0]}</b> %{customdata[1]}<br>" +
+                   "Сделка: %{y:+.2f} ₽<br>" +
+                   "Накопл.: %{customdata[3]:.2f} ₽<br>" +
+                   "Причина: %{customdata[4]}<extra>PnL сделки</extra>";
   Plotly.newPlot(el, [
-    {x:times, y:cumPnl, type:"scatter", mode:"lines", name:"Накопл. PnL",
-     line:{color:"#4c8dff",width:2}, fill:"tozeroy", fillcolor:"rgba(76,141,255,.07)",
-     hovertext:hover, hoverinfo:"text+x"},
+    {x:times, y:cumPnl, type:"scatter", mode:"lines+markers", name:"Накопл. PnL",
+     line:{color:"#4c8dff",width:2}, marker:{size:5, color:"#4c8dff"},
+     fill:"tozeroy", fillcolor:"rgba(76,141,255,.07)",
+     customdata:cd, hovertemplate:tmplLine},
     {x:times, y:perTrade, type:"bar", name:"PnL сделки", yaxis:"y2",
-     marker:{color:barColors}, opacity:.75, hovertext:hover, hoverinfo:"text+x"},
+     marker:{color:barColors}, opacity:.85,
+     customdata:cd, hovertemplate:tmplBar},
   ], {
     paper_bgcolor:"rgba(0,0,0,0)", plot_bgcolor:"rgba(0,0,0,0)",
     font:{color:"#eef4ff",size:11},
-    margin:{t:10,r:50,b:50,l:60},
-    legend:{orientation:"h",y:-0.2},
-    hovermode:"x unified",
-    hoverlabel:{bgcolor:"rgba(14,27,52,.95)", bordercolor:"rgba(76,141,255,.5)",
-                font:{color:"#eef4ff",size:12}},
-    xaxis:{gridcolor:"rgba(255,255,255,.05)", tickformat:"%d.%m %H:%M"},
-    yaxis:{title:"Накопл. PnL (₽)", gridcolor:"rgba(255,255,255,.05)",
-           zeroline:true, zerolinecolor:"rgba(255,255,255,.2)"},
-    yaxis2:{title:"PnL сделки", overlaying:"y", side:"right", showgrid:false, zeroline:false},
+    margin:{t:10,r:60,b:60,l:70},
+    legend:{orientation:"h",y:-0.25},
+    hovermode:"closest",
+    hoverlabel:{bgcolor:"#0e1b34", bordercolor:"#4c8dff",
+                font:{color:"#ffffff",size:12}, align:"left"},
+    xaxis:{gridcolor:"rgba(255,255,255,.05)", type:"date",
+           tickformat:"%d.%m\n%H:%M", tickfont:{size:10}},
+    yaxis:{title:"Накопл. PnL (₽)", gridcolor:"rgba(255,255,255,.06)",
+           zeroline:true, zerolinecolor:"rgba(255,255,255,.25)", tickfont:{size:10}},
+    yaxis2:{title:"PnL сделки (₽)", overlaying:"y", side:"right",
+            showgrid:false, zeroline:false, tickfont:{size:10}},
   }, {displayModeBar:false, responsive:true});
 }
 
@@ -2441,7 +2452,7 @@ function _renderBacktestResults(data) {
     head.innerHTML = `<th>Метрика</th>` + sids.map(sid => {
       const r = results[sid];
       const name = r.strategy_name || `Стратегия ${sid}`;
-      const lotsInfo = r.lots ? ` · ${r.lots} лот` : "";
+      const lotsInfo = r.qty_ui ? ` · ${esc(r.qty_ui)}` : (r.lots ? ` · ${r.lots} лот` : "");
       const mode = r.mode ? `<div class="note" style="font-weight:400;font-size:11px">${esc(r.mode)} · SL ${esc(r.sl_pct_ui || "")} · TP ${esc(r.tp_pct_ui || "")}${lotsInfo}</div>` : "";
       return `<th style="min-width:140px">${esc(name)}${mode}</th>`;
     }).join("");
@@ -2450,7 +2461,7 @@ function _renderBacktestResults(data) {
   // ── Metrics rows ──
   const metrics = [
     ["Свечей",              r => String(r.candles_tested ?? "—")],
-    ["Лотов в позиции",     r => r.lots != null ? String(r.lots) : "1"],
+    ["Объём позиции",       r => r.qty_ui || (r.lots != null ? `${r.lots} лот` : "1 лот")],
     ["Сделок",              r => String(r.total_trades ?? "—")],
     ["Прибыл. / убыт.",     r => `${r.win_trades ?? 0} / ${r.loss_trades ?? 0}`],
     ["Win Rate",            r => r.win_rate    != null ? `${r.win_rate.toFixed(1)}%` : "—"],

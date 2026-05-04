@@ -1129,10 +1129,15 @@ async def api_backtest_run(request: Request):
             sl_pct   = float(inst_cfg.get("stop_loss_pct")  or cfg.get("default_stop_loss_pct",  "0.0025"))
             tp_pct   = float(inst_cfg.get("take_profit_pct") or cfg.get("default_take_profit_pct", "0.005"))
             lots     = max(1, int(inst_cfg.get("lots_override") or 1))
+            lot_size = max(1, int(inst_cfg.get("lot") or 1))
         else:
             sl_pct   = float(cfg.get("default_stop_loss_pct",  "0.0025"))
             tp_pct   = float(cfg.get("default_take_profit_pct", "0.005"))
             lots     = 1
+            lot_size = 1
+
+        # qty в штуках = лоты × размер лота → equity_curve в реальных рублях
+        qty_shares = lots * lot_size
 
         try:
             res = run_backtest(
@@ -1141,7 +1146,7 @@ async def api_backtest_run(request: Request):
                 stop_loss_pct=sl_pct,
                 take_profit_pct=tp_pct,
                 commission_pct=comm_pct,
-                qty=lots,
+                qty=qty_shares,
             )
             d = result_to_dict(res, candles)
             d["strategy_name"] = strat_name
@@ -1149,6 +1154,9 @@ async def api_backtest_run(request: Request):
             d["sl_pct_ui"] = f"{sl_pct * 100:.3f}%"
             d["tp_pct_ui"] = f"{tp_pct * 100:.3f}%"
             d["lots"] = lots
+            d["lot_size"] = lot_size
+            d["qty_shares"] = qty_shares
+            d["qty_ui"] = f"{lots} лот × {lot_size} шт = {qty_shares} шт"
             results[str(sid)] = d
         except Exception as e:
             results[str(sid)] = {"error": str(e), "strategy_name": strat_name}
