@@ -835,6 +835,21 @@ def process_instrument(client, item,
     if len(candles) < 5:
         return
 
+    # Вычисляем сигнал всегда — до проверок сессии/торгуемости, чтобы дашборд показывал актуальный сигнал
+    candles_dict = _candles_to_dicts(candles)
+    sig_result = _evaluate_signal(tradingmode, candles_dict)
+    sig   = sig_result["action"]
+    score = sig_result["score"]
+    try:
+        import json as _j
+        set_runtime(f"last_signal_{figi}", _j.dumps({
+            "action": sig, "score": score,
+            "mode": tradingmode,
+            "time": datetime.now().strftime("%H:%M:%S"),
+        }))
+    except Exception:
+        pass
+
     # Session и tradable-проверки — после сохранения цены в market_state
     # is_session_allowed читает trade_only_session из профиля (profile level)
     if not is_session_allowed(client, figi):
@@ -988,23 +1003,7 @@ def process_instrument(client, item,
     elif len(positions) >= int(_cfg("max_open_positions", "2")):
         return
 
-    # ── Сигнал через strategy_engine (та же логика что и бэктест) ───────────
-    candles_dict = _candles_to_dicts(candles)
-    sig_result = _evaluate_signal(tradingmode, candles_dict)
-    sig   = sig_result["action"]   # "BUY" | "SELL" | "HOLD"
-    score = sig_result["score"]
-
-    # Сохраняем последний сигнал для отображения в дашборде
-    try:
-        import json as _j
-        set_runtime(f"last_signal_{figi}", _j.dumps({
-            "action": sig, "score": score,
-            "mode": tradingmode,
-            "time": datetime.now().strftime("%H:%M:%S"),
-        }))
-    except Exception:
-        pass
-
+    # ── Торговое решение по сигналу (вычислен выше, до проверок сессии) ────────
     if sig == "HOLD":
         return
 
@@ -1336,6 +1335,23 @@ def main():
 
     log.info("=== Bot v%s started ===", BOT_VERSION)
     log_event("BOT_START", "Bot started")
+
+    # Сбрасываем устаревшие данные координатора и потоков из предыдущей сессии
+    import json as _jstart
+    set_runtime("parallel_coord", _jstart.dumps(
+        {"owner_strategy_id": None, "owner_figi": None, "owner_ticker": None}
+    ))
+    # Статусы потоков тоже сбрасываем — старые значения вводят в заблуждение
+    try:
+        from app.db import list_profile_parallel_strategies, get_setting as _gs
+        _pid_str = _gs("active_profile_id", "").strip()
+        if _pid_str:
+            for _e in list_profile_parallel_strategies(int(_pid_str)):
+                set_runtime(f"parallel_thread_{_e['strategy_id']}", _jstart.dumps(
+                    {"status": "запуск", "ticker": "", "updated_at": ""}
+                ))
+    except Exception:
+        pass
 
     if settings.TELEGRAM_ENABLED and settings.TELEGRAM_POLLING_ENABLED:
         Thread(target=run_telegram_polling, daemon=True).start()
