@@ -292,16 +292,7 @@ td:nth-child(4){
   background: rgba(76, 141, 255, 0.12);
 }
 
-/* Plotly tooltip: тёмный фон, белый текст */
-.hovertext rect {
-  fill: #0d1f3c !important;
-  stroke: #4c8dff !important;
-  stroke-width: 1px !important;
-}
+/* Plotly tooltip: тёмный текст */
 .hovertext text, .hovertext tspan {
-  fill: #ffffff !important;
-}
-.hoverlayer .hovertext path {
-  fill: #0d1f3c !important;
-  stroke: #4c8dff !important;
+  fill: #111111 !important;
 }

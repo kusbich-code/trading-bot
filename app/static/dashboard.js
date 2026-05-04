@@ -1619,7 +1619,7 @@ function _histRenderEquity(curve) {
   const barColors = perTrade.map(v => v >= 0 ? "rgba(47,163,107,.8)" : "rgba(191,77,90,.8)");
   // customdata: [ticker, direction, per_trade_pnl, cumulative_pnl, reason]
   const cd = curve.map(p => [p.ticker, p.direction, p.pnl, p.cumulative_pnl, p.reason || "—"]);
-  const hl = {bgcolor:"#0d1f3c", bordercolor:"#4c8dff", font:{color:"#ffffff", size:12}, align:"left"};
+  const hl = {font:{color:"#111111", size:12}, align:"left"};
   const tmplLine = "<b>%{customdata[0]}</b> %{customdata[1]}<br>" +
                    "Сделка: %{customdata[2]:+.2f} ₽<br>" +
                    "Накопл.: %{y:.2f} ₽<br>" +
