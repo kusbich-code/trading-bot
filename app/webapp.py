@@ -1482,30 +1482,64 @@ def api_analyst_stop():
 
 @app.get("/api/analyst/sessions")
 def api_analyst_sessions(limit: int = 30):
-    """История сессий оптимизации (ручные + субботние)."""
+    """История сессий (поиск + оптимизация + еженедельные)."""
+    from app.db import db_cursor as _dbc
     sessions = list_optimization_sessions(limit=limit)
-    result   = []
-    MODE     = {"mean_reversion": "Возврат к средней", "breakout": "Пробой", "trend": "Тренд"}
-    STATUS   = {"pending": "Ожидает", "accepted": "Принято", "partial": "Частично",
-                "rejected": "Отклонено", "running": "Выполняется"}
+    MODE   = {"mean_reversion": "Возврат к средней", "breakout": "Пробой", "trend": "Тренд"}
+    STATUS = {"pending": "Ожидает", "accepted": "Принято", "partial": "Частично",
+              "rejected": "Отклонено", "running": "Выполняется", "done": "Завершён",
+              "error": "Ошибка"}
+    TYPE   = {"search": "Поиск", "manual": "Оптимизация", "weekly": "Еженедельная"}
+
+    result = []
     for s in sessions:
-        results = get_session_results(s["id"])
+        sid  = s["id"]
+        stype = s.get("type", "manual")
+
+        if stype == "search":
+            # Результаты из analyst_results по run_id (хранится в notes)
+            run_id = (s.get("notes") or "").split("|")[0].replace("run_id=", "").strip()
+            if run_id:
+                with _dbc() as cur:
+                    cur.execute("""
+                    SELECT id, ticker, tradingmode as best_mode, sl_pct as best_sl,
+                           tp_pct as best_tp, net_pnl as best_pnl, win_rate as best_win_rate,
+                           total_trades as best_trades, score as improvement_pct,
+                           0 as applied, '' as strategy_name, '' as base_mode,
+                           0.0 as base_sl, 0.0 as base_tp, 0.0 as base_pnl,
+                           0 as base_trades, 0.0 as base_win_rate
+                    FROM analyst_results WHERE run_id=?
+                    ORDER BY score DESC LIMIT 30
+                    """, (run_id,))
+                    raw_results = [dict(r) for r in cur.fetchall()]
+            else:
+                raw_results = []
+        else:
+            raw_results = get_session_results(sid)
+
+        def fmt(r):
+            return {
+                **r,
+                "base_mode_label": MODE.get(r.get("base_mode",""), r.get("base_mode","")),
+                "best_mode_label": MODE.get(r.get("best_mode",""), r.get("best_mode","")),
+                "base_sl_ui":  f"{float(r.get('base_sl',0))*100:.3f}%",
+                "base_tp_ui":  f"{float(r.get('base_tp',0))*100:.3f}%",
+                "best_sl_ui":  f"{float(r.get('best_sl',0))*100:.3f}%",
+                "best_tp_ui":  f"{float(r.get('best_tp',0))*100:.3f}%",
+                "improvement_ui": (
+                    f"+{float(r.get('improvement_pct',0)):.1f}%"
+                    if float(r.get("improvement_pct",0)) > 0
+                    else f"{float(r.get('improvement_pct',0)):.1f}%"
+                ),
+            }
+
         result.append({
             **s,
-            "type_label":    "Еженедельная" if s["type"] == "weekly" else "Ручная",
+            "type_label":    TYPE.get(stype, stype),
             "status_label":  STATUS.get(s["status"], s["status"]),
-            "result_count":  len(results),
-            "applied_count": sum(1 for r in results if r.get("applied")),
-            "results": [{
-                **r,
-                "base_mode_label": MODE.get(r["base_mode"], r["base_mode"]),
-                "best_mode_label": MODE.get(r["best_mode"], r["best_mode"]),
-                "base_sl_ui":  f"{r['base_sl']*100:.3f}%",
-                "base_tp_ui":  f"{r['base_tp']*100:.3f}%",
-                "best_sl_ui":  f"{r['best_sl']*100:.3f}%",
-                "best_tp_ui":  f"{r['best_tp']*100:.3f}%",
-                "improvement_ui": f"+{r['improvement_pct']:.1f}%" if r['improvement_pct'] > 0 else f"{r['improvement_pct']:.1f}%",
-            } for r in results],
+            "result_count":  len(raw_results),
+            "applied_count": sum(1 for r in raw_results if r.get("applied")),
+            "results":       [fmt(r) for r in raw_results],
         })
     return JSONResponse(result)
 

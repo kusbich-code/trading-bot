@@ -1704,15 +1704,16 @@ def apply_optimization_result(result_id: int):
 def create_optimization_session(type_: str = "manual", week_start: str = "",
                                 week_end: str = "", weekly_trades: int = 0,
                                 weekly_pnl: float = 0.0, balance_start: float = 0.0,
-                                balance_end: float = 0.0) -> int:
+                                balance_end: float = 0.0, run_id: str = "") -> int:
     with db_cursor() as cur:
         cur.execute("""
         INSERT INTO optimization_sessions
             (created_at, type, status, week_start, week_end,
-             weekly_trades, weekly_pnl, balance_start, balance_end)
-        VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?)
+             weekly_trades, weekly_pnl, balance_start, balance_end, notes)
+        VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)
         """, (_now_msk(), type_, week_start, week_end,
-              weekly_trades, weekly_pnl, balance_start, balance_end))
+              weekly_trades, weekly_pnl, balance_start, balance_end,
+              run_id))   # run_id в поле notes для поиска по analyst_results
         return cur.lastrowid
 
 

@@ -185,10 +185,11 @@ def _worker(budget_rub, min_win_rate, min_trades, days, interval, min_pnl,
             exclude_active: bool = True, _run_id_override: str = ""):
     from app.services.tbank_client import get_candles_range
     from app.services.backtest_engine import run_backtest
-    from app.db import log_event, db_cursor
+    from app.db import log_event, db_cursor, create_optimization_session, update_session_status
 
     run_id = _run_id_override or str(uuid.uuid4())[:8]
-    _upd(status="running", run_id=run_id,
+    session_id = create_optimization_session(type_="search", run_id=run_id)
+    _upd(status="running", run_id=run_id, session_id=session_id,
          started_at=datetime.now().isoformat(),
          progress=0, total=0, current="Инициализация…", found=0, error=None)
 
@@ -329,10 +330,12 @@ def _worker(budget_rub, min_win_rate, min_trades, days, interval, min_pnl,
 
         _upd(status="done", current=f"Завершено. Найдено: {found}")
         log_event("ANALYST", f"Поиск завершён, run_id={run_id}, найдено={found}")
+        update_session_status(session_id, "done", f"run_id={run_id} | найдено={found}")
 
     except Exception as exc:
         _upd(status="error", error=str(exc))
         try:
+            update_session_status(session_id, "error", str(exc)[:200])
             from app.db import log_event
             log_event("ANALYST", f"Ошибка: {exc}", level="ERROR")
         except Exception:
@@ -351,11 +354,12 @@ def _optimization_worker(budget_rub: float, days: int, interval: str):
     from app.services.backtest_engine import run_backtest
     from app.db import (db_cursor, get_setting, log_event,
                         list_profile_parallel_strategies, list_strategy_instruments,
-                        get_strategy_settings)
+                        get_strategy_settings, create_optimization_session, update_session_status)
 
     run_id = str(uuid.uuid4())[:8]
-    _opt_upd(status="running", run_id=run_id, progress=0, total=0,
-             current="Инициализация…", found=0, error=None)
+    session_id = create_optimization_session(type_="manual", run_id=run_id)
+    _opt_upd(status="running", run_id=run_id, session_id=session_id,
+             progress=0, total=0, current="Инициализация…", found=0, error=None)
 
     try:
         # Get active profile's parallel strategies and instruments
@@ -390,10 +394,6 @@ def _optimization_worker(budget_rub: float, days: int, interval: str):
                 })
 
         _opt_upd(total=len(work_items))
-
-        # Clear old optimization results
-        with db_cursor() as cur:
-            cur.execute("DELETE FROM optimization_results")
 
         candles_cache: Dict[str, list] = {}
 
@@ -506,8 +506,8 @@ def _optimization_worker(budget_rub: float, days: int, interval: str):
                     run_id, created_at, strategy_id, strategy_name, figi, ticker, instrument_name,
                     base_mode, base_sl, base_tp, base_pnl, base_trades, base_win_rate,
                     best_mode, best_sl, best_tp, best_pnl, best_trades, best_win_rate,
-                    best_profit_factor, best_min_signal_score, improvement_pct
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    best_profit_factor, best_min_signal_score, improvement_pct, session_id
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """, (
                     run_id, datetime.now().isoformat(),
                     item["strategy_id"], item["strategy_name"],
@@ -516,17 +516,19 @@ def _optimization_worker(budget_rub: float, days: int, interval: str):
                     base_pnl, base_trades, base_wr,
                     best_mode_found, best_sl_found, best_tp_found,
                     best_res.net_pnl, best_res.total_trades, best_res.win_rate,
-                    best_res.profit_factor, best_score_found, improvement_pct,
+                    best_res.profit_factor, best_score_found, improvement_pct, session_id,
                 ))
             found += 1
             _opt_upd(found=found)
 
         _opt_upd(status="done", current=f"Оптимизация завершена. Проверено: {len(work_items)}")
         log_event("ANALYST", f"Оптимизация завершена, run_id={run_id}, улучшено={found}")
+        update_session_status(session_id, "pending", f"run_id={run_id} | найдено={found}")
 
     except Exception as exc:
         _opt_upd(status="error", error=str(exc))
         try:
+            update_session_status(session_id, "error", str(exc)[:200])
             from app.db import log_event
             log_event("ANALYST", f"Ошибка оптимизации: {exc}", level="ERROR")
         except Exception:
