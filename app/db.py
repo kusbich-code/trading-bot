@@ -310,9 +310,37 @@ def init_db():
             best_min_signal_score INTEGER DEFAULT 0,
             improvement_pct REAL DEFAULT 0,
             applied INTEGER DEFAULT 0,
-            applied_at TEXT DEFAULT ''
+            applied_at TEXT DEFAULT '',
+            session_id INTEGER DEFAULT 0
         )
         """)
+
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS optimization_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT NOT NULL,
+            type TEXT DEFAULT 'manual',
+            status TEXT DEFAULT 'pending',
+            week_start TEXT DEFAULT '',
+            week_end TEXT DEFAULT '',
+            weekly_trades INTEGER DEFAULT 0,
+            weekly_pnl REAL DEFAULT 0,
+            balance_start REAL DEFAULT 0,
+            balance_end REAL DEFAULT 0,
+            tg_message_id TEXT DEFAULT '',
+            tg_chat_id TEXT DEFAULT '',
+            notes TEXT DEFAULT ''
+        )
+        """)
+
+        # Миграции для существующих таблиц
+        for col, defval in [
+            ("session_id", "0"),
+        ]:
+            try:
+                cur.execute(f"ALTER TABLE optimization_results ADD COLUMN {col} INTEGER DEFAULT {defval}")
+            except Exception:
+                pass
 
         # Migration: seed trade_only_session for existing profiles that don't have it
         try:
@@ -960,6 +988,15 @@ def close_position(figi, source: str = "BOT"):
     with db_cursor() as cur:
         cur.execute("UPDATE positions SET status='CLOSED' WHERE figi=? AND status='OPEN' AND source=?",
                     (figi, source))
+
+
+def get_money_balance_from_runtime() -> float:
+    """Читает последний известный баланс из runtime-таблицы."""
+    val = get_runtime("session_balance", "0")
+    try:
+        return float(val or 0)
+    except Exception:
+        return 0.0
 
 
 def get_instrument_sl_tp(figi: str) -> dict:
@@ -1660,3 +1697,84 @@ def apply_optimization_result(result_id: int):
                     (datetime.now().isoformat(), result_id))
     # Переименовываем стратегию по новым настройкам
     apply_auto_name(sid)
+
+
+# ── optimization sessions ──────────────────────────────────────────────────────
+
+def create_optimization_session(type_: str = "manual", week_start: str = "",
+                                week_end: str = "", weekly_trades: int = 0,
+                                weekly_pnl: float = 0.0, balance_start: float = 0.0,
+                                balance_end: float = 0.0) -> int:
+    with db_cursor() as cur:
+        cur.execute("""
+        INSERT INTO optimization_sessions
+            (created_at, type, status, week_start, week_end,
+             weekly_trades, weekly_pnl, balance_start, balance_end)
+        VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?)
+        """, (_now_msk(), type_, week_start, week_end,
+              weekly_trades, weekly_pnl, balance_start, balance_end))
+        return cur.lastrowid
+
+
+def get_optimization_session(session_id: int) -> dict:
+    with db_cursor() as cur:
+        cur.execute("SELECT * FROM optimization_sessions WHERE id=?", (session_id,))
+        row = cur.fetchone()
+        return dict(row) if row else {}
+
+
+def list_optimization_sessions(limit: int = 20) -> list:
+    with db_cursor() as cur:
+        cur.execute("SELECT * FROM optimization_sessions ORDER BY id DESC LIMIT ?", (limit,))
+        return [dict(r) for r in cur.fetchall()]
+
+
+def update_session_status(session_id: int, status: str, notes: str = ""):
+    with db_cursor() as cur:
+        cur.execute("UPDATE optimization_sessions SET status=?, notes=? WHERE id=?",
+                    (status, notes, session_id))
+
+
+def update_session_tg(session_id: int, tg_message_id: str, tg_chat_id: str):
+    with db_cursor() as cur:
+        cur.execute("UPDATE optimization_sessions SET tg_message_id=?, tg_chat_id=? WHERE id=?",
+                    (tg_message_id, tg_chat_id, session_id))
+
+
+def link_results_to_session(run_id: str, session_id: int):
+    with db_cursor() as cur:
+        cur.execute("UPDATE optimization_results SET session_id=? WHERE run_id=?",
+                    (session_id, run_id))
+
+
+def get_session_results(session_id: int) -> list:
+    with db_cursor() as cur:
+        cur.execute("""
+        SELECT * FROM optimization_results
+        WHERE session_id=? ORDER BY improvement_pct DESC
+        """, (session_id,))
+        return [dict(r) for r in cur.fetchall()]
+
+
+def get_weekly_stats(from_date: str, to_date: str) -> dict:
+    """Статистика сделок за период [from_date, to_date] включительно."""
+    with db_cursor() as cur:
+        cur.execute("""
+        SELECT COUNT(*) as trades,
+               SUM(pnl) as total_pnl,
+               SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins
+        FROM trades
+        WHERE time >= ? AND time <= ?
+        """, (from_date + " 00:00:00", to_date + " 23:59:59"))
+        row = cur.fetchone()
+    if not row:
+        return {"trades": 0, "total_pnl": 0.0, "wins": 0, "win_rate": 0.0}
+    trades = row["trades"] or 0
+    pnl    = float(row["total_pnl"] or 0)
+    wins   = row["wins"] or 0
+    return {
+        "trades":   trades,
+        "total_pnl": pnl,
+        "wins":     wins,
+        "win_rate": round(wins / trades * 100, 1) if trades else 0.0,
+    }

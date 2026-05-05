@@ -73,6 +73,7 @@ from app.db import (
 from app.instruments import get_instrument_meta, round_to_price_step
 from app.telegram_notify import TelegramNotifier
 from app.telegram_bot import run_telegram_polling
+from app.weekly_scheduler import start_weekly_scheduler
 
 load_dotenv()
 
@@ -1888,6 +1889,8 @@ def main():
     if settings.TELEGRAM_ENABLED and settings.TELEGRAM_POLLING_ENABLED:
         Thread(target=run_telegram_polling, daemon=True).start()
 
+    start_weekly_scheduler(notifier=notifier)
+
     state.status = "PRECHECK"
     state.sync_runtime()
 
@@ -1953,6 +1956,7 @@ def main():
                 sync_portfolio_positions(client)
 
                 state.session_balance_current = get_money_balance(client)
+                set_runtime("session_balance", str(state.session_balance_current))
                 state.status = "SCANNING"
                 state.sync_runtime()
                 sleep_sec = int(get_setting("check_interval_sec", str(settings.CHECK_INTERVAL_SEC)))

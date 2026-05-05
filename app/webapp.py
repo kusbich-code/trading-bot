@@ -66,6 +66,13 @@ from app.db import (
     get_strategy_trade_stats,
     apply_auto_name,
     set_setting_all_strategies,
+    create_optimization_session,
+    list_optimization_sessions,
+    get_optimization_session,
+    get_session_results,
+    update_session_status,
+    link_results_to_session,
+    get_weekly_stats,
 )
 
 from app.config import settings
@@ -1471,6 +1478,70 @@ async def api_analyst_start(request: Request):
 def api_analyst_stop():
     ok, msg = _analyst.stop()
     return {"ok": ok, "message": msg}
+
+
+@app.get("/api/analyst/sessions")
+def api_analyst_sessions(limit: int = 30):
+    """История сессий оптимизации (ручные + субботние)."""
+    sessions = list_optimization_sessions(limit=limit)
+    result   = []
+    MODE     = {"mean_reversion": "Возврат к средней", "breakout": "Пробой", "trend": "Тренд"}
+    STATUS   = {"pending": "Ожидает", "accepted": "Принято", "partial": "Частично",
+                "rejected": "Отклонено", "running": "Выполняется"}
+    for s in sessions:
+        results = get_session_results(s["id"])
+        result.append({
+            **s,
+            "type_label":    "Еженедельная" if s["type"] == "weekly" else "Ручная",
+            "status_label":  STATUS.get(s["status"], s["status"]),
+            "result_count":  len(results),
+            "applied_count": sum(1 for r in results if r.get("applied")),
+            "results": [{
+                **r,
+                "base_mode_label": MODE.get(r["base_mode"], r["base_mode"]),
+                "best_mode_label": MODE.get(r["best_mode"], r["best_mode"]),
+                "base_sl_ui":  f"{r['base_sl']*100:.3f}%",
+                "base_tp_ui":  f"{r['base_tp']*100:.3f}%",
+                "best_sl_ui":  f"{r['best_sl']*100:.3f}%",
+                "best_tp_ui":  f"{r['best_tp']*100:.3f}%",
+                "improvement_ui": f"+{r['improvement_pct']:.1f}%" if r['improvement_pct'] > 0 else f"{r['improvement_pct']:.1f}%",
+            } for r in results],
+        })
+    return JSONResponse(result)
+
+
+@app.post("/api/analyst/sessions/{session_id}/apply")
+async def api_session_apply(session_id: int, request: Request):
+    """Применяет выбранные result_ids из сессии."""
+    body       = await request.json()
+    result_ids = body.get("result_ids", [])  # пустой = все
+    results    = get_session_results(session_id)
+    if not result_ids:
+        result_ids = [r["id"] for r in results]
+    applied = 0
+    errors  = []
+    for rid in result_ids:
+        try:
+            apply_optimization_result(int(rid))
+            applied += 1
+        except Exception as e:
+            errors.append(str(e))
+    status = "accepted" if applied == len(result_ids) else "partial"
+    update_session_status(session_id, status, f"Применено {applied} из {len(result_ids)} через дашборд")
+    return JSONResponse({"ok": True, "applied": applied, "errors": errors})
+
+
+@app.post("/api/analyst/sessions/{session_id}/reject")
+def api_session_reject(session_id: int):
+    update_session_status(session_id, "rejected", "Отклонено через дашборд")
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/analyst/sessions/create-manual")
+def api_session_create_manual():
+    """Создаёт сессию для текущего ручного запуска аналитика."""
+    sid = create_optimization_session(type_="manual")
+    return JSONResponse({"ok": True, "session_id": sid})
 
 
 @app.post("/api/strategies/set-all")

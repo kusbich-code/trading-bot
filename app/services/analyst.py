@@ -124,6 +124,7 @@ def start(
     interval: str,
     min_pnl: float,
     exclude_active: bool = True,
+    _run_id_override: str = "",
 ) -> tuple[bool, str]:
     global _thread
     with _lock:
@@ -132,7 +133,8 @@ def start(
     _stop_event.clear()
     _thread = threading.Thread(
         target=_worker,
-        args=(budget_rub, min_win_rate, min_trades, days, interval, min_pnl, exclude_active),
+        args=(budget_rub, min_win_rate, min_trades, days, interval,
+              min_pnl, exclude_active, _run_id_override),
         daemon=True,
         name="analyst-worker",
     )
@@ -179,12 +181,13 @@ def _upd(**kwargs):
         _state.update(kwargs)
 
 
-def _worker(budget_rub, min_win_rate, min_trades, days, interval, min_pnl, exclude_active: bool = True):
+def _worker(budget_rub, min_win_rate, min_trades, days, interval, min_pnl,
+            exclude_active: bool = True, _run_id_override: str = ""):
     from app.services.tbank_client import get_candles_range
     from app.services.backtest_engine import run_backtest
     from app.db import log_event, db_cursor
 
-    run_id = str(uuid.uuid4())[:8]
+    run_id = _run_id_override or str(uuid.uuid4())[:8]
     _upd(status="running", run_id=run_id,
          started_at=datetime.now().isoformat(),
          progress=0, total=0, current="Инициализация…", found=0, error=None)

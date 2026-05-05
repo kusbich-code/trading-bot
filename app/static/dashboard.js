@@ -2728,6 +2728,7 @@ async function renderAnalystTab() {
           <div id="anCurrentCombo" class="note" style="margin-top:6px"></div>
         </div>
 
+        <!-- Текущие результаты поиска (активный прогон) -->
         <div id="anResultsBlock" style="display:none">
           <div class="block" style="margin-bottom:16px">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
@@ -2761,6 +2762,17 @@ async function renderAnalystTab() {
               <input id="anSaveName" class="field" placeholder="Название новой стратегии" style="flex:1;min-width:220px">
               <button class="btn btn-primary" onclick="analystSave()">Сохранить как стратегию</button>
             </div>
+          </div>
+        </div>
+
+        <!-- История сессий оптимизации -->
+        <div class="block" style="margin-top:20px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+            <h2>История оптимизаций <span id="anSessionCount" class="note"></span></h2>
+            <button class="btn" onclick="_analystLoadSessions()">Обновить</button>
+          </div>
+          <div id="anSessionsList">
+            <p class="note">Загрузка…</p>
           </div>
         </div>
       </div>
@@ -2858,6 +2870,7 @@ async function renderAnalystTab() {
     host.dataset.initialized = "1";
     _analystApplyModeStyle();
     _analystLoadInstruments();
+    _analystLoadSessions();
   }
 
   if (_analystMode === "search") {
@@ -2880,6 +2893,117 @@ function _analystApplyModeStyle() {
   btnOptimize.style.color      = !isSearch  ? "#fff" : "";
   if (divSearch)   divSearch.style.display   = isSearch  ? "" : "none";
   if (divOptimize) divOptimize.style.display = !isSearch ? "" : "none";
+}
+
+async function _analystLoadSessions() {
+  const container = document.getElementById("anSessionsList");
+  const countEl   = document.getElementById("anSessionCount");
+  if (!container) return;
+  container.innerHTML = '<p class="note">Загрузка…</p>';
+  try {
+    const sessions = await apiGet("/api/analyst/sessions?limit=30");
+    if (countEl) countEl.textContent = `(${sessions.length})`;
+    if (!sessions.length) {
+      container.innerHTML = '<p class="note">История пуста. Запустите поиск или оптимизацию.</p>';
+      return;
+    }
+    const STATUS_COLOR = {
+      pending:  "#a8c8ff",
+      accepted: "#2fa36b",
+      partial:  "#f0a500",
+      rejected: "#ff7b7b",
+      running:  "#a8c8ff",
+    };
+    container.innerHTML = sessions.map(s => {
+      const sc = STATUS_COLOR[s.status] || "#aaa";
+      const isWeekly = s.type === "weekly";
+      const weeklyInfo = isWeekly && s.weekly_trades > 0
+        ? `<div class="note" style="margin-top:4px">
+             Сделок: <b>${s.weekly_trades}</b> &nbsp;|&nbsp;
+             PnL: <b style="color:${s.weekly_pnl>=0?'#2fa36b':'#ff7b7b'}">${s.weekly_pnl>=0?'+':''}${s.weekly_pnl.toFixed(2)} ₽</b> &nbsp;|&nbsp;
+             Баланс: ${s.balance_start.toFixed(0)} → ${s.balance_end.toFixed(0)} ₽
+             ${s.balance_start>0 ? `(<b>${((s.balance_end-s.balance_start)/s.balance_start*100).toFixed(2)}%</b>)` : ''}
+           </div>` : '';
+
+      const resultsHtml = s.results && s.results.length ? `
+        <div style="overflow-x:auto;margin-top:10px">
+          <table class="table" style="font-size:12px">
+            <thead><tr>
+              <th>Тикер</th><th>Стратегия</th>
+              <th>Было</th><th>Предложение</th>
+              <th>Улучшение</th><th>Статус</th><th></th>
+            </tr></thead>
+            <tbody>
+              ${s.results.map(r => `<tr style="${r.applied?'opacity:.6':''}">
+                <td><b>${esc(r.ticker)}</b></td>
+                <td style="font-size:11px;max-width:120px;overflow:hidden">${esc((r.strategy_name||'').substring(0,22))}</td>
+                <td class="mono" style="font-size:11px">${esc(r.base_mode_label)} ${esc(r.base_sl_ui)}/${esc(r.base_tp_ui)}</td>
+                <td class="mono" style="font-size:11px;color:#a8c8ff">${esc(r.best_mode_label)} ${esc(r.best_sl_ui)}/${esc(r.best_tp_ui)}</td>
+                <td style="color:${parseFloat(r.improvement_ui)>=0?'#2fa36b':'#ff7b7b'};font-weight:600">${esc(r.improvement_ui)}</td>
+                <td style="font-size:11px">${r.applied ? '<span style="color:#2fa36b">✅ Применено</span>' : '<span class="note">Ожидает</span>'}</td>
+                <td>
+                  ${!r.applied ? `<button class="btn btn-small" onclick="_anApplyOne(${s.id},${r.id})">Применить</button>` : ''}
+                </td>
+              </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
+        ${s.status === 'pending' ? `
+        <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+          <button class="btn btn-primary btn-small" onclick="_anApplySelected(${s.id})">✅ Применить выбранные</button>
+          <button class="btn btn-small" style="color:#ff7b7b" onclick="_anRejectSession(${s.id})">❌ Отклонить</button>
+        </div>` : ''}
+      ` : '<p class="note" style="margin-top:6px">Нет предложений в этой сессии.</p>';
+
+      return `
+        <div class="block" style="margin-bottom:12px;padding:14px">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:6px">
+            <div>
+              <span style="font-weight:600">${esc(s.type_label)}</span>
+              <span class="note" style="margin-left:8px">${esc(s.created_at ? s.created_at.substring(0,16) : '')}</span>
+              ${isWeekly ? `<span class="note" style="margin-left:6px">Нед. ${esc(s.week_start||'')} – ${esc(s.week_end||'')}</span>` : ''}
+            </div>
+            <div style="display:flex;gap:8px;align-items:center">
+              <span style="font-size:12px;color:${sc};font-weight:600">${esc(s.status_label)}</span>
+              <span class="note">${s.result_count} предл. / ${s.applied_count} прим.</span>
+            </div>
+          </div>
+          ${weeklyInfo}
+          ${s.notes ? `<div class="note" style="margin-top:4px;font-size:11px">${esc(s.notes)}</div>` : ''}
+          <details style="margin-top:8px">
+            <summary style="cursor:pointer;font-size:13px;color:rgba(255,255,255,.7)">Показать предложения (${s.result_count})</summary>
+            ${resultsHtml}
+          </details>
+        </div>`;
+    }).join("");
+  } catch (e) {
+    container.innerHTML = `<p class="note" style="color:#ff7b7b">Ошибка: ${esc(e.message)}</p>`;
+  }
+}
+
+async function _anApplyOne(sessionId, resultId) {
+  try {
+    await apiPostJson(`/api/analyst/sessions/${sessionId}/apply`, { result_ids: [resultId] });
+    showToast("Применено", "success");
+    _analystLoadSessions();
+  } catch(e) { showToast(`Ошибка: ${e.message}`, "error"); }
+}
+
+async function _anApplySelected(sessionId) {
+  try {
+    await apiPostJson(`/api/analyst/sessions/${sessionId}/apply`, { result_ids: [] });
+    showToast("Все предложения сессии применены", "success");
+    _analystLoadSessions();
+  } catch(e) { showToast(`Ошибка: ${e.message}`, "error"); }
+}
+
+async function _anRejectSession(sessionId) {
+  if (!confirm("Отклонить все предложения этой сессии?")) return;
+  try {
+    await apiPostJson(`/api/analyst/sessions/${sessionId}/reject`, {});
+    showToast("Отклонено", "success");
+    _analystLoadSessions();
+  } catch(e) { showToast(`Ошибка: ${e.message}`, "error"); }
 }
 
 async function _analystLoadInstruments() {
@@ -2993,6 +3117,8 @@ async function _analystLoadResults() {
     if (!tbody) return;
     if (block) block.style.display = results.length ? "block" : "none";
     if (cnt) cnt.textContent = `(${results.length})`;
+    // Обновляем историю сессий при появлении результатов
+    if (results.length) _analystLoadSessions();
 
     if (!results.length) {
       tbody.innerHTML = `<tr><td colspan="12" class="note">Нет результатов. Попробуйте снизить фильтры или увеличить период.</td></tr>`;
