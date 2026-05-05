@@ -1446,7 +1446,8 @@ def _fmt_pct(val) -> str:
     """0.005 → '0.500%', 0.015 → '1.500%'"""
     try:
         v = float(val) * 100
-        return f"{v:.3f}%".rstrip("0").rstrip(".")  + "%"
+        s = f"{v:.3f}".rstrip("0").rstrip(".")
+        return s + "%"
     except Exception:
         return str(val)
 
@@ -1479,8 +1480,14 @@ def auto_strategy_name(strategy_id: int) -> str:
 
 def apply_auto_name(strategy_id: int):
     """Обновляет name в таблице strategies по текущим настройкам."""
-    name = auto_strategy_name(strategy_id)
+    base = auto_strategy_name(strategy_id)
     with db_cursor() as cur:
+        # Если имя занято другой стратегией — добавляем суффикс с id
+        cur.execute("SELECT id FROM strategies WHERE name=? AND id!=?", (base, strategy_id))
+        if cur.fetchone():
+            name = f"{base} #{strategy_id}"
+        else:
+            name = base
         cur.execute("UPDATE strategies SET name=? WHERE id=?", (name, strategy_id))
         # Синхронизируем bot_settings если это активная стратегия
         cur.execute("SELECT id FROM profiles WHERE strategy_id=? AND is_active=1", (strategy_id,))
