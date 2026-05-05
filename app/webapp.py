@@ -65,6 +65,7 @@ from app.db import (
     clear_history,
     get_strategy_trade_stats,
     apply_auto_name,
+    set_setting_all_strategies,
 )
 
 from app.config import settings
@@ -1470,6 +1471,18 @@ async def api_analyst_start(request: Request):
 def api_analyst_stop():
     ok, msg = _analyst.stop()
     return {"ok": ok, "message": msg}
+
+
+@app.post("/api/strategies/set-all")
+async def api_strategies_set_all(request: Request):
+    """Устанавливает значение любого ключа настроек для ВСЕХ стратегий."""
+    body = await request.json()
+    key   = str(body.get("key", "")).strip()
+    value = str(body.get("value", "")).strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="key required")
+    set_setting_all_strategies(key, value)
+    return JSONResponse({"ok": True, "key": key, "value": value})
 
 
 @app.get("/api/analyst/instruments")

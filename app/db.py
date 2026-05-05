@@ -17,7 +17,7 @@ STRATEGY_SETTING_KEYS = {
     "default_stop_loss_pct", "default_take_profit_pct", "estimated_commission_pct",
     "allow_long_global", "allow_short_global", "trade_only_session", "pause_after_error_sec",
     "tradingmode", "errorseriespausecount", "stopseriespausecount",
-    "trailing_stop_enabled", "use_signal_service", "min_signal_score",
+    "trailing_stop_enabled", "use_signal_service", "min_signal_score", "use_api_confirm",
 }
 
 
@@ -1446,6 +1446,20 @@ def update_strategy_settings(strategy_id: int, settings_dict: dict):
                     INSERT INTO bot_settings(key, value) VALUES (?, ?)
                     ON CONFLICT(key) DO UPDATE SET value = excluded.value
                     """, (key, str(value)))
+
+
+def set_setting_all_strategies(key: str, value: str):
+    """Устанавливает значение настройки для ВСЕХ стратегий в таблице strategies."""
+    if key not in STRATEGY_SETTING_KEYS:
+        return
+    with db_cursor() as cur:
+        cur.execute("SELECT id FROM strategies")
+        ids = [r["id"] for r in cur.fetchall()]
+        for sid in ids:
+            cur.execute("""
+            INSERT INTO strategy_settings(strategy_id, key, value) VALUES (?, ?, ?)
+            ON CONFLICT(strategy_id, key) DO UPDATE SET value = excluded.value
+            """, (sid, key, value))
 
 
 _MODE_LABELS = {
