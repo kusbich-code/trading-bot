@@ -17,6 +17,9 @@ from t_tech.invest import (
     OrderDirection,
     OrderType,
     Quotation,
+    StopOrderDirection,
+    StopOrderType,
+    StopOrderExpirationType,
 )
 from t_tech.invest.sandbox.client import SandboxClient
 from t_tech.invest.utils import quotation_to_decimal
@@ -848,6 +851,86 @@ def place_order_checked(client, ticker: str, figi: str, lots: int, raw_price: De
         return None
 
 
+def _place_native_stops(client, ticker: str, figi: str, instrument_uid: str,
+                        direction: str, qty: int, entry_price: Decimal,
+                        sl_pct: Decimal, tp_pct: Decimal) -> dict:
+    """
+    Размещает нативные StopLoss и TakeProfit на бирже после открытия позиции.
+    Возвращает dict с id ордеров: {"sl_id": ..., "tp_id": ...}
+    Работает даже при зависании бота — ордера исполнятся на стороне биржи.
+    """
+    ids = {"sl_id": None, "tp_id": None}
+    instr_id = instrument_uid or figi
+
+    # Направления закрытия обратные входу
+    if direction == "BUY":
+        close_dir = StopOrderDirection.STOP_ORDER_DIRECTION_SELL
+        sl_price = round_to_price_step(entry_price * (Decimal("1") - sl_pct),
+                                       state.instrument_meta.get(ticker, {}).get("min_price_increment", Decimal("0.01")))
+        tp_price = round_to_price_step(entry_price * (Decimal("1") + tp_pct),
+                                       state.instrument_meta.get(ticker, {}).get("min_price_increment", Decimal("0.01")))
+    else:
+        close_dir = StopOrderDirection.STOP_ORDER_DIRECTION_BUY
+        sl_price = round_to_price_step(entry_price * (Decimal("1") + sl_pct),
+                                       state.instrument_meta.get(ticker, {}).get("min_price_increment", Decimal("0.01")))
+        tp_price = round_to_price_step(entry_price * (Decimal("1") - tp_pct),
+                                       state.instrument_meta.get(ticker, {}).get("min_price_increment", Decimal("0.01")))
+
+    def _q(price: Decimal) -> Quotation:
+        units = int(price)
+        nano = int((price - units) * Decimal("1000000000"))
+        return Quotation(units=units, nano=nano)
+
+    # StopLoss
+    try:
+        resp = client.stop_orders.post_stop_order(
+            instrument_id=instr_id,
+            quantity=qty,
+            stop_price=_q(sl_price),
+            direction=close_dir,
+            account_id=settings.TINVEST_ACCOUNT_ID,
+            stop_order_type=StopOrderType.STOP_ORDER_TYPE_STOP_LOSS,
+            expiration_type=StopOrderExpirationType.STOP_ORDER_EXPIRATION_TYPE_GOOD_TILL_CANCEL,
+        )
+        ids["sl_id"] = getattr(resp, "stop_order_id", None)
+        log_event("STOP_ORDER", f"{ticker} SL native @ {sl_price} id={ids['sl_id']}", ticker=ticker)
+    except Exception as e:
+        log.warning("Не удалось разместить нативный SL для %s: %s", ticker, e)
+
+    # TakeProfit
+    try:
+        resp = client.stop_orders.post_stop_order(
+            instrument_id=instr_id,
+            quantity=qty,
+            stop_price=_q(tp_price),
+            direction=close_dir,
+            account_id=settings.TINVEST_ACCOUNT_ID,
+            stop_order_type=StopOrderType.STOP_ORDER_TYPE_TAKE_PROFIT,
+            expiration_type=StopOrderExpirationType.STOP_ORDER_EXPIRATION_TYPE_GOOD_TILL_CANCEL,
+        )
+        ids["tp_id"] = getattr(resp, "stop_order_id", None)
+        log_event("STOP_ORDER", f"{ticker} TP native @ {tp_price} id={ids['tp_id']}", ticker=ticker)
+    except Exception as e:
+        log.warning("Не удалось разместить нативный TP для %s: %s", ticker, e)
+
+    return ids
+
+
+def _cancel_native_stops(client, ticker: str, stop_ids: dict):
+    """Отменяет нативные стоп-ордера при ручном закрытии позиции."""
+    for key, sid in stop_ids.items():
+        if not sid:
+            continue
+        try:
+            client.stop_orders.cancel_stop_order(
+                account_id=settings.TINVEST_ACCOUNT_ID,
+                stop_order_id=sid,
+            )
+            log_event("STOP_ORDER", f"{ticker} cancel {key} id={sid}", ticker=ticker)
+        except Exception as e:
+            log.warning("Не удалось отменить стоп-ордер %s=%s: %s", key, sid, e)
+
+
 def process_instrument(client, item,
                        _strategy_id: Optional[int] = None,
                        _strategy_cfg: Optional[Dict] = None,
@@ -1062,6 +1145,10 @@ def process_instrument(client, item,
 
         if close_signal:
             close_dir = OrderDirection.ORDER_DIRECTION_SELL if direction == "BUY" else OrderDirection.ORDER_DIRECTION_BUY
+            # Отменяем нативные стоп-ордера перед ручным закрытием
+            _stop_ids = pos.get("native_stop_ids", {})
+            if _stop_ids:
+                _cancel_native_stops(client, ticker, _stop_ids)
             order_result = place_order_checked(client, ticker, figi, qty, price, close_dir)
             if not order_result:
                 return
@@ -1187,22 +1274,29 @@ def process_instrument(client, item,
                 _coord.release(_strategy_id)
             return
         _ep = float(order_result["executed_price"])
+        _qty_filled = int(order_result["lots_executed"] or lot)
+        # Нативные стоп-ордера на бирже — сработают даже при зависании бота
+        _stop_ids = _place_native_stops(
+            client, ticker, figi, instrument_uid, "BUY", _qty_filled,
+            Decimal(str(_ep)), stop_loss_pct, take_profit_pct,
+        )
         positions[ticker] = {
             "figi": figi,
             "direction": "BUY",
             "entry_price": _ep,
-            "qty": int(order_result["lots_executed"] or lot),
+            "qty": _qty_filled,
             "opened_at": _now().strftime("%Y-%m-%d %H:%M:%S"),
             "open_order_id": order_result["response_order_id"],
             "execution_status": order_result["execution_status"],
             "trailing_stop": _ep * (1 - float(stop_loss_pct)),
+            "native_stop_ids": _stop_ids,
         }
 
         upsert_position({
             "ticker": ticker,
             "figi": figi,
             "direction": "BUY",
-            "qty": int(order_result["lots_executed"] or lot),
+            "qty": _qty_filled,
             "entry_price": float(order_result["executed_price"]),
             "current_price": float(order_result["executed_price"]),
             "unrealized_pnl": 0,
@@ -1211,7 +1305,9 @@ def process_instrument(client, item,
             "source": "BOT",
         })
 
-        notify(f"🟢 Открытие позиции\n{ticker} | BUY\nЦена: {order_result['executed_price']}")
+        sl_ui = f"{float(stop_loss_pct)*100:.2f}%"
+        tp_ui = f"{float(take_profit_pct)*100:.2f}%"
+        notify(f"🟢 Открытие позиции\n{ticker} | BUY\nЦена: {order_result['executed_price']}\nSL: {sl_ui} | TP: {tp_ui}\n{'✅ Стопы на бирже' if _stop_ids.get('sl_id') else '⚠️ Стопы не размещены'}")
 
     elif sig == "SELL":
         if not allow_short_global or not allow_short:
@@ -1226,22 +1322,28 @@ def process_instrument(client, item,
                 _coord.release(_strategy_id)
             return
         _ep = float(order_result["executed_price"])
+        _qty_filled = int(order_result["lots_executed"] or lot)
+        _stop_ids = _place_native_stops(
+            client, ticker, figi, instrument_uid, "SELL", _qty_filled,
+            Decimal(str(_ep)), stop_loss_pct, take_profit_pct,
+        )
         positions[ticker] = {
             "figi": figi,
             "direction": "SELL",
             "entry_price": _ep,
-            "qty": int(order_result["lots_executed"] or lot),
+            "qty": _qty_filled,
             "opened_at": _now().strftime("%Y-%m-%d %H:%M:%S"),
             "open_order_id": order_result["response_order_id"],
             "execution_status": order_result["execution_status"],
             "trailing_stop": _ep * (1 + float(stop_loss_pct)),
+            "native_stop_ids": _stop_ids,
         }
 
         upsert_position({
             "ticker": ticker,
             "figi": figi,
             "direction": "SELL",
-            "qty": int(order_result["lots_executed"] or lot),
+            "qty": _qty_filled,
             "entry_price": float(order_result["executed_price"]),
             "current_price": float(order_result["executed_price"]),
             "unrealized_pnl": 0,
@@ -1250,7 +1352,9 @@ def process_instrument(client, item,
             "source": "BOT",
         })
 
-        notify(f"🔴 Открытие позиции\n{ticker} | SELL\nЦена: {order_result['executed_price']}")
+        sl_ui = f"{float(stop_loss_pct)*100:.2f}%"
+        tp_ui = f"{float(take_profit_pct)*100:.2f}%"
+        notify(f"🔴 Открытие позиции\n{ticker} | SELL\nЦена: {order_result['executed_price']}\nSL: {sl_ui} | TP: {tp_ui}\n{'✅ Стопы на бирже' if _stop_ids.get('sl_id') else '⚠️ Стопы не размещены'}")
 
 def _parallel_strategy_worker(strategy_id: int, strat_name: str, stop_ev: threading.Event):
     """
@@ -1266,7 +1370,27 @@ def _parallel_strategy_worker(strategy_id: int, strat_name: str, stop_ev: thread
     _pset(strategy_id, "запуск")
     log.info("Parallel [%s] thread started", strat_name)
 
-    positions: Dict = {}  # хранилище позиций потока (макс. 1 в параллельном режиме)
+    # Восстанавливаем позиции из БД при старте (на случай перезапуска бота)
+    positions: Dict = {}
+    try:
+        _instr_figis = {i["figi"] for i in _parallel_instruments(strategy_id)}
+        for _bp in get_open_positions(source="BOT"):
+            if _bp["figi"] in _instr_figis:
+                _tk = _bp["ticker"]
+                positions[_tk] = {
+                    "figi":       _bp["figi"],
+                    "direction":  _bp["direction"],
+                    "entry_price": float(_bp["entry_price"]),
+                    "qty":        int(_bp["qty"]),
+                    "opened_at":  _bp.get("opened_at", ""),
+                    "trailing_stop": 0.0,
+                }
+                # Восстанавливаем координатор если он был свободен
+                if _parallel_coord.is_free:
+                    _parallel_coord.try_claim(strategy_id, _bp["figi"], _tk)
+                log.info("Parallel [%s] восстановлена позиция %s из БД", strat_name, _tk)
+    except Exception as _e:
+        log.warning("Parallel [%s] ошибка восстановления позиций: %s", strat_name, _e)
 
     while not stop_ev.is_set():
         try:
