@@ -1472,6 +1472,41 @@ def api_analyst_stop():
     return {"ok": ok, "message": msg}
 
 
+@app.get("/api/analyst/instruments")
+def api_analyst_instruments_list():
+    """Возвращает список инструментов доступных аналитику (SEARCH_INSTRUMENTS)."""
+    from app.services.analyst import SEARCH_INSTRUMENTS
+    return JSONResponse([
+        {
+            "ticker":          i.get("ticker", ""),
+            "figi":            i.get("figi", ""),
+            "instrument_uid":  i.get("instrument_uid", ""),
+            "name":            i.get("name", ""),
+            "lot":             i.get("lot", 1),
+        }
+        for i in SEARCH_INSTRUMENTS
+    ])
+
+
+@app.post("/api/analyst/instruments/update-uid")
+async def api_analyst_instruments_update_uid(request: Request):
+    """Обновляет instrument_uid для инструмента в SEARCH_INSTRUMENTS и strategy_instruments."""
+    body = await request.json()
+    figi = (body.get("figi") or "").strip()
+    uid  = (body.get("instrument_uid") or "").strip()
+    if not figi:
+        raise HTTPException(status_code=400, detail="figi required")
+    from app.db import save_instrument_uid
+    save_instrument_uid(figi, uid)
+    # Обновляем in-memory список
+    from app.services.analyst import SEARCH_INSTRUMENTS
+    for inst in SEARCH_INSTRUMENTS:
+        if inst.get("figi") == figi:
+            inst["instrument_uid"] = uid
+            break
+    return JSONResponse({"ok": True})
+
+
 @app.get("/api/analyst/results")
 def api_analyst_results(limit: int = 50):
     rows = _analyst.get_results(limit=limit)

@@ -2830,9 +2830,34 @@ async function renderAnalystTab() {
           </div>
         </div>
       </div>
+
+      <!-- ── ИЗВЕСТНЫЕ ИНСТРУМЕНТЫ ── -->
+      <div class="block" style="margin-top:20px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+          <h2>Известные инструменты <span id="anInstrCount" class="note"></span></h2>
+          <button class="btn" onclick="_analystLoadInstruments()">Обновить</button>
+        </div>
+        <div style="overflow-x:auto">
+          <table class="table" id="anInstrTable">
+            <thead>
+              <tr>
+                <th>Тикер</th>
+                <th>Название</th>
+                <th>FIGI</th>
+                <th>Instrument UID</th>
+                <th>Лот</th>
+              </tr>
+            </thead>
+            <tbody id="anInstrTbody">
+              <tr><td colspan="5" class="note" style="text-align:center">Загрузка…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
     `;
     host.dataset.initialized = "1";
     _analystApplyModeStyle();
+    _analystLoadInstruments();
   }
 
   if (_analystMode === "search") {
@@ -2855,6 +2880,40 @@ function _analystApplyModeStyle() {
   btnOptimize.style.color      = !isSearch  ? "#fff" : "";
   if (divSearch)   divSearch.style.display   = isSearch  ? "" : "none";
   if (divOptimize) divOptimize.style.display = !isSearch ? "" : "none";
+}
+
+async function _analystLoadInstruments() {
+  const tbody = document.getElementById("anInstrTbody");
+  const count = document.getElementById("anInstrCount");
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="5" class="note" style="text-align:center">Загрузка…</td></tr>`;
+  try {
+    const list = await apiGet("/api/analyst/instruments");
+    if (count) count.textContent = `(${list.length})`;
+    if (!list.length) {
+      tbody.innerHTML = `<tr><td colspan="5" class="note" style="text-align:center">Нет инструментов</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = list.map(inst => {
+      const uid = inst.instrument_uid || "";
+      const uidShort = uid ? uid.substring(0, 8) + "…" : "—";
+      const uidFull  = uid || "—";
+      return `<tr>
+        <td><b>${esc(inst.ticker)}</b></td>
+        <td style="font-size:12px;color:rgba(255,255,255,.7)">${esc(inst.name)}</td>
+        <td class="mono" style="font-size:12px;color:#a8c8ff;user-select:all">${esc(inst.figi)}</td>
+        <td class="mono" style="font-size:11px;max-width:220px">
+          <span title="${esc(uidFull)}" style="cursor:default">${esc(uidShort)}</span>
+          ${uid ? `<button class="btn btn-small" style="margin-left:6px;padding:2px 6px;font-size:10px"
+            onclick="navigator.clipboard.writeText('${esc(uid)}').then(()=>showToast('UID скопирован','success'))">
+            Копировать</button>` : `<span class="note">не задан</span>`}
+        </td>
+        <td style="font-size:12px;text-align:center">${inst.lot}</td>
+      </tr>`;
+    }).join("");
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="5" class="note" style="color:#ff7b7b">Ошибка: ${esc(e.message)}</td></tr>`;
+  }
 }
 
 function analystSwitchMode(mode) {
