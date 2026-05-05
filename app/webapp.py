@@ -491,12 +491,18 @@ def api_dashboard_main():
 
     # ── Positions: broker API (same source as portfolio tab) ──────────────────
     # Priority: portfolio_stream cache → get_broker_positions() REST → BOT DB
-    def _fmt_pos(figi, direction, qty, avg, cur, pnl):
+    def _fmt_pos(figi, direction, qty, avg, cur, pnl, opened_at=""):
         avg_d = safe_decimal(avg)
-        cur_d = safe_decimal(cur)
-        pnl_d = safe_decimal(pnl)
-        if pnl_d == 0 and avg_d > 0 and cur_d > 0:
-            pnl_d = (cur_d - avg_d) * qty if direction == "BUY" else (avg_d - cur_d) * qty
+        # Текущую цену берём из market_state (свежее чем portfolio stream который может устаревать)
+        mkt_price = safe_decimal(market_map.get(figi, {}).get("last_price", 0))
+        cur_d = mkt_price if mkt_price > 0 else safe_decimal(cur)
+        # PnL пересчитываем по свежей цене
+        if direction == "BUY":
+            pnl_d = (cur_d - avg_d) * qty
+        else:
+            pnl_d = (avg_d - cur_d) * qty
+        # Процент изменения цены
+        pct = ((cur_d - avg_d) / avg_d * 100) if avg_d > 0 else Decimal("0")
         return {
             "ticker": market_map.get(figi, {}).get("ticker", "") or figi[:8],
             "figi": figi,
@@ -505,7 +511,9 @@ def api_dashboard_main():
             "entry_price_ui": fmt_price(avg_d),
             "current_price_ui": fmt_price(cur_d),
             "unrealized_pnl_ui": fmt_money(pnl_d),
-            "opened_at": "",
+            "pct_change": f"{pct:+.2f}%",
+            "pnl_positive": pnl_d >= 0,
+            "opened_at": opened_at,
         }
 
     with _portfolio_cache_lock:
@@ -527,14 +535,11 @@ def api_dashboard_main():
                 ))
         except Exception:
             for p in get_open_positions(source="BOT"):
-                positions.append({
-                    "ticker": p.get("ticker", ""), "figi": p.get("figi", ""),
-                    "direction": p.get("direction", ""), "qty": p.get("qty", 0),
-                    "entry_price_ui": fmt_price(p.get("entry_price", 0)),
-                    "current_price_ui": fmt_price(p.get("current_price", 0)),
-                    "unrealized_pnl_ui": fmt_money(p.get("unrealized_pnl", 0)),
-                    "opened_at": p.get("opened_at", ""),
-                })
+                positions.append(_fmt_pos(
+                    p.get("figi", ""), p.get("direction", "BUY"), p.get("qty", 0),
+                    p.get("entry_price", 0), p.get("current_price", 0), p.get("unrealized_pnl", 0),
+                    p.get("opened_at", ""),
+                ))
 
     # ── Trades: T-Bank operations API → local DB fallback ─────────────────────
     api_trades: list = []

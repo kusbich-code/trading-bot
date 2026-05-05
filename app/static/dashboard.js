@@ -295,7 +295,7 @@ async function renderMainShell() {
       <div class="row between"><h2>Позиции <span class="note">(API брокера)</span></h2></div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Тикер</th><th>Направление</th><th>Лотов</th><th>Вход</th><th>Тек.</th><th>ПнЛ</th><th>Действие</th></tr></thead>
+          <thead><tr><th>Тикер</th><th>Направление</th><th>Лотов</th><th>Вход</th><th>Тек. цена</th><th>Изм.%</th><th>ПнЛ</th><th>Действие</th></tr></thead>
           <tbody id="mainPositionsBody"></tbody>
         </table>
       </div>
@@ -332,12 +332,15 @@ async function renderMainData() {
           : esc(dir);
       const pnlVal = parseFloat(String(p.unrealized_pnl_ui).replace(/[^0-9.,\-]/g, "").replace(",", ".")) || 0;
       const pnlColor = pnlVal >= 0 ? "#2fa36b" : "#ff7b7b";
+      const pct = p.pct_change || "";
+      const pctColor = pct.startsWith("+") ? "#2fa36b" : pct.startsWith("-") ? "#ff7b7b" : "#9fb3d8";
       return `<tr>
         <td><b>${esc(p.ticker)}</b></td>
         <td>${dirBadge}</td>
         <td>${esc(p.qty)}</td>
-        <td>${esc(p.entry_price_ui)}</td>
-        <td>${esc(p.current_price_ui)}</td>
+        <td class="muted">${esc(p.entry_price_ui)}</td>
+        <td><b>${esc(p.current_price_ui)}</b></td>
+        <td style="color:${pctColor};font-weight:600">${esc(pct)}</td>
         <td style="font-weight:700;color:${pnlColor}">${esc(p.unrealized_pnl_ui)}</td>
         <td>${p.figi && p.qty && p.direction ? `
           <button class="btn btn-danger" style="padding:5px 10px"
