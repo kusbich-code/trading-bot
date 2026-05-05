@@ -472,20 +472,125 @@ def notify(message: str, is_error: bool = False):
     notifier.send(message)
 
 
-def _handle_manual_close(bp: dict, market_map: dict):
+def _get_actual_close_price(client, figi: str, instrument_uid: str, opened_at: str) -> Optional[float]:
+    """
+    Ищет фактическую цену закрытия позиции через операции брокера.
+    Возвращает float или None если не найдено.
+    """
+    try:
+        from_dt = datetime.now(timezone.utc) - timedelta(hours=2)
+        ops = client.operations.get_operations(
+            account_id=settings.TINVEST_ACCOUNT_ID,
+            from_=from_dt,
+            to=datetime.now(timezone.utc),
+            figi=figi,
+        )
+        # Берём последнюю операцию типа BROKER_REPORT (sell/buy) для этого figi
+        for op in reversed(list(ops.operations)):
+            op_type = str(getattr(op, "operation_type", "") or "")
+            op_state = str(getattr(op, "state", "") or "")
+            # Исполненные операции: OPERATION_TYPE_SELL (закрытие лонга) или OPERATION_TYPE_BUY (закрытие шорта)
+            if "EXECUTED" not in op_state and "EXECUTED" not in str(getattr(op, "status", "")):
+                continue
+            price_obj = getattr(op, "price", None)
+            if price_obj is None:
+                continue
+            price_val = float(quotation_to_decimal(price_obj))
+            if price_val > 0:
+                log.debug("Actual close price for %s: %.4f (op_type=%s)", figi[:8], price_val, op_type)
+                return price_val
+    except Exception as e:
+        log.debug("_get_actual_close_price %s: %s", figi[:8], e)
+    return None
+
+
+def _handle_manual_close(bp: dict, market_map: dict, client=None):
     """
     Закрывает BOT-позицию, исчезнувшую из брокерского портфеля.
     Автоматически определяет причину: STOP_LOSS / TAKE_PROFIT / MANUAL_CLOSE.
+    Фактическую цену выхода берёт из операций брокера (если доступно).
     """
     figi        = bp["figi"]
     ticker      = bp["ticker"]
     direction   = bp["direction"]
     entry_price = Decimal(str(bp["entry_price"]))
     qty         = int(bp["qty"])
+    opened_at   = bp.get("opened_at", "")
 
-    mkt = market_map.get(figi, {})
-    last_price = float(mkt.get("last_price", 0) or 0)
-    exit_price = Decimal(str(last_price)) if last_price > 0 else entry_price
+    sl_tp  = get_instrument_sl_tp(figi)
+    sl_pct = Decimal(str(sl_tp["sl_pct"]))
+    tp_pct = Decimal(str(sl_tp["tp_pct"]))
+
+    # 1. Пробуем получить фактическую цену закрытия из операций брокера
+    actual_price = None
+    instrument_uid = bp.get("instrument_uid", "") or ""
+    if client is not None:
+        actual_price = _get_actual_close_price(client, figi, instrument_uid, opened_at)
+
+    # 2. Определяем причину закрытия и exit_price
+    reason = "MANUAL_CLOSE"
+    if actual_price is not None:
+        exit_price = Decimal(str(actual_price))
+        # Определяем причину по фактической цене vs теоретические SL/TP
+        if direction == "BUY":
+            sl_price = entry_price * (Decimal("1") - sl_pct) if sl_pct > 0 else None
+            tp_price = entry_price * (Decimal("1") + tp_pct) if tp_pct > 0 else None
+            if sl_price and exit_price <= sl_price * Decimal("1.005"):
+                reason = "STOP_LOSS"
+            elif tp_price and exit_price >= tp_price * Decimal("0.995"):
+                reason = "TAKE_PROFIT"
+        else:
+            sl_price = entry_price * (Decimal("1") + sl_pct) if sl_pct > 0 else None
+            tp_price = entry_price * (Decimal("1") - tp_pct) if tp_pct > 0 else None
+            if sl_price and exit_price >= sl_price * Decimal("0.995"):
+                reason = "STOP_LOSS"
+            elif tp_price and exit_price <= tp_price * Decimal("1.005"):
+                reason = "TAKE_PROFIT"
+    else:
+        # Брокерские операции недоступны — используем рыночную цену и теоретические SL/TP уровни
+        mkt = market_map.get(figi, {})
+        last_price = float(mkt.get("last_price", 0) or 0)
+        market_price = Decimal(str(last_price)) if last_price > 0 else entry_price
+
+        # Если рыночная цена близка к SL/TP — используем теоретическую цену как exit
+        if sl_pct > 0 or tp_pct > 0:
+            if direction == "BUY":
+                sl_price = entry_price * (Decimal("1") - sl_pct) if sl_pct > 0 else None
+                tp_price = entry_price * (Decimal("1") + tp_pct) if tp_pct > 0 else None
+            else:
+                sl_price = entry_price * (Decimal("1") + sl_pct) if sl_pct > 0 else None
+                tp_price = entry_price * (Decimal("1") - tp_pct) if tp_pct > 0 else None
+
+            # Проверяем теоретические уровни с допуском 1.5× SL — рынок мог отскочить
+            sl_breach = sl_price and (
+                (direction == "BUY"  and market_price <= sl_price * Decimal("1.015")) or
+                (direction == "SELL" and market_price >= sl_price * Decimal("0.985"))
+            )
+            tp_breach = tp_price and (
+                (direction == "BUY"  and market_price >= tp_price * Decimal("0.985")) or
+                (direction == "SELL" and market_price <= tp_price * Decimal("1.015"))
+            )
+            if sl_breach:
+                reason = "STOP_LOSS"
+                exit_price = sl_price  # теоретическая цена
+            elif tp_breach:
+                reason = "TAKE_PROFIT"
+                exit_price = tp_price  # теоретическая цена
+            else:
+                # Нативный стоп мог сработать пока рынок отскочил — используем SL цену как оценку
+                # Признак: позиция ликвидирована, но текущая цена ~= entry (рынок вернулся)
+                if sl_pct > 0 and sl_price:
+                    move_from_entry = abs(float((market_price - entry_price) / entry_price))
+                    if move_from_entry < float(sl_pct) * 0.5:
+                        # Цена вернулась — скорее всего был SL, оцениваем по теоретическому уровню
+                        reason = "STOP_LOSS"
+                        exit_price = sl_price
+                    else:
+                        exit_price = market_price
+                else:
+                    exit_price = market_price
+        else:
+            exit_price = market_price
 
     commission_pct = Decimal(str(settings.ESTIMATED_COMMISSION_PCT))
     commission = (entry_price * qty + exit_price * qty) * commission_pct
@@ -495,24 +600,13 @@ def _handle_manual_close(bp: dict, market_map: dict):
     else:
         pnl = (entry_price - exit_price) * qty - commission
 
-    # Определяем причину закрытия по движению цены относительно SL/TP
-    reason = "MANUAL_CLOSE"
-    sl_tp = get_instrument_sl_tp(figi)
-    sl_pct = sl_tp["sl_pct"]
-    tp_pct = sl_tp["tp_pct"]
-    if entry_price > 0 and exit_price > 0 and (sl_pct > 0 or tp_pct > 0):
-        if direction == "BUY":
-            move = float((exit_price - entry_price) / entry_price)
-        else:
-            move = float((entry_price - exit_price) / entry_price)
-        # Порог 80% от заданного SL/TP — учитываем возможное скольжение
-        if sl_pct > 0 and move <= -sl_pct * 0.8:
-            reason = "STOP_LOSS"
-        elif tp_pct > 0 and move >= tp_pct * 0.8:
-            reason = "TAKE_PROFIT"
-
-    reason_labels = {"STOP_LOSS": "Стоп-лосс (нативный)", "TAKE_PROFIT": "Тейк-профит (нативный)", "MANUAL_CLOSE": "Закрыта вручную"}
+    reason_labels = {
+        "STOP_LOSS":    "Стоп-лосс (нативный)",
+        "TAKE_PROFIT":  "Тейк-профит (нативный)",
+        "MANUAL_CLOSE": "Закрыта вручную",
+    }
     reason_ui = reason_labels.get(reason, reason)
+    pnl_sign = "+" if float(pnl) >= 0 else ""
 
     add_trade({
         "time":             _now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -530,9 +624,8 @@ def _handle_manual_close(bp: dict, market_map: dict):
         "execution_status": "exchange" if reason != "MANUAL_CLOSE" else "manual",
     })
     close_position(figi, source="BOT")
-    pnl_sign = "+" if float(pnl) >= 0 else ""
-    log_event("ORDER_CLOSE", f"{ticker} {reason} pnl={float(pnl):.2f}", ticker=ticker)
-    notify(f"{reason_ui}\n{ticker} | {direction}\nPnL ≈ {pnl_sign}{float(pnl):.2f} ₽")
+    log_event("ORDER_CLOSE", f"{ticker} {reason} exit={float(exit_price):.4f} pnl={float(pnl):.2f}", ticker=ticker)
+    notify(f"{reason_ui}\n{ticker} | {direction}\nВход: {float(entry_price):.4f} → Выход: {float(exit_price):.4f}\nPnL ≈ {pnl_sign}{float(pnl):.2f} ₽")
 
     # Освобождаем координатор если он был заблокирован на этой позиции
     try:
@@ -632,7 +725,7 @@ def sync_portfolio_positions(client):
                 except Exception:
                     pass
                 log.info("Позиция %s не найдена в портфеле — определяем причину закрытия", bp["ticker"])
-                _handle_manual_close(bp, market_map)
+                _handle_manual_close(bp, market_map, client=client)
 
     except Exception as e:
         log.warning(f"sync_portfolio_positions error: {e}")
