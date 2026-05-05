@@ -1650,6 +1650,15 @@ def _parallel_strategy_worker(strategy_id: int, strat_name: str, stop_ev: thread
     _pset(strategy_id, "запуск")
     log.info("Parallel [%s] thread started", strat_name)
 
+    # Jitter при старте: каждый воркер ждёт случайно 0–30 с,
+    # чтобы 20+ потоков не атаковали API одновременно
+    import random as _random
+    _jitter = _random.uniform(0, 30)
+    log.info("Parallel [%s] jitter %.1f с", strat_name, _jitter)
+    stop_ev.wait(timeout=_jitter)
+    if stop_ev.is_set():
+        return
+
     # Восстанавливаем позиции из БД при старте (на случай перезапуска бота)
     positions: Dict = {}
     try:
@@ -1736,8 +1745,12 @@ def _parallel_strategy_worker(strategy_id: int, strat_name: str, stop_ev: thread
             _pset(strategy_id, status, ticker)
 
         except Exception as exc:
+            exc_str = str(exc)
             log.warning("Parallel [%s] цикл: %s", strat_name, exc)
             _pset(strategy_id, f"ошибка: {exc}")
+            # При rate-limit — дополнительная пауза чтобы не долбить API
+            if "RESOURCE_EXHAUSTED" in exc_str or "resource exhausted" in exc_str.lower():
+                stop_ev.wait(timeout=15)
 
         stop_ev.wait(timeout=int(cfg.get("check_interval_sec", "5")) if "cfg" in dir() else 5)
 
