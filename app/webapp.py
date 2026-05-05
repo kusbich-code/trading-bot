@@ -940,6 +940,7 @@ def api_dashboard_settings(profile_id: Optional[int] = None):
                 "stopseriespausecount": ss("stopseriespausecount", "3"),
                 "trailing_stop_enabled": ss("trailing_stop_enabled", "0"),
                 "use_signal_service": ss("use_signal_service", "0"),
+                "use_api_confirm": ss("use_api_confirm", "0"),
                 "min_signal_score": ss("min_signal_score", "0"),
             },
             "parallel_enabled": bool(int(strategy.get("parallel_enabled") or 0)),
@@ -1682,6 +1683,7 @@ def api_strategies_save_settings(
     stopseriespausecount: str = Form("3"),
     trailing_stop_enabled: str = Form("0"),
     use_signal_service: str = Form("0"),
+    use_api_confirm: str = Form("0"),
 ):
     update_strategy_settings(strategy_id, {
         "max_trades_per_day": max_trades_per_day,
@@ -1699,6 +1701,7 @@ def api_strategies_save_settings(
         "stopseriespausecount": stopseriespausecount,
         "trailing_stop_enabled": bool01(trailing_stop_enabled),
         "use_signal_service": bool01(use_signal_service),
+        "use_api_confirm": bool01(use_api_confirm),
     })
     new_name = apply_auto_name(strategy_id)
     return JSONResponse({"ok": True, "new_name": new_name})

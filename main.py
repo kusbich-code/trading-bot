@@ -23,6 +23,14 @@ from t_tech.invest import (
 )
 from t_tech.invest.sandbox.client import SandboxClient
 from t_tech.invest.utils import quotation_to_decimal
+from t_tech.invest.schemas import (
+    GetTechAnalysisRequest,
+    IndicatorType,
+    IndicatorInterval,
+    TypeOfPrice,
+    Deviation,
+    Smoothing,
+)
 
 # Классы MarketDataStream (опционально — откат к поллингу если недоступны)
 try:
@@ -931,6 +939,121 @@ def _cancel_native_stops(client, ticker: str, stop_ids: dict):
             log.warning("Не удалось отменить стоп-ордер %s=%s: %s", key, sid, e)
 
 
+_CANDLE_TO_INDICATOR_INTERVAL = {
+    CandleInterval.CANDLE_INTERVAL_1_MIN:  IndicatorInterval.INDICATOR_INTERVAL_ONE_MINUTE,
+    CandleInterval.CANDLE_INTERVAL_5_MIN:  IndicatorInterval.INDICATOR_INTERVAL_FIVE_MINUTES,
+    CandleInterval.CANDLE_INTERVAL_15_MIN: IndicatorInterval.INDICATOR_INTERVAL_FIFTEEN_MINUTES,
+    CandleInterval.CANDLE_INTERVAL_HOUR:   IndicatorInterval.INDICATOR_INTERVAL_ONE_HOUR,
+    CandleInterval.CANDLE_INTERVAL_DAY:    IndicatorInterval.INDICATOR_INTERVAL_ONE_DAY,
+}
+
+
+def get_api_indicators(client, instrument_uid: str, figi: str = "") -> dict:
+    """
+    Получает RSI(14), MACD(12/26/9) и BB(20, 2σ) из T-Bank API.
+    Использует интервал 1 мин, окно 3 часа (достаточно для медленной EMA-26).
+    Возвращает dict: rsi, macd, macd_signal, bb_upper, bb_middle, bb_lower.
+    """
+    instr_id = instrument_uid or figi
+    now = datetime.now(timezone.utc)
+    from_ = now - timedelta(hours=3)
+    interval = IndicatorInterval.INDICATOR_INTERVAL_ONE_MINUTE
+    price_type = TypeOfPrice.TYPE_OF_PRICE_CLOSE
+    result: dict = {}
+
+    # RSI — значение в поле signal
+    try:
+        resp = client.market_data.get_tech_analysis(request=GetTechAnalysisRequest(
+            indicator_type=IndicatorType.INDICATOR_TYPE_RSI,
+            instrument_uid=instr_id,
+            from_=from_, to=now,
+            interval=interval,
+            type_of_price=price_type,
+            length=14,
+        ))
+        if resp.technical_indicators:
+            v = resp.technical_indicators[-1].signal
+            result["rsi"] = float(quotation_to_decimal(v)) if v else None
+    except Exception as e:
+        log.debug("GetTechAnalysis RSI %s: %s", instr_id[:8], e)
+
+    # MACD — macd=линия MACD, signal=сигнальная линия
+    try:
+        resp = client.market_data.get_tech_analysis(request=GetTechAnalysisRequest(
+            indicator_type=IndicatorType.INDICATOR_TYPE_MACD,
+            instrument_uid=instr_id,
+            from_=from_, to=now,
+            interval=interval,
+            type_of_price=price_type,
+            smoothing=Smoothing(fast_length=12, slow_length=26, signal_smoothing=9),
+        ))
+        if resp.technical_indicators:
+            last = resp.technical_indicators[-1]
+            result["macd"] = float(quotation_to_decimal(last.macd)) if last.macd else None
+            result["macd_signal"] = float(quotation_to_decimal(last.signal)) if last.signal else None
+    except Exception as e:
+        log.debug("GetTechAnalysis MACD %s: %s", instr_id[:8], e)
+
+    # BB — upper/middle/lower bands
+    try:
+        resp = client.market_data.get_tech_analysis(request=GetTechAnalysisRequest(
+            indicator_type=IndicatorType.INDICATOR_TYPE_BB,
+            instrument_uid=instr_id,
+            from_=from_, to=now,
+            interval=interval,
+            type_of_price=price_type,
+            length=20,
+            deviation=Deviation(deviation_multiplier=Quotation(units=2, nano=0)),
+        ))
+        if resp.technical_indicators:
+            last = resp.technical_indicators[-1]
+            result["bb_upper"]  = float(quotation_to_decimal(last.upper_band))  if last.upper_band  else None
+            result["bb_middle"] = float(quotation_to_decimal(last.middle_band)) if last.middle_band else None
+            result["bb_lower"]  = float(quotation_to_decimal(last.lower_band))  if last.lower_band  else None
+    except Exception as e:
+        log.debug("GetTechAnalysis BB %s: %s", instr_id[:8], e)
+
+    return result
+
+
+def _apply_indicator_filter(sig: str, indicators: dict, mode: str, price: float) -> str:
+    """
+    Фильтрует сигнал через API-индикаторы. Возвращает HOLD если не подтверждён.
+
+    BUY: RSI < 70, MACD выше сигнальной, для mean_reversion цена ≤ BB_lower.
+    SELL: RSI > 30, MACD ниже сигнальной, для mean_reversion цена ≥ BB_upper.
+    """
+    rsi         = indicators.get("rsi")
+    macd        = indicators.get("macd")
+    macd_signal = indicators.get("macd_signal")
+    bb_upper    = indicators.get("bb_upper")
+    bb_lower    = indicators.get("bb_lower")
+
+    if sig == "BUY":
+        if rsi is not None and rsi > 70:
+            log.debug("API-filter BUY HOLD: RSI=%.1f > 70 (перекуплен)", rsi)
+            return "HOLD"
+        if macd is not None and macd_signal is not None and macd < macd_signal:
+            log.debug("API-filter BUY HOLD: MACD=%.5f < Signal=%.5f", macd, macd_signal)
+            return "HOLD"
+        if mode in ("mean", "mean_reversion", "revert") and bb_lower is not None:
+            if price > bb_lower * 1.005:
+                log.debug("API-filter BUY HOLD: price=%.2f > BB_lower=%.2f * 1.005", price, bb_lower)
+                return "HOLD"
+    elif sig == "SELL":
+        if rsi is not None and rsi < 30:
+            log.debug("API-filter SELL HOLD: RSI=%.1f < 30 (перепродан)", rsi)
+            return "HOLD"
+        if macd is not None and macd_signal is not None and macd > macd_signal:
+            log.debug("API-filter SELL HOLD: MACD=%.5f > Signal=%.5f", macd, macd_signal)
+            return "HOLD"
+        if mode in ("mean", "mean_reversion", "revert") and bb_upper is not None:
+            if price < bb_upper * 0.995:
+                log.debug("API-filter SELL HOLD: price=%.2f < BB_upper=%.2f * 0.995", price, bb_upper)
+                return "HOLD"
+    return sig
+
+
 def process_instrument(client, item,
                        _strategy_id: Optional[int] = None,
                        _strategy_cfg: Optional[Dict] = None,
@@ -987,6 +1110,7 @@ def process_instrument(client, item,
     tradingmode           = _cfg("tradingmode", "trend")
     trailing_stop_enabled = _cfg("trailing_stop_enabled", "0") == "1"
     use_signal_service    = _cfg("use_signal_service", "0") == "1"
+    use_api_confirm       = _cfg("use_api_confirm", "0") in ("1", "true", "yes")
 
     instrument_uid = item.get("instrument_uid", "") or ""
 
@@ -1067,6 +1191,20 @@ def process_instrument(client, item,
     max_spread_pct = Decimal(str(item.get("max_spread_pct", "0")))
     if max_spread_pct > 0 and spread_pct > max_spread_pct:
         return
+
+    # Блок А: подтверждение сигнала через API-индикаторы (RSI/MACD/BB)
+    # Запускаем только когда есть потенциальный сигнал входа — чтобы не делать 3 лишних API-вызова на каждом HOLD
+    if use_api_confirm and sig in ("BUY", "SELL") and ticker not in positions:
+        _ind = get_api_indicators(client, instrument_uid, figi)
+        sig_before = sig
+        sig = _apply_indicator_filter(sig, _ind, tradingmode, float(price))
+        rsi_str = f"RSI={_ind.get('rsi'):.1f}" if _ind.get("rsi") is not None else "RSI=n/a"
+        macd_str = (f"MACD={_ind.get('macd'):.4f}/Sig={_ind.get('macd_signal'):.4f}"
+                    if _ind.get("macd") is not None else "MACD=n/a")
+        bb_str = (f"BB={_ind.get('bb_lower'):.2f}..{_ind.get('bb_upper'):.2f}"
+                  if _ind.get("bb_upper") is not None else "BB=n/a")
+        log.info("API-confirm %s %s→%s | %s | %s | %s",
+                 ticker, sig_before, sig, rsi_str, macd_str, bb_str)
 
     if ticker in positions:
         pos = positions[ticker]
