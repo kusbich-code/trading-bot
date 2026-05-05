@@ -910,7 +910,7 @@ async function expandParallelStrategy(strategyId, mode = "instruments") {
             <button type="button" class="btn btn-primary" id="btnSaveParallelStrat">Сохранить настройки</button>
           </div>
         </form>`;
-      body.querySelector("#btnSaveParallelStrat")?.addEventListener("click", () => saveStrategySettings(strategyId));
+      body.querySelector("#btnSaveParallelStrat")?.addEventListener("click", () => saveStrategySettings(strategyId, "parallelStratForm"));
 
     } else {
       if (title) title.textContent = `Инструменты — ${name}`;
@@ -1141,10 +1141,14 @@ async function deleteStrategyAction(strategyId, name) {
   }
 }
 
-async function saveStrategySettings(strategyId) {
+async function saveStrategySettings(strategyId, formId = "strategySettingsForm") {
   if (!strategyId) { showToast("Стратегия не выбрана", "error"); return; }
   try {
-    const fd = new FormData(document.getElementById("strategySettingsForm"));
+    const form = document.getElementById(formId)
+               || document.getElementById("parallelStratForm")
+               || document.getElementById("strategySettingsForm");
+    if (!form) { showToast("Форма не найдена", "error"); return; }
+    const fd = new FormData(form);
     const data = Object.fromEntries(fd.entries());
     delete data.strategy_id_val;
     await apiPostForm(`/api/strategies/${strategyId}/settings`, data);
