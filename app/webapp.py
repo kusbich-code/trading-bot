@@ -522,6 +522,8 @@ def api_dashboard_main():
     positions = []
     if cached_pos is not None:
         for pos in cached_pos:
+            if str(pos.get("figi", "")).startswith("RUB") or str(pos.get("ticker", "")).startswith("RUB"):
+                continue
             positions.append(_fmt_pos(
                 pos["figi"], pos["direction"], pos["qty"],
                 pos["avg_price"], pos["current_price"], pos["expected_yield"],
