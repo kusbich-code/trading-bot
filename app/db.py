@@ -1463,6 +1463,7 @@ def delete_strategy(strategy_id: int):
             raise ValueError("Нельзя удалить стратегию активного профиля")
         cur.execute("DELETE FROM strategy_settings WHERE strategy_id = ?", (strategy_id,))
         cur.execute("DELETE FROM strategy_instruments WHERE strategy_id = ?", (strategy_id,))
+        cur.execute("DELETE FROM profile_parallel_strategies WHERE strategy_id = ?", (strategy_id,))
         cur.execute("UPDATE profiles SET strategy_id = NULL WHERE strategy_id = ?", (strategy_id,))
         cur.execute("DELETE FROM strategies WHERE id = ?", (strategy_id,))
 
