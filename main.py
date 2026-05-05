@@ -258,6 +258,9 @@ def _orders_stream_worker():
 # читается process_instrument() в основном потоке.
 _md: Dict[str, dict] = {}
 _md_lock = Lock()
+
+# Инструменты недоступные в текущей среде (sandbox NOT_FOUND) — пропускаем до рестарта
+_unavailable_figis: Set[str] = set()
 _md_instruments: list = []           # список словарей {figi, instrument_uid}
 _md_figis: Set[str] = set()          # множество figi для обнаружения изменений
 _md_restart = Event()                 # установка → воркер переподключается с новыми инструментами
@@ -808,7 +811,12 @@ def _fill_all_instrument_uids(client):
                 fix_ticker_by_figi(figi, api_ticker, api_name, uid)
                 log.info("canonical: figi=%s ticker=%s uid=%s", figi, api_ticker, uid[:20])
         except Exception as e:
-            log.warning("_fill_all_instrument_uids figi=%s: %s", figi, e)
+            msg = str(e)
+            if "not found" in msg.lower() or "50002" in msg or "NOT_FOUND" in msg:
+                _unavailable_figis.add(figi)
+                log.warning("_fill_all_instrument_uids: %s недоступен в текущей среде", figi)
+            else:
+                log.warning("_fill_all_instrument_uids figi=%s: %s", figi, e)
 
 
 def load_enabled_instruments(client):
@@ -1199,6 +1207,10 @@ def process_instrument(client, item,
 
     ticker = item["ticker"]
     figi = item["figi"]
+
+    # Инструмент ранее вернул NOT_FOUND — пропускаем без API-вызовов
+    if figi in _unavailable_figis:
+        return
     lot = item["lots_override"]
     stop_loss_pct = item["stop_loss_pct"]
     take_profit_pct = item["take_profit_pct"]
@@ -1270,8 +1282,13 @@ def process_instrument(client, item,
         )
     except Exception as e:
         msg = str(e)
-        if "figi" in msg.lower():
-            log_event("INVALID_FIGI", msg, ticker=ticker, level="WARNING")
+        is_not_found = "not found" in msg.lower() or "50002" in msg or "NOT_FOUND" in msg
+        if "figi" in msg.lower() or is_not_found:
+            if is_not_found:
+                _unavailable_figis.add(figi)
+                log.warning("Инструмент %s недоступен в текущей среде (NOT_FOUND) — пропускаем", ticker)
+            else:
+                log_event("INVALID_FIGI", msg, ticker=ticker, level="WARNING")
             return
         raise
 

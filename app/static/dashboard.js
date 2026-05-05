@@ -613,6 +613,8 @@ async function renderSettingsTab() {
                   <button class="btn btn-small" style="margin-left:4px" onclick="expandParallelStrategy(${ps.strategy_id},'instruments')">Инструменты</button>
                   <button class="btn btn-small btn-danger" style="margin-left:4px"
                     onclick="removeParallelStrategy(${esc(prof.id)}, ${ps.strategy_id})">Убрать</button>
+                  <button class="btn btn-small btn-danger" style="margin-left:4px;opacity:.7"
+                    onclick="deleteStrategyFull(${ps.strategy_id}, '${esc(ps.name)}')">Удалить</button>
                 </td>
               </tr>`;
             }).join("")}
@@ -811,6 +813,17 @@ async function addParallelStrategy(profileId) {
   try {
     await apiPostJson(`/api/profile/${profileId}/parallel-strategies`, { strategy_id: strategyId });
     showToast("Стратегия добавлена", "success");
+    await renderSettingsTab();
+  } catch (e) {
+    showToast(`Ошибка: ${e.message}`, "error");
+  }
+}
+
+async function deleteStrategyFull(strategyId, name) {
+  if (!confirm(`Удалить стратегию "${name}" полностью?\n\nЭто удалит стратегию, её настройки и инструменты. Действие необратимо.`)) return;
+  try {
+    await apiPostForm(`/api/strategies/${strategyId}/delete`, {});
+    showToast(`Стратегия "${name}" удалена`, "success");
     await renderSettingsTab();
   } catch (e) {
     showToast(`Ошибка: ${e.message}`, "error");
