@@ -1435,6 +1435,64 @@ def update_strategy_settings(strategy_id: int, settings_dict: dict):
                     """, (key, str(value)))
 
 
+_MODE_LABELS = {
+    "trend":           "Тренд",
+    "mean_reversion":  "Возврат к средней",
+    "breakout":        "Пробой",
+}
+
+
+def _fmt_pct(val) -> str:
+    """0.005 → '0.500%', 0.015 → '1.500%'"""
+    try:
+        v = float(val) * 100
+        return f"{v:.3f}%".rstrip("0").rstrip(".")  + "%"
+    except Exception:
+        return str(val)
+
+
+def auto_strategy_name(strategy_id: int) -> str:
+    """Генерирует имя стратегии из настроек: TICKER Режим SL%/TP%"""
+    with db_cursor() as cur:
+        cur.execute(
+            "SELECT ticker FROM strategy_instruments WHERE strategy_id=? AND enabled=1 LIMIT 1",
+            (strategy_id,)
+        )
+        row = cur.fetchone()
+        ticker = row["ticker"] if row else ""
+
+        cur.execute(
+            "SELECT key, value FROM strategy_settings WHERE strategy_id=? AND key IN (?,?,?)",
+            (strategy_id, "tradingmode", "default_stop_loss_pct", "default_take_profit_pct")
+        )
+        cfg = {r["key"]: r["value"] for r in cur.fetchall()}
+
+    mode_ru = _MODE_LABELS.get(cfg.get("tradingmode", ""), cfg.get("tradingmode", ""))
+    sl_ui   = _fmt_pct(cfg.get("default_stop_loss_pct", "0"))
+    tp_ui   = _fmt_pct(cfg.get("default_take_profit_pct", "0"))
+
+    parts = [p for p in [ticker, mode_ru] if p]
+    if sl_ui and tp_ui:
+        parts.append(f"{sl_ui}/{tp_ui}")
+    return " ".join(parts) or f"Стратегия {strategy_id}"
+
+
+def apply_auto_name(strategy_id: int):
+    """Обновляет name в таблице strategies по текущим настройкам."""
+    name = auto_strategy_name(strategy_id)
+    with db_cursor() as cur:
+        cur.execute("UPDATE strategies SET name=? WHERE id=?", (name, strategy_id))
+        # Синхронизируем bot_settings если это активная стратегия
+        cur.execute("SELECT id FROM profiles WHERE strategy_id=? AND is_active=1", (strategy_id,))
+        if cur.fetchone():
+            cur.execute(
+                "INSERT INTO bot_settings(key,value) VALUES('active_strategy_name',?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (name,)
+            )
+    return name
+
+
 # ── strategy instruments ──────────────────────────────────────────────────────
 
 def list_strategy_instruments(strategy_id: int) -> list:
@@ -1566,3 +1624,5 @@ def apply_optimization_result(result_id: int):
         # Mark as applied
         cur.execute("UPDATE optimization_results SET applied=1, applied_at=? WHERE id=?",
                     (datetime.now().isoformat(), result_id))
+    # Переименовываем стратегию по новым настройкам
+    apply_auto_name(sid)

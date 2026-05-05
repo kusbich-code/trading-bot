@@ -64,6 +64,7 @@ from app.db import (
     get_history_stats,
     clear_history,
     get_strategy_trade_stats,
+    apply_auto_name,
 )
 
 from app.config import settings
@@ -1699,7 +1700,8 @@ def api_strategies_save_settings(
         "trailing_stop_enabled": bool01(trailing_stop_enabled),
         "use_signal_service": bool01(use_signal_service),
     })
-    return JSONResponse({"ok": True})
+    new_name = apply_auto_name(strategy_id)
+    return JSONResponse({"ok": True, "new_name": new_name})
 
 
 @app.post("/api/strategies/{strategy_id}/delete")
@@ -1797,7 +1799,8 @@ async def api_strategy_instruments_add(strategy_id: int, request: Request):
         add_strategy_instrument(strategy_id, inst)
         add_instrument(inst)  # keep catalog up to date for market data
         added += 1
-    return JSONResponse({"ok": True, "добавлено": added})
+    new_name = apply_auto_name(strategy_id)
+    return JSONResponse({"ok": True, "добавлено": added, "new_name": new_name})
 
 
 @app.post("/api/strategies/{strategy_id}/instruments/update")
@@ -1825,7 +1828,8 @@ def api_strategy_instruments_update(
         "priority": priority,
         "enabled": int(bool01(enabled)),
     })
-    return JSONResponse({"ok": True})
+    new_name = apply_auto_name(strategy_id)
+    return JSONResponse({"ok": True, "new_name": new_name})
 
 
 @app.post("/api/strategies/{strategy_id}/instruments/delete")
