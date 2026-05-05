@@ -68,6 +68,7 @@ from app.db import (
     get_instrument_market_state_map,
     save_instrument_uid,
     fix_ticker_by_figi,
+    get_instrument_sl_tp,
 )
 from app.instruments import get_instrument_meta, round_to_price_step
 from app.telegram_notify import TelegramNotifier
@@ -472,12 +473,15 @@ def notify(message: str, is_error: bool = False):
 
 
 def _handle_manual_close(bp: dict, market_map: dict):
-    """Закрывает BOT-позицию закрытую вручную: пишет сделку MANUAL_CLOSE, освобождает координатор."""
-    figi      = bp["figi"]
-    ticker    = bp["ticker"]
-    direction = bp["direction"]
+    """
+    Закрывает BOT-позицию, исчезнувшую из брокерского портфеля.
+    Автоматически определяет причину: STOP_LOSS / TAKE_PROFIT / MANUAL_CLOSE.
+    """
+    figi        = bp["figi"]
+    ticker      = bp["ticker"]
+    direction   = bp["direction"]
     entry_price = Decimal(str(bp["entry_price"]))
-    qty       = int(bp["qty"])
+    qty         = int(bp["qty"])
 
     mkt = market_map.get(figi, {})
     last_price = float(mkt.get("last_price", 0) or 0)
@@ -491,6 +495,25 @@ def _handle_manual_close(bp: dict, market_map: dict):
     else:
         pnl = (entry_price - exit_price) * qty - commission
 
+    # Определяем причину закрытия по движению цены относительно SL/TP
+    reason = "MANUAL_CLOSE"
+    sl_tp = get_instrument_sl_tp(figi)
+    sl_pct = sl_tp["sl_pct"]
+    tp_pct = sl_tp["tp_pct"]
+    if entry_price > 0 and exit_price > 0 and (sl_pct > 0 or tp_pct > 0):
+        if direction == "BUY":
+            move = float((exit_price - entry_price) / entry_price)
+        else:
+            move = float((entry_price - exit_price) / entry_price)
+        # Порог 80% от заданного SL/TP — учитываем возможное скольжение
+        if sl_pct > 0 and move <= -sl_pct * 0.8:
+            reason = "STOP_LOSS"
+        elif tp_pct > 0 and move >= tp_pct * 0.8:
+            reason = "TAKE_PROFIT"
+
+    reason_labels = {"STOP_LOSS": "Стоп-лосс (нативный)", "TAKE_PROFIT": "Тейк-профит (нативный)", "MANUAL_CLOSE": "Закрыта вручную"}
+    reason_ui = reason_labels.get(reason, reason)
+
     add_trade({
         "time":             _now().strftime("%Y-%m-%d %H:%M:%S"),
         "ticker":           ticker,
@@ -502,13 +525,14 @@ def _handle_manual_close(bp: dict, market_map: dict):
         "gross_amount":     float(exit_price * qty),
         "commission":       float(commission),
         "pnl":              float(pnl),
-        "reason":           "MANUAL_CLOSE",
+        "reason":           reason,
         "close_order_id":   "",
-        "execution_status": "manual",
+        "execution_status": "exchange" if reason != "MANUAL_CLOSE" else "manual",
     })
     close_position(figi, source="BOT")
-    log_event("ORDER_CLOSE", f"{ticker} MANUAL_CLOSE pnl={float(pnl):.2f}", ticker=ticker)
-    notify(f"Позиция закрыта вручную\n{ticker} | {direction}\nPnL ≈ {float(pnl):.2f} ₽")
+    pnl_sign = "+" if float(pnl) >= 0 else ""
+    log_event("ORDER_CLOSE", f"{ticker} {reason} pnl={float(pnl):.2f}", ticker=ticker)
+    notify(f"{reason_ui}\n{ticker} | {direction}\nPnL ≈ {pnl_sign}{float(pnl):.2f} ₽")
 
     # Освобождаем координатор если он был заблокирован на этой позиции
     try:
@@ -596,11 +620,18 @@ def sync_portfolio_positions(client):
                 "status": "OPEN",
                 "source": "PORTFOLIO",
             })
-        # Детектируем BOT-позиции которых нет в реальном портфеле → закрыты вручную
+        # Детектируем BOT-позиции которых нет в реальном портфеле → закрыты вручную/SL/TP
         market_map = get_instrument_market_state_map()
         for bp in get_open_positions(source="BOT"):
             if bp["figi"] not in broker_figis:
-                log.info("MANUAL_CLOSE detected: %s не найден в портфеле", bp["ticker"])
+                # Грейс-период 90 с: позиция могла ещё не появиться в портфеле брокера
+                try:
+                    opened_at_dt = datetime.strptime(bp.get("opened_at", ""), "%Y-%m-%d %H:%M:%S")
+                    if (_now() - opened_at_dt).total_seconds() < 90:
+                        continue
+                except Exception:
+                    pass
+                log.info("Позиция %s не найдена в портфеле — определяем причину закрытия", bp["ticker"])
                 _handle_manual_close(bp, market_map)
 
     except Exception as e:

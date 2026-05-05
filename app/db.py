@@ -962,6 +962,19 @@ def close_position(figi, source: str = "BOT"):
                     (figi, source))
 
 
+def get_instrument_sl_tp(figi: str) -> dict:
+    """Возвращает stop_loss_pct и take_profit_pct для figi из strategy_instruments."""
+    with db_cursor() as cur:
+        cur.execute(
+            "SELECT stop_loss_pct, take_profit_pct FROM strategy_instruments WHERE figi=? LIMIT 1",
+            (figi,),
+        )
+        row = cur.fetchone()
+    if row:
+        return {"sl_pct": float(row["stop_loss_pct"] or 0), "tp_pct": float(row["take_profit_pct"] or 0)}
+    return {"sl_pct": 0.0, "tp_pct": 0.0}
+
+
 def get_open_positions(source: str | None = None):
     with db_cursor() as cur:
         if source:

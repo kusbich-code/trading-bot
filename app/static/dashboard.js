@@ -306,7 +306,7 @@ async function renderMainShell() {
       <div class="row between"><h2>Сделки</h2><div class="note">Сегодня</div></div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Время</th><th>Тикер</th><th>Напр.</th><th>Вход</th><th>Выход</th><th>Кол-во</th><th>ПнЛ</th><th>Причина</th></tr></thead>
+          <thead><tr><th>Время</th><th>Тикер</th><th>Напр.</th><th>Вход</th><th>Выход</th><th>Кол-во</th><th>ПнЛ</th><th>%</th><th>Причина</th></tr></thead>
           <tbody id="mainTradesBody"></tbody>
         </table>
       </div>
@@ -373,6 +373,7 @@ async function renderMainData() {
         <td>${esc(t.entry_ui)}</td><td>${esc(t.exit_ui)}</td>
         <td>${esc(t.qty)}</td>
         <td style="font-weight:700;color:${col}">${pnl >= 0 && pnl !== 0 ? "+" : ""}${esc(t.pnl_ui)}</td>
+        <td style="font-size:12px;color:${col};font-weight:600">${t.pnl_pct != null ? (t.pnl_pct >= 0 ? "+" : "") + t.pnl_pct.toFixed(2) + "%" : ""}</td>
         <td class="muted" style="font-size:12px">${esc(t.reason)}</td>
       </tr>`;
     }).join("")

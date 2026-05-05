@@ -565,11 +565,20 @@ def api_dashboard_main():
     except Exception:
         pass
 
+    def _trade_pnl_pct(t):
+        entry = float(t.get("entry", 0) or 0)
+        qty   = int(t.get("qty", 0) or 0)
+        pnl   = float(t.get("pnl", 0) or 0)
+        cost  = entry * qty
+        return round(pnl / cost * 100, 2) if cost else 0.0
+
     db_trades = [{
         **dict(t),
-        "entry_ui": fmt_price(t.get("entry", 0)),
-        "exit_ui": fmt_price(t.get("exit", 0)),
-        "pnl_ui": fmt_money(t.get("pnl", 0)),
+        "entry_ui":   fmt_price(t.get("entry", 0)),
+        "exit_ui":    fmt_price(t.get("exit", 0)),
+        "pnl_ui":     fmt_money(t.get("pnl", 0)),
+        "pnl_pct":    _trade_pnl_pct(t),
+        "pnl_positive": float(t.get("pnl", 0) or 0) >= 0,
     } for t in get_trades(limit=20)]
 
     return JSONResponse({

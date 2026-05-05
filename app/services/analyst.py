@@ -47,16 +47,30 @@ _opt_thread: Optional[threading.Thread] = None
 
 SEARCH_INSTRUMENTS = [
     # ticker и name — canonical из T-Bank API (get_instrument_by figi)
-    {"figi": "BBG004730N88", "ticker": "SBER",  "name": "Сбер Банк",                    "lot": 1, "instrument_uid": "e6123145-9665-43e0-8413-cd61b8aa9b13"},
-    {"figi": "BBG004730RP0", "ticker": "GAZP",  "name": "Газпром",                      "lot": 1, "instrument_uid": "962e2a95-02a9-4171-abd7-aa198dbe643a"},
-    {"figi": "BBG004731032", "ticker": "LKOH",  "name": "ЛУКОЙЛ",                       "lot": 1, "instrument_uid": "02cfdf61-6298-4c0f-a9ca-9cabc82afaf3"},
-    {"figi": "BBG004731489", "ticker": "GMKN",  "name": "Норильский никель",             "lot": 1, "instrument_uid": "509edd0c-129c-4ee2-934d-7f6246126da1"},
-    {"figi": "BBG004731354", "ticker": "ROSN",  "name": "Роснефть",                     "lot": 1, "instrument_uid": "fd417230-19cf-4e7b-9623-f7c9ca18ec6b"},
-    {"figi": "BBG00475KHX6", "ticker": "TRNFP", "name": "Транснефть - привилегированные","lot": 1, "instrument_uid": "653d47e9-dbd4-407a-a1c3-47f897df4694"},
-    {"figi": "BBG004S68473", "ticker": "IRAO",  "name": "ИнтерРАО",                     "lot": 100, "instrument_uid": "2dfbc1fd-b92a-436e-b011-928c79e805f2"},
-    {"figi": "BBG004730JJ5", "ticker": "MOEX",  "name": "ПАО Московская Биржа",          "lot": 1, "instrument_uid": "5e1c2634-afc4-4e50-ad6d-f78fc14a539a"},
-    {"figi": "BBG004730ZJ9", "ticker": "VTBR",  "name": "Банк ВТБ",                     "lot": 1, "instrument_uid": "8e2b0325-0292-4654-8a18-4f63ed3b0e09"},
-    {"figi": "BBG004S68B31", "ticker": "ALRS",  "name": "АЛРОСА",                       "lot": 1, "instrument_uid": "30817fea-20e6-4fee-ab1f-d20fc1a1bb72"},
+    # ── Голубые фишки (были раньше) ──────────────────────────────────────────
+    {"figi": "BBG004730N88", "ticker": "SBER",  "name": "Сбер Банк",                     "lot": 1,    "instrument_uid": "e6123145-9665-43e0-8413-cd61b8aa9b13"},
+    {"figi": "BBG004730RP0", "ticker": "GAZP",  "name": "Газпром",                       "lot": 1,    "instrument_uid": "962e2a95-02a9-4171-abd7-aa198dbe643a"},
+    {"figi": "BBG004731032", "ticker": "LKOH",  "name": "ЛУКОЙЛ",                        "lot": 1,    "instrument_uid": "02cfdf61-6298-4c0f-a9ca-9cabc82afaf3"},
+    {"figi": "BBG004731489", "ticker": "GMKN",  "name": "Норильский никель",              "lot": 1,    "instrument_uid": "509edd0c-129c-4ee2-934d-7f6246126da1"},
+    {"figi": "BBG004731354", "ticker": "ROSN",  "name": "Роснефть",                      "lot": 1,    "instrument_uid": "fd417230-19cf-4e7b-9623-f7c9ca18ec6b"},
+    {"figi": "BBG00475KHX6", "ticker": "TRNFP", "name": "Транснефть - привилегированные", "lot": 1,   "instrument_uid": "653d47e9-dbd4-407a-a1c3-47f897df4694"},
+    {"figi": "BBG004S68473", "ticker": "IRAO",  "name": "ИнтерРАО",                      "lot": 100,  "instrument_uid": "2dfbc1fd-b92a-436e-b011-928c79e805f2"},
+    {"figi": "BBG004730JJ5", "ticker": "MOEX",  "name": "ПАО Московская Биржа",           "lot": 1,   "instrument_uid": "5e1c2634-afc4-4e50-ad6d-f78fc14a539a"},
+    {"figi": "BBG004730ZJ9", "ticker": "VTBR",  "name": "Банк ВТБ",                      "lot": 1,    "instrument_uid": "8e2b0325-0292-4654-8a18-4f63ed3b0e09"},
+    {"figi": "BBG004S68B31", "ticker": "ALRS",  "name": "АЛРОСА",                        "lot": 1,    "instrument_uid": "30817fea-20e6-4fee-ab1f-d20fc1a1bb72"},
+    # ── Блок C: расширенный список ───────────────────────────────────────────
+    {"figi": "BBG0047315Y7", "ticker": "SBERP", "name": "Сбербанк - привилегированные",  "lot": 1,    "instrument_uid": "c190ff1f-1447-4227-b543-316332699ca5"},
+    {"figi": "BBG00475KKY8", "ticker": "NVTK",  "name": "Новатэк",                       "lot": 1,    "instrument_uid": "0da66728-6c30-44c4-9264-df8fac2467ee"},
+    {"figi": "BBG004RVFCY3", "ticker": "MGNT",  "name": "Магнит",                        "lot": 1,    "instrument_uid": "ca845f68-6c43-44bc-b584-330d2a1e5eb7"},
+    {"figi": "BBG00475K6C3", "ticker": "CHMF",  "name": "Северсталь",                    "lot": 1,    "instrument_uid": "fa6aae10-b8d5-48c8-bbfd-d320d925d096"},
+    {"figi": "BBG004S681B4", "ticker": "NLMK",  "name": "НЛМК",                          "lot": 10,   "instrument_uid": "161eb0d0-aaac-4451-b374-f5d0eeb1b508"},
+    {"figi": "BBG004S681W1", "ticker": "MTSS",  "name": "МТС",                           "lot": 10,   "instrument_uid": "cd8063ad-73ad-4b31-bd0d-93138d9e99a2"},
+    {"figi": "BBG000R607Y3", "ticker": "PLZL",  "name": "Полюс",                         "lot": 1,    "instrument_uid": "10620843-28ce-44e8-80c2-f26ceb1bd3e1"},
+    {"figi": "BBG004S683W7", "ticker": "AFLT",  "name": "Аэрофлот",                      "lot": 10,   "instrument_uid": "1c69e020-f3b1-455c-affa-45f8b8049234"},
+    {"figi": "BBG00475K2X9", "ticker": "HYDR",  "name": "РусГидро",                      "lot": 1000, "instrument_uid": "62560f05-3fd0-4d65-88f0-a27f249cc6de"},
+    {"figi": "BBG004RVFFC0", "ticker": "TATN",  "name": "Татнефть",                      "lot": 1,    "instrument_uid": "88468f6c-c67a-4fb4-a006-53eed803883c"},
+    {"figi": "BBG004S68507", "ticker": "MAGN",  "name": "ММК",                           "lot": 10,   "instrument_uid": "7132b1c9-ee26-4464-b5b5-1046264b61d9"},
+    {"figi": "BBG004S689R0", "ticker": "PHOR",  "name": "ФосАгро",                       "lot": 1,    "instrument_uid": "9978b56f-782a-4a80-a4b1-a48cbecfd194"},
 ]
 
 MODES      = ["mean_reversion", "breakout", "trend"]
