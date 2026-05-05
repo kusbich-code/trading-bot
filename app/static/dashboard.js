@@ -829,14 +829,14 @@ async function removeParallelStrategy(profileId, strategyId) {
   }
 }
 
-async function expandParallelStrategy(strategyId, mode = "instruments") {
+async function expandParallelStrategy(strategyId, mode = "instruments", forceReopen = false) {
   const panel = document.getElementById("parallelInstrExpanded");
   const title = document.getElementById("parallelInstrTitle");
   const body  = document.getElementById("parallelInstrBody");
   if (!panel || !body) return;
 
-  // Toggle: close if same strategy + same mode already open
-  if (panel.dataset.strategyId === String(strategyId) &&
+  // Toggle: close if same strategy + same mode already open (unless forced reopen after save)
+  if (!forceReopen && panel.dataset.strategyId === String(strategyId) &&
       panel.dataset.mode === mode && panel.style.display !== "none") {
     panel.style.display = "none";
     return;
@@ -1152,9 +1152,14 @@ async function saveStrategySettings(strategyId, formId = "strategySettingsForm")
     const fd = new FormData(form);
     const data = Object.fromEntries(fd.entries());
     delete data.strategy_id_val;
-    await apiPostForm(`/api/strategies/${strategyId}/settings`, data);
-    showToast("Настройки стратегии сохранены", "success");
-    await renderSummaryCards();
+    const resp = await apiPostForm(`/api/strategies/${strategyId}/settings`, data);
+    showToast(`Настройки сохранены${resp.new_name ? ` → ${resp.new_name}` : ""}`, "success");
+    // Перезагружаем панель чтобы подтвердить сохранение из БД
+    if (formId === "parallelStratForm") {
+      await expandParallelStrategy(strategyId, "settings", true);
+    } else {
+      await renderSettingsTab();
+    }
   } catch (e) {
     showToast(`Ошибка: ${e.message}`, "error");
   }
