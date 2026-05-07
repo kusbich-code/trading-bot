@@ -197,6 +197,25 @@ async function renderSummaryCards() {
         </div>
       </div>
     </div>` : ""}
+    ${s.api_rpm != null ? (() => {
+      const pct = s.api_rpm_pct || 0;
+      const warn = s.api_warn;
+      const color = pct >= 95 ? "#ff7b7b" : pct >= 80 ? "#f0a500" : "#2fa36b";
+      const bg    = pct >= 95 ? "rgba(191,77,90,.08)" : pct >= 80 ? "rgba(240,165,0,.08)" : "rgba(47,163,107,.05)";
+      return `<div class="sgrp">
+        <div class="sgrp-lbl" style="${warn ? 'color:#f0a500;border-color:#f0a500' : ''}">API лимит</div>
+        <div class="sgrp-cards">
+          <div class="crd" style="background:${bg}">
+            <div class="lbl">Запросов/мин</div>
+            <div class="val" style="color:${color};font-size:15px">${s.api_rpm} <span style="font-size:11px;opacity:.7">/ ${s.api_rpm_limit}</span></div>
+            <div style="background:rgba(255,255,255,.08);border-radius:4px;height:4px;margin-top:4px;overflow:hidden">
+              <div style="height:100%;width:${Math.min(pct,100)}%;background:${color};border-radius:4px;transition:width .5s"></div>
+            </div>
+          </div>
+        </div>
+        ${warn ? `<div style="font-size:11px;color:#f0a500;margin-top:4px;padding:0 2px">⚠️ ${pct >= 95 ? 'Лимит почти исчерпан — возможны ошибки RESOURCE_EXHAUSTED' : 'Нагрузка высокая — рекомендуется увеличить интервал стратегий'}</div>` : ''}
+      </div>`;
+    })() : ""}
   </div>`;
 }
 

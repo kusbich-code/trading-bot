@@ -303,6 +303,11 @@ def summary_payload() -> Dict[str, Any]:
     else:
         trading_status = "Ведётся"
 
+    api_rpm       = int(get_runtime("api_rpm", "0") or 0)
+    api_rpm_limit = int(get_runtime("api_rpm_limit", "600") or 600)
+    api_rpm_pct   = round(api_rpm / api_rpm_limit * 100) if api_rpm_limit else 0
+    api_warn      = api_rpm_pct >= 80  # предупреждение при ≥80% лимита
+
     return {
         "status": service_status,
         "trading_status": trading_status,
@@ -319,6 +324,10 @@ def summary_payload() -> Dict[str, Any]:
         "active_profile_name": active_profile_name,
         "active_strategy_name": active_strategy_name,
         "last_error": s.get("last_error", "") or "—",
+        "api_rpm": api_rpm,
+        "api_rpm_limit": api_rpm_limit,
+        "api_rpm_pct": api_rpm_pct,
+        "api_warn": api_warn,
     }
 
 

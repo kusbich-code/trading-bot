@@ -223,6 +223,8 @@ class BotState:
         set_runtime("session_balance_start", str(self.session_balance_start))
         set_runtime("session_balance_current", str(self.session_balance_current))
         set_runtime("current_trade_date", self.current_trade_date)
+        set_runtime("api_rpm", str(_rate.rpm))
+        set_runtime("api_rpm_limit", "600")
 
 
 state = BotState()
@@ -262,6 +264,50 @@ _md_lock = Lock()
 
 # Инструменты недоступные в текущей среде (sandbox NOT_FOUND) — пропускаем до рестарта
 _unavailable_figis: Set[str] = set()
+
+# ── Кеш дорогих API-вызовов (снижает нагрузку при множестве параллельных стратегий) ──
+import collections as _collections
+
+_instr_cache:   Dict[int,   tuple] = {}   # strategy_id → (ts, list)
+_status_cache:  Dict[str,   tuple] = {}   # figi/uid    → (ts, status)
+_tech_cache:    Dict[str,   tuple] = {}   # figi/uid    → (ts, dict)
+_INSTR_TTL  = 60.0   # инструменты стратегии: обновляем раз в минуту
+_STATUS_TTL = 30.0   # trading status: раз в 30 с
+_TECH_TTL   = 90.0   # RSI/MACD/BB: раз в 90 с (индикаторы на 1-мин свечах)
+
+# ── Глобальный счётчик запросов к API T-Bank ─────────────────────────────────
+class _ApiRateTracker:
+    """Скользящее окно 60 с: считает реальные вызовы API по всем потокам."""
+    def __init__(self, warn_threshold: int = 480, hard_limit: int = 570):
+        self._ts: _collections.deque = _collections.deque()
+        self._lock = Lock()
+        self.warn  = warn_threshold   # предупреждение в UI
+        self.limit = hard_limit       # принудительная пауза
+
+    def record(self):
+        now = time.monotonic()
+        with self._lock:
+            cutoff = now - 60.0
+            while self._ts and self._ts[0] < cutoff:
+                self._ts.popleft()
+            self._ts.append(now)
+            return len(self._ts)
+
+    @property
+    def rpm(self) -> int:
+        now = time.monotonic()
+        with self._lock:
+            cutoff = now - 60.0
+            while self._ts and self._ts[0] < cutoff:
+                self._ts.popleft()
+            return len(self._ts)
+
+    def throttle_if_needed(self):
+        """Блокирует вызывающий поток если близко к лимиту."""
+        if self.rpm >= self.limit:
+            time.sleep(1.0)
+
+_rate = _ApiRateTracker()
 _md_instruments: list = []           # список словарей {figi, instrument_uid}
 _md_figis: Set[str] = set()          # множество figi для обнаружения изменений
 _md_restart = Event()                 # установка → воркер переподключается с новыми инструментами
@@ -386,6 +432,7 @@ def quotation_from_decimal(price: Decimal) -> Quotation:
 
 
 def get_last_price(client, figi: str, instrument_uid: str = "") -> Decimal:
+    _rate.record()
     resp = client.market_data.get_last_prices(instrument_id=[instrument_uid or figi])
     return quotation_to_decimal(resp.last_prices[0].price)
 
@@ -735,6 +782,7 @@ def sync_portfolio_positions(client):
         log.warning(f"sync_portfolio_positions error: {e}")
 
 def get_candles(client, figi: str, n=20, instrument_uid: str = ""):
+    _rate.record()
     now = datetime.now(timezone.utc)
     resp = client.market_data.get_candles(
         instrument_id=instrument_uid or figi,
@@ -761,12 +809,20 @@ def get_signal(price: Decimal, support: Decimal, resistance: Decimal):
 
 
 def get_trading_status(client, instrument_id: str):
+    # Кеш на 30 сек: trading status меняется редко
+    _now_ts = time.monotonic()
+    _cached = _status_cache.get(instrument_id)
+    if _cached and (_now_ts - _cached[0]) < _STATUS_TTL:
+        return _cached[1]
+    _rate.record()
     try:
         resp = client.market_data.get_trading_status(instrument_id=instrument_id)
-        return getattr(resp, "trading_status", "UNKNOWN")
+        status = getattr(resp, "trading_status", "UNKNOWN")
     except Exception as e:
         log.warning(f"Не удалось получить trading status по {instrument_id}: {e}")
-        return "UNKNOWN"
+        status = "UNKNOWN"
+    _status_cache[instrument_id] = (_now_ts, status)
+    return status
 
 
 def is_tradable(status) -> bool:
@@ -1084,18 +1140,23 @@ _CANDLE_TO_INDICATOR_INTERVAL = {
 def get_api_indicators(client, instrument_uid: str, figi: str = "") -> dict:
     """
     Получает RSI(14), MACD(12/26/9) и BB(20, 2σ) из T-Bank API.
-    Использует интервал 1 мин, окно 3 часа (достаточно для медленной EMA-26).
-    Возвращает dict: rsi, macd, macd_signal, bb_upper, bb_middle, bb_lower.
+    Кеш 90 сек: индикаторы на 1-мин свечах не меняются быстрее.
     """
     instr_id = instrument_uid or figi
-    now = datetime.now(timezone.utc)
-    from_ = now - timedelta(hours=3)
-    interval = IndicatorInterval.INDICATOR_INTERVAL_ONE_MINUTE
+    _now_ts = time.monotonic()
+    _cached = _tech_cache.get(instr_id)
+    if _cached and (_now_ts - _cached[0]) < _TECH_TTL:
+        return _cached[1]
+
+    now        = datetime.now(timezone.utc)
+    from_      = now - timedelta(hours=3)
+    interval   = IndicatorInterval.INDICATOR_INTERVAL_ONE_MINUTE
     price_type = TypeOfPrice.TYPE_OF_PRICE_CLOSE
     result: dict = {}
 
     # RSI — значение в поле signal
     try:
+        _rate.record()
         resp = client.market_data.get_tech_analysis(request=GetTechAnalysisRequest(
             indicator_type=IndicatorType.INDICATOR_TYPE_RSI,
             instrument_uid=instr_id,
@@ -1112,6 +1173,7 @@ def get_api_indicators(client, instrument_uid: str, figi: str = "") -> dict:
 
     # MACD — macd=линия MACD, signal=сигнальная линия
     try:
+        _rate.record()
         resp = client.market_data.get_tech_analysis(request=GetTechAnalysisRequest(
             indicator_type=IndicatorType.INDICATOR_TYPE_MACD,
             instrument_uid=instr_id,
@@ -1129,6 +1191,7 @@ def get_api_indicators(client, instrument_uid: str, figi: str = "") -> dict:
 
     # BB — upper/middle/lower bands
     try:
+        _rate.record()
         resp = client.market_data.get_tech_analysis(request=GetTechAnalysisRequest(
             indicator_type=IndicatorType.INDICATOR_TYPE_BB,
             instrument_uid=instr_id,
@@ -1146,6 +1209,7 @@ def get_api_indicators(client, instrument_uid: str, figi: str = "") -> dict:
     except Exception as e:
         log.debug("GetTechAnalysis BB %s: %s", instr_id[:8], e)
 
+    _tech_cache[instr_id] = (time.monotonic(), result)
     return result
 
 
@@ -1767,6 +1831,12 @@ def _parallel_cfg_rows(strategy_id: int) -> list:
 
 
 def _parallel_instruments(strategy_id: int) -> list:
+    # Кеш на 60 с: список инструментов не меняется каждые 5 сек
+    _now_ts = time.monotonic()
+    _cached = _instr_cache.get(strategy_id)
+    if _cached and (_now_ts - _cached[0]) < _INSTR_TTL:
+        return _cached[1]
+
     from app.db import list_strategy_instruments
     rows = list_strategy_instruments(strategy_id)
     result = []
@@ -1796,6 +1866,7 @@ def _parallel_instruments(strategy_id: int) -> list:
             "priority":          int(item.get("priority", 100)),
         })
     result.sort(key=lambda x: x["priority"])
+    _instr_cache[strategy_id] = (time.monotonic(), result)
     return result
 
 
