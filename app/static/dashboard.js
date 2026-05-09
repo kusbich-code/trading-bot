@@ -749,6 +749,12 @@ async function renderSettingsTab() {
             <option value="0" ${stratSettings.use_api_confirm !== "1" ? "selected" : ""}>Выкл</option>
           </select>
         </label>
+        <label>Фильтр стакана (давление 40%)
+          <select class="field" name="use_order_book_filter">
+            <option value="1" ${(stratSettings.use_order_book_filter ?? "1") !== "0" ? "selected" : ""}>Вкл — проверять давление покупателей/продавцов</option>
+            <option value="0" ${stratSettings.use_order_book_filter === "0" ? "selected" : ""}>Выкл — пропустить фильтр (экономит ~156 req/min)</option>
+          </select>
+        </label>
         <label>Мин. качество сигнала (score)
           <input class="field" type="number" name="min_signal_score" min="0" max="100" step="1"
             value="${esc(stratSettings.min_signal_score || 0)}">
@@ -970,6 +976,12 @@ async function expandParallelStrategy(strategyId, mode = "instruments", forceReo
             <select class="field" name="use_api_confirm">
               <option value="1" ${s.use_api_confirm==="1"?"selected":""}>Вкл</option>
               <option value="0" ${s.use_api_confirm!=="1"?"selected":""}>Выкл</option>
+            </select>
+          </label>
+          <label>Фильтр стакана (давление 40%)
+            <select class="field" name="use_order_book_filter">
+              <option value="1" ${(s.use_order_book_filter ?? "1") !== "0" ? "selected" : ""}>Вкл</option>
+              <option value="0" ${s.use_order_book_filter === "0" ? "selected" : ""}>Выкл (−156 req/min)</option>
             </select>
           </label>
           <div class="row-buttons">

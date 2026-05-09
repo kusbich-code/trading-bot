@@ -18,6 +18,7 @@ STRATEGY_SETTING_KEYS = {
     "allow_long_global", "allow_short_global", "trade_only_session", "pause_after_error_sec",
     "tradingmode", "errorseriespausecount", "stopseriespausecount",
     "trailing_stop_enabled", "use_signal_service", "min_signal_score", "use_api_confirm",
+    "use_order_book_filter",
 }
 
 

@@ -274,9 +274,11 @@ import collections as _collections
 _instr_cache:   Dict[int,   tuple] = {}   # strategy_id → (ts, list)
 _status_cache:  Dict[str,   tuple] = {}   # figi/uid    → (ts, status)
 _tech_cache:    Dict[str,   tuple] = {}   # figi/uid    → (ts, dict)
+_ob_cache:      Dict[str,   tuple] = {}   # figi/uid    → (ts, spread_pct)
 _INSTR_TTL  = 60.0   # инструменты стратегии: обновляем раз в минуту
 _STATUS_TTL = 30.0   # trading status: раз в 30 с
 _TECH_TTL   = 90.0   # RSI/MACD/BB: раз в 90 с (индикаторы на 1-мин свечах)
+_OB_TTL     = 15.0   # стакан REST: раз в 15 с (стрим обновляет чаще)
 
 # ── Глобальный счётчик запросов к API T-Bank ─────────────────────────────────
 class _ApiRateTracker:
@@ -461,9 +463,14 @@ def get_last_price(client, figi: str, instrument_uid: str = "") -> Decimal:
     return quotation_to_decimal(resp.last_prices[0].price)
 
 def get_order_book_spread_pct(client, figi: str, instrument_uid: str = "") -> Decimal:
+    instrument_id = instrument_uid or figi
+    _now_ts = time.monotonic()
+    _cached = _ob_cache.get(instrument_id)
+    if _cached and (_now_ts - _cached[0]) < _OB_TTL:
+        return _cached[1]
     try:
         _rate.record("GetOrderBook")
-        book = client.market_data.get_order_book(instrument_id=instrument_uid or figi, depth=1)
+        book = client.market_data.get_order_book(instrument_id=instrument_id, depth=1)
         bids = getattr(book, "bids", []) or []
         asks = getattr(book, "asks", []) or []
 
@@ -481,6 +488,7 @@ def get_order_book_spread_pct(client, figi: str, instrument_uid: str = "") -> De
             return Decimal("0")
 
         spread_pct = (best_ask - best_bid) / mid
+        _ob_cache[instrument_id] = (_now_ts, spread_pct)
         return spread_pct
     except Exception:
         return Decimal("0")
@@ -1339,9 +1347,30 @@ def process_instrument(client, item,
     tradingmode           = _cfg("tradingmode", "trend")
     trailing_stop_enabled = _cfg("trailing_stop_enabled", "0") == "1"
     use_signal_service    = _cfg("use_signal_service", "0") == "1"
-    use_api_confirm       = _cfg("use_api_confirm", "0") in ("1", "true", "yes")
+    use_api_confirm         = _cfg("use_api_confirm", "0") in ("1", "true", "yes")
+    use_order_book_filter   = _cfg("use_order_book_filter", "1") in ("1", "true", "yes")
 
     instrument_uid = item.get("instrument_uid", "") or ""
+    import json as _j
+
+    # Сохраняет skip_reason из последнего известного сигнала — вызывается до вычисления сигнала
+    def _save_skip(skip_reason: str, skip_filter: str = ""):
+        try:
+            _prev = {}
+            try:
+                _prev = _j.loads(get_runtime(f"last_signal_{figi}") or "{}")
+            except Exception:
+                pass
+            set_runtime(f"last_signal_{figi}", _j.dumps({
+                "action": _prev.get("action", "HOLD"),
+                "score": _prev.get("score", 0),
+                "mode": tradingmode,
+                "time": _now().strftime("%H:%M:%S"),
+                "skip_reason": skip_reason,
+                "skip_filter": skip_filter,
+            }))
+        except Exception:
+            pass
 
     try:
         # ── Цена: стрим (быстро) → REST резервный вариант ────────────────────
@@ -1376,6 +1405,11 @@ def process_instrument(client, item,
     except Exception as e:
         msg = str(e)
         is_not_found = "not found" in msg.lower() or "50002" in msg or "NOT_FOUND" in msg
+        is_rate_limited = "resource exhausted" in msg.lower() or "RESOURCE_EXHAUSTED" in msg
+        if is_rate_limited:
+            _save_skip("Лимит запросов API — пропуск цикла", "rate_limit")
+            time.sleep(1.0)
+            return
         if "figi" in msg.lower() or is_not_found:
             if is_not_found:
                 _unavailable_figis.add(figi)
@@ -1393,8 +1427,6 @@ def process_instrument(client, item,
     sig_result = _evaluate_signal(tradingmode, candles_dict)
     sig   = sig_result["action"]
     score = sig_result["score"]
-
-    import json as _j
 
     def _save_signal(action=None, skip_reason="", skip_filter=""):
         try:
@@ -1640,7 +1672,7 @@ def process_instrument(client, item,
 
     # ── Фильтр давления стакана (только при наличии данных стрима) ───────────
     total_vol = bid_vol + ask_vol
-    if total_vol > 0:
+    if use_order_book_filter and total_vol > 0:
         buy_pressure = bid_vol / total_vol   # доля объёма на стороне бид
         sell_pressure = ask_vol / total_vol
         if sig == "BUY" and buy_pressure < 0.40:
