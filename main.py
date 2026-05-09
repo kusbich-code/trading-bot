@@ -439,6 +439,7 @@ def get_last_price(client, figi: str, instrument_uid: str = "") -> Decimal:
 
 def get_order_book_spread_pct(client, figi: str, instrument_uid: str = "") -> Decimal:
     try:
+        _rate.record()
         book = client.market_data.get_order_book(instrument_id=instrument_uid or figi, depth=1)
         bids = getattr(book, "bids", []) or []
         asks = getattr(book, "asks", []) or []
@@ -842,6 +843,7 @@ def is_tradable(status) -> bool:
 
 def get_money_balance(client) -> float:
     try:
+        _rate.record()
         portfolio = client.operations.get_portfolio(account_id=settings.TINVEST_ACCOUNT_ID)
         total = getattr(portfolio, "total_amount_portfolio", None)
         if total:
@@ -1363,13 +1365,7 @@ def process_instrument(client, item,
     if len(candles) < 5:
         return
 
-    # Cooldown после ORDER_ERROR: пропускаем инструмент пока не истечёт пауза
-    _cd = state.order_cooldowns.get(figi)
-    if _cd and (_now() - _cd).total_seconds() < BotState.ORDER_COOLDOWN_SEC:
-        _save_signal(skip_reason=f"Пауза после ошибки ордера ({BotState.ORDER_COOLDOWN_SEC}с)", skip_filter="cooldown")
-        return
-
-    # Вычисляем сигнал всегда — до проверок сессии/торгуемости, чтобы дашборд показывал актуальный сигнал
+    # Вычисляем сигнал всегда — до всех проверок, чтобы дашборд показывал актуальный сигнал
     candles_dict = _candles_to_dicts(candles)
     sig_result = _evaluate_signal(tradingmode, candles_dict)
     sig   = sig_result["action"]
@@ -1377,10 +1373,11 @@ def process_instrument(client, item,
 
     import json as _j
 
-    def _save_signal(action=sig, skip_reason="", skip_filter=""):
+    def _save_signal(action=None, skip_reason="", skip_filter=""):
         try:
             set_runtime(f"last_signal_{figi}", _j.dumps({
-                "action": action, "score": score,
+                "action": action if action is not None else sig,
+                "score": score,
                 "mode": tradingmode,
                 "time": _now().strftime("%H:%M:%S"),
                 "skip_reason": skip_reason,
@@ -1389,15 +1386,23 @@ def process_instrument(client, item,
         except Exception:
             pass
 
-    _save_signal()  # первоначальное сохранение без skip_reason
+    _save_signal()  # начальное сохранение без причины пропуска
 
-    # Session и tradable-проверки — после сохранения цены в market_state
-    # is_session_allowed читает trade_only_session из профиля (profile level)
+    # Cooldown после ORDER_ERROR
+    _cd = state.order_cooldowns.get(figi)
+    if _cd and (_now() - _cd).total_seconds() < BotState.ORDER_COOLDOWN_SEC:
+        remaining = int(BotState.ORDER_COOLDOWN_SEC - (_now() - _cd).total_seconds())
+        _save_signal(skip_reason=f"Пауза после ошибки ордера (осталось {remaining}с)", skip_filter="cooldown")
+        return
+
+    # Session и tradable-проверки
     if not is_session_allowed(client, figi):
+        _save_signal(skip_reason="Торговая сессия закрыта", skip_filter="session")
         return
 
     trading_status = get_trading_status(client, figi)
     if not is_tradable(trading_status):
+        _save_signal(skip_reason=f"Торговля недоступна: {str(trading_status)[-30:]}", skip_filter="trading_status")
         return
 
     last_volume = get_last_candle_volume(candles)
@@ -1604,13 +1609,10 @@ def process_instrument(client, item,
         required = Decimal(str(lot)) * Decimal(str(lot_size)) * price * (1 + commission_pct)
         available = Decimal(str(state.session_balance_current))
         if available < required:
-            log_event(
-                "BALANCE_WARNING",
-                f"{ticker}: сигнал BUY, требуется ≈{float(required):.0f} ₽ "
-                f"({lot} лот × {lot_size} шт × {float(price):.2f} ₽), "
-                f"доступно {float(available):.0f} ₽ — пропуск",
-                ticker=ticker,
-            )
+            _reason = f"Недостаточно средств: нужно {float(required):.0f} ₽, доступно {float(available):.0f} ₽"
+            log_event("BALANCE_WARNING",
+                      f"{ticker}: {_reason} — пропуск", ticker=ticker)
+            _save_signal(skip_reason=_reason, skip_filter="balance")
             return
 
     # ── Фильтр давления стакана (только при наличии данных стрима) ───────────

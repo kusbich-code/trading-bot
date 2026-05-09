@@ -306,8 +306,10 @@ def summary_payload() -> Dict[str, Any]:
 
     api_rpm       = int(get_runtime("api_rpm", "0") or 0)
     api_rpm_limit = int(get_runtime("api_rpm_limit", "600") or 600)
+    # Счётчик main.py не включает вызовы webapp.py (~30-50 req/min)
+    # Предупреждение при 55% — реальная нагрузка выше отображаемой
     api_rpm_pct   = round(api_rpm / api_rpm_limit * 100) if api_rpm_limit else 0
-    api_warn      = api_rpm_pct >= 80  # предупреждение при ≥80% лимита
+    api_warn      = api_rpm_pct >= 55
 
     return {
         "status": service_status,
@@ -2281,6 +2283,31 @@ def api_close_all_positions():
 
 
 # ── stop orders ───────────────────────────────────────────────────────────────
+
+@app.post("/api/stop-orders/{stop_order_id}/cancel")
+def api_cancel_stop_order(stop_order_id: str):
+    try:
+        cancel_stop_order(stop_order_id)
+        log_event("STOP_ORDER", f"Стоп-ордер {stop_order_id} отменён вручную")
+        return JSONResponse({"ok": True})
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e)[:200])
+
+
+@app.post("/api/stop-orders/cancel-all")
+def api_cancel_all_stop_orders():
+    """Отменяет все активные стоп-ордера на счёте."""
+    items = get_active_stop_orders()
+    cancelled, errors = 0, []
+    for s in items:
+        try:
+            cancel_stop_order(s["stop_order_id"])
+            cancelled += 1
+        except Exception as e:
+            errors.append(str(e)[:80])
+    log_event("STOP_ORDER", f"Отменено всех стоп-ордеров: {cancelled}")
+    return JSONResponse({"ok": True, "cancelled": cancelled, "errors": errors})
+
 
 @app.post("/api/stop-orders/create-bundle")
 def api_create_stop_bundle(
