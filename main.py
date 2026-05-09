@@ -1455,7 +1455,14 @@ def process_instrument(client, item,
         _save_signal(skip_reason="Торговая сессия закрыта", skip_filter="session")
         return
 
-    trading_status = get_trading_status(client, figi)
+    try:
+        trading_status = get_trading_status(client, figi)
+    except Exception as _tse:
+        _te_msg = str(_tse)
+        if "resource exhausted" in _te_msg.lower() or "RESOURCE_EXHAUSTED" in _te_msg:
+            _save_skip("Лимит запросов API (trading status)", "rate_limit")
+            time.sleep(1.0)
+        return
     if not is_tradable(trading_status):
         _save_signal(skip_reason=f"Торговля недоступна: {str(trading_status)[-30:]}", skip_filter="trading_status")
         return
@@ -1472,7 +1479,13 @@ def process_instrument(client, item,
     # Блок А: подтверждение сигнала через API-индикаторы (RSI/MACD/BB)
     # Запускаем только когда есть потенциальный сигнал входа — чтобы не делать 3 лишних API-вызова на каждом HOLD
     if use_api_confirm and sig in ("BUY", "SELL") and ticker not in positions:
-        _ind = get_api_indicators(client, instrument_uid, figi)
+        try:
+            _ind = get_api_indicators(client, instrument_uid, figi)
+        except Exception as _aie:
+            if "resource exhausted" in str(_aie).lower() or "RESOURCE_EXHAUSTED" in str(_aie):
+                _save_skip("Лимит запросов API (индикаторы)", "rate_limit")
+                time.sleep(1.0)
+            return
         sig_before = sig
         sig = _apply_indicator_filter(sig, _ind, tradingmode, float(price))
         rsi_str  = f"RSI={_ind.get('rsi'):.1f}" if _ind.get("rsi") is not None else "RSI=n/a"
