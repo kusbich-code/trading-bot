@@ -1871,6 +1871,7 @@ def _parallel_strategy_worker(strategy_id: int, strat_name: str, stop_ev: thread
                     # Проверка в середине сканирования: кто-то другой только что открыл
                     if not positions and not _parallel_coord.is_free and not _parallel_coord.is_owner(strategy_id):
                         break
+                    _rate.throttle_if_needed()  # пауза если близко к rate limit
                     _pset(strategy_id, "сканирование", item["ticker"])
                     try:
                         process_instrument(
@@ -2114,6 +2115,7 @@ def main():
                 watchlist = load_enabled_instruments(client)
 
                 for item in watchlist:
+                    _rate.throttle_if_needed()
                     process_instrument(client, item)
 
                 sync_portfolio_positions(client)

@@ -1911,6 +1911,7 @@ def api_strategies_save_settings(
     use_signal_service: str = Form("0"),
     use_api_confirm: str = Form("0"),
     min_signal_score: str = Form("0"),
+    use_order_book_filter: str = Form("1"),
 ):
     update_strategy_settings(strategy_id, {
         "max_trades_per_day": max_trades_per_day,
@@ -1930,6 +1931,7 @@ def api_strategies_save_settings(
         "use_signal_service": bool01(use_signal_service),
         "use_api_confirm": bool01(use_api_confirm),
         "min_signal_score": min_signal_score,
+        "use_order_book_filter": bool01(use_order_book_filter),
     })
     new_name = apply_auto_name(strategy_id)
     return JSONResponse({"ok": True, "new_name": new_name})
