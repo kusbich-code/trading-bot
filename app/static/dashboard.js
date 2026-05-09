@@ -2197,6 +2197,7 @@ async function refreshParallelStatus() {
           <span style="color:${sigColor};font-weight:700;font-size:12px">${sigLabel}</span>
           ${score ? `<span class="muted" style="font-size:11px;margin-left:4px">${score > 0 ? "+" : ""}${score}</span>` : ""}
           ${i.signal_time ? `<span class="muted" style="font-size:10px;margin-left:4px">${esc(i.signal_time)}</span>` : ""}
+          ${i.signal_skip_reason ? `<div style="font-size:10px;color:#f0a500;margin-top:2px" title="Фильтр: ${esc(i.signal_skip_filter)}">⚠ ${esc(i.signal_skip_reason)}</div>` : ""}
         </td>
       </tr>`;
     }).join("");

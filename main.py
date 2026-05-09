@@ -213,7 +213,8 @@ class BotState:
         self.open_positions = {}
         self.current_trade_date = str(date.today())
         self.instrument_meta = {}
-        self.order_cooldowns: Dict[str, datetime] = {}  # figi → время последней ошибки ордера
+        self.order_cooldowns: Dict[str, datetime] = {}   # figi → время последней ошибки ордера
+        self.close_cooldowns: Dict[str, datetime] = {}   # figi → время закрытия (защита от немедленного реверса)
 
     def sync_runtime(self, last_error=""):
         set_runtime("status", self.status)
@@ -677,6 +678,8 @@ def _handle_manual_close(bp: dict, market_map: dict, client=None):
     close_position(figi, source="BOT")
     log_event("ORDER_CLOSE", f"{ticker} {reason} exit={float(exit_price):.4f} pnl={float(pnl):.2f}", ticker=ticker)
     notify(f"{reason_ui}\n{ticker} | {direction}\nВход: {float(entry_price):.4f} → Выход: {float(exit_price):.4f}\nPnL ≈ {pnl_sign}{float(pnl):.2f} ₽")
+    # Cooldown 60 сек после закрытия — защита от немедленного реверса
+    state.close_cooldowns[figi] = _now()
 
     # Освобождаем координатор если он был заблокирован на этой позиции
     try:
@@ -1363,6 +1366,7 @@ def process_instrument(client, item,
     # Cooldown после ORDER_ERROR: пропускаем инструмент пока не истечёт пауза
     _cd = state.order_cooldowns.get(figi)
     if _cd and (_now() - _cd).total_seconds() < BotState.ORDER_COOLDOWN_SEC:
+        _save_signal(skip_reason=f"Пауза после ошибки ордера ({BotState.ORDER_COOLDOWN_SEC}с)", skip_filter="cooldown")
         return
 
     # Вычисляем сигнал всегда — до проверок сессии/торгуемости, чтобы дашборд показывал актуальный сигнал
@@ -1370,15 +1374,22 @@ def process_instrument(client, item,
     sig_result = _evaluate_signal(tradingmode, candles_dict)
     sig   = sig_result["action"]
     score = sig_result["score"]
-    try:
-        import json as _j
-        set_runtime(f"last_signal_{figi}", _j.dumps({
-            "action": sig, "score": score,
-            "mode": tradingmode,
-            "time": _now().strftime("%H:%M:%S"),
-        }))
-    except Exception:
-        pass
+
+    import json as _j
+
+    def _save_signal(action=sig, skip_reason="", skip_filter=""):
+        try:
+            set_runtime(f"last_signal_{figi}", _j.dumps({
+                "action": action, "score": score,
+                "mode": tradingmode,
+                "time": _now().strftime("%H:%M:%S"),
+                "skip_reason": skip_reason,
+                "skip_filter": skip_filter,
+            }))
+        except Exception:
+            pass
+
+    _save_signal()  # первоначальное сохранение без skip_reason
 
     # Session и tradable-проверки — после сохранения цены в market_state
     # is_session_allowed читает trade_only_session из профиля (profile level)
@@ -1404,13 +1415,15 @@ def process_instrument(client, item,
         _ind = get_api_indicators(client, instrument_uid, figi)
         sig_before = sig
         sig = _apply_indicator_filter(sig, _ind, tradingmode, float(price))
-        rsi_str = f"RSI={_ind.get('rsi'):.1f}" if _ind.get("rsi") is not None else "RSI=n/a"
-        macd_str = (f"MACD={_ind.get('macd'):.4f}/Sig={_ind.get('macd_signal'):.4f}"
+        rsi_str  = f"RSI={_ind.get('rsi'):.1f}" if _ind.get("rsi") is not None else "RSI=n/a"
+        macd_str = (f"MACD={_ind.get('macd'):.4f}/Сигн={_ind.get('macd_signal'):.4f}"
                     if _ind.get("macd") is not None else "MACD=n/a")
-        bb_str = (f"BB={_ind.get('bb_lower'):.2f}..{_ind.get('bb_upper'):.2f}"
-                  if _ind.get("bb_upper") is not None else "BB=n/a")
+        bb_str   = (f"BB={_ind.get('bb_lower'):.2f}..{_ind.get('bb_upper'):.2f}"
+                    if _ind.get("bb_upper") is not None else "BB=n/a")
         log.info("API-confirm %s %s→%s | %s | %s | %s",
                  ticker, sig_before, sig, rsi_str, macd_str, bb_str)
+        if sig == "HOLD" and sig_before != "HOLD":
+            _save_signal(skip_reason=f"API-фильтр: {rsi_str} | {macd_str}", skip_filter="api_confirm")
 
     if ticker in positions:
         pos = positions[ticker]
@@ -1531,6 +1544,8 @@ def process_instrument(client, item,
             close_position(figi, source="BOT")
             log_event("ORDER_CLOSE", f"{ticker} pnl={float(pnl):.2f} reason={close_reason}", ticker=ticker)
             del positions[ticker]
+            # Cooldown 60 сек после закрытия — защита от немедленного реверса
+            state.close_cooldowns[figi] = _now()
             if _coord is not None:
                 _coord.release(_strategy_id)
 
@@ -1551,17 +1566,20 @@ def process_instrument(client, item,
     elif len(positions) >= int(_cfg("max_open_positions", "2")):
         return
 
+    # Защита от реверса: после закрытия позиции не входим снова 60 сек
+    _cc = state.close_cooldowns.get(figi)
+    if _cc and (_now() - _cc).total_seconds() < 60:
+        _save_signal(skip_reason="Пауза после закрытия позиции (60с)", skip_filter="close_cooldown")
+        return
+
     # ── Торговое решение по сигналу (вычислен выше, до проверок сессии) ────────
     if sig == "HOLD":
         return
 
     min_score = int(_cfg("min_signal_score", "0"))
     if min_score > 0 and score < min_score:
-        log_event(
-            "SIGNAL_SKIP",
-            f"{ticker}: score={score} < порог={min_score} [{tradingmode}], пропуск",
-            ticker=ticker,
-        )
+        log_event("SIGNAL_SKIP", f"{ticker}: score={score} < порог={min_score} [{tradingmode}], пропуск", ticker=ticker)
+        _save_signal(skip_reason=f"Качество сигнала {score} < порог {min_score}", skip_filter="min_score")
         return
 
     log_event("SIGNAL", f"{sig} [{tradingmode}] score={score} on {ticker}", ticker=ticker)
@@ -1572,9 +1590,11 @@ def process_instrument(client, item,
         analyst = get_tbank_signals([figi]).get(figi, "NEUTRAL")
         if sig == "BUY" and analyst == "SELL":
             log_event("SIGNAL_SKIP", f"{ticker} BUY пропущен: аналитики SELL", ticker=ticker)
+            _save_signal(skip_reason="Аналитики T-Bank: SELL против BUY", skip_filter="signal_service")
             return
         if sig == "SELL" and analyst == "BUY":
             log_event("SIGNAL_SKIP", f"{ticker} SELL пропущен: аналитики BUY", ticker=ticker)
+            _save_signal(skip_reason="Аналитики T-Bank: BUY против SELL", skip_filter="signal_service")
             return
 
     # ── Проверка баланса перед ордером ───────────────────────────────────────
@@ -1600,9 +1620,11 @@ def process_instrument(client, item,
         sell_pressure = ask_vol / total_vol
         if sig == "BUY" and buy_pressure < 0.40:
             log_event("SIGNAL_SKIP", f"{ticker} BUY пропущен: давление покупателей {buy_pressure:.0%}", ticker=ticker)
+            _save_signal(skip_reason=f"Давление покупателей {buy_pressure:.0%} < 40%", skip_filter="order_book")
             return
         if sig == "SELL" and sell_pressure < 0.40:
             log_event("SIGNAL_SKIP", f"{ticker} SELL пропущен: давление продавцов {sell_pressure:.0%}", ticker=ticker)
+            _save_signal(skip_reason=f"Давление продавцов {sell_pressure:.0%} < 40%", skip_filter="order_book")
             return
 
     if sig == "BUY":

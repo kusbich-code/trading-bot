@@ -81,6 +81,7 @@ from app.services.tbank_client import (
     get_candles,
     get_candles_range,
     get_active_stop_orders,
+    cancel_stop_order,
     post_market_close,
     post_stop_bundle,
     get_portfolio_snapshot,
@@ -1401,6 +1402,8 @@ def api_parallel_status():
                 "signal_score":    sig_info.get("score", 0),
                 "signal_mode":     sig_info.get("mode", ""),
                 "signal_time":     sig_info.get("time", ""),
+                "signal_skip_reason":  sig_info.get("skip_reason", ""),
+                "signal_skip_filter":  sig_info.get("skip_filter", ""),
                 "unrealized_pnl":  upnl,
                 "in_position":     pos is not None,
             })
@@ -2209,13 +2212,30 @@ def api_close_position(figi: str = Form(...), qty: int = Form(...), direction: s
             _cur.execute("SELECT instrument_uid FROM strategy_instruments WHERE figi = ? LIMIT 1", (figi,))
             row = _cur.fetchone()
             uid = (row["instrument_uid"] or "") if row else ""
+
+    # Отменяем все нативные стоп-ордера для этого figi ПЕРЕД закрытием
+    cancelled_stops = 0
+    try:
+        active_stops = get_active_stop_orders()
+        for s in active_stops:
+            if s.get("figi") == figi or (uid and uid in str(s)):
+                try:
+                    cancel_stop_order(s["stop_order_id"])
+                    cancelled_stops += 1
+                except Exception as _se:
+                    logger.warning("cancel stop %s: %s", s.get("stop_order_id"), _se)
+        if cancelled_stops:
+            log_event("STOP_ORDER", f"manual close: отменено {cancelled_stops} стоп-ордеров для {figi}", ticker=figi)
+    except Exception as _e:
+        logger.warning("get_active_stop_orders before close: %s", _e)
+
     try:
         result = post_market_close(figi=figi, quantity=int(qty), direction=close_direction, instrument_uid=uid)
         log_event("POSITION_CLOSE", f"close order posted figi={figi} qty={qty} direction={close_direction}", ticker=figi)
-        return {"ok": True, "message": "close order posted", "order_id": getattr(result, "order_id", "")}
+        return {"ok": True, "message": "close order posted", "cancelled_stops": cancelled_stops,
+                "order_id": getattr(result, "order_id", "")}
     except Exception as e:
         msg = str(e)
-        # Извлекаем человекочитаемое сообщение из RequestError
         import re as _re
         m = _re.search(r"message='([^']+)'", msg)
         readable = m.group(1) if m else msg[:120]
