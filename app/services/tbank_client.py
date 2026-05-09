@@ -305,6 +305,30 @@ def post_stop_bundle(figi: str, quantity: int, entry_price: Decimal, side: str, 
     return out
 
 
+def get_active_orders() -> List[Dict[str, Any]]:
+    """Возвращает все активные (нeисполненные) обычные ордера (лимитные/рыночные)."""
+    with with_client() as client:
+        resp = client.orders.get_orders(account_id=_account_id())
+        items = []
+        for x in getattr(resp, "orders", []):
+            status = str(getattr(x, "execution_report_status", ""))
+            items.append({
+                "order_id": str(getattr(x, "order_id", "") or ""),
+                "figi": str(getattr(x, "figi", "") or ""),
+                "direction": str(getattr(x, "direction", "")),
+                "order_type": str(getattr(x, "order_type", "")),
+                "lots_requested": int(getattr(x, "lots_requested", 0) or 0),
+                "lots_executed": int(getattr(x, "lots_executed", 0) or 0),
+                "price": str(quotation_to_decimal_safe(getattr(x, "initial_security_price", None))),
+                "total_amount": str(_money_value_to_decimal(getattr(x, "initial_order_price", None))),
+                "status": status,
+                "created_at": (getattr(x, "order_date", None).isoformat()
+                               if getattr(x, "order_date", None) else ""),
+                "instrument_uid": str(getattr(x, "instrument_uid", "") or ""),
+            })
+        return items
+
+
 def get_active_stop_orders() -> List[Dict[str, Any]]:
     with with_client() as client:
         try:
@@ -326,6 +350,11 @@ def get_active_stop_orders() -> List[Dict[str, Any]]:
                 }
             )
         return items
+
+
+def cancel_order(order_id: str):
+    with with_client() as client:
+        return client.orders.cancel_order(account_id=_account_id(), order_id=order_id)
 
 
 def cancel_stop_order(stop_order_id: str):

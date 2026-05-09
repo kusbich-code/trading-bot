@@ -91,6 +91,8 @@ from app.services.tbank_client import (
     get_operations_by_cursor,
     sandbox_pay_in,
     sandbox_reset_account,
+    get_active_orders,
+    cancel_order,
 )
 from app.services.strategy_engine import evaluate_signal
 from app.services.backtest_engine import run_backtest, result_to_dict
@@ -311,6 +313,11 @@ def summary_payload() -> Dict[str, Any]:
     # Предупреждение при 55% — реальная нагрузка выше отображаемой
     api_rpm_pct   = round(api_rpm / api_rpm_limit * 100) if api_rpm_limit else 0
     api_warn      = api_rpm_pct >= 55
+    try:
+        import json as _j
+        api_rpm_breakdown = _j.loads(get_runtime("api_rpm_breakdown", "[]") or "[]")
+    except Exception:
+        api_rpm_breakdown = []
 
     return {
         "status": service_status,
@@ -332,6 +339,7 @@ def summary_payload() -> Dict[str, Any]:
         "api_rpm_limit": api_rpm_limit,
         "api_rpm_pct": api_rpm_pct,
         "api_warn": api_warn,
+        "api_rpm_breakdown": api_rpm_breakdown,
     }
 
 
@@ -614,7 +622,7 @@ def api_dashboard_main():
 @app.get("/api/dashboard/multi-candles")
 def api_multi_candles(figis: str = "", interval: str = "1min", hours: int = 4):
     """OHLCV свечи для нескольких инструментов — мини-графики на главной."""
-    figi_list = [f.strip() for f in figis.split(",") if f.strip()][:10]
+    figi_list = [f.strip() for f in figis.split(",") if f.strip()][:30]
     market_map = get_instrument_market_state_map()
     result: dict = {}
     for figi in figi_list:
@@ -2322,6 +2330,41 @@ def api_close_all_positions():
             m = _re2.search(r"message='([^']+)'", str(e))
             errors.append(m.group(1) if m else str(e)[:80])
     return JSONResponse({"ok": True, "closed": closed, "errors": errors})
+
+
+# ── active orders (limit / market pending) ────────────────────────────────────
+
+@app.get("/api/orders/active")
+def api_active_orders():
+    try:
+        return JSONResponse({"ok": True, "items": get_active_orders()})
+    except Exception as e:
+        logger.exception("get_active_orders error")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/orders/{order_id}/cancel")
+def api_cancel_order(order_id: str):
+    try:
+        cancel_order(order_id)
+        log_event("ORDER", f"Ордер {order_id} отменён вручную")
+        return JSONResponse({"ok": True})
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e)[:200])
+
+
+@app.post("/api/orders/cancel-all")
+def api_cancel_all_orders():
+    items = get_active_orders()
+    cancelled, errors = 0, []
+    for o in items:
+        try:
+            cancel_order(o["order_id"])
+            cancelled += 1
+        except Exception as e:
+            errors.append(str(e)[:80])
+    log_event("ORDER", f"Отменено активных ордеров: {cancelled}")
+    return JSONResponse({"ok": True, "cancelled": cancelled, "errors": errors})
 
 
 # ── stop orders ───────────────────────────────────────────────────────────────

@@ -202,8 +202,38 @@ async function renderSummaryCards() {
       const warn = s.api_warn;
       const color = pct >= 95 ? "#ff7b7b" : pct >= 80 ? "#f0a500" : "#2fa36b";
       const bg    = pct >= 95 ? "rgba(191,77,90,.08)" : pct >= 80 ? "rgba(240,165,0,.08)" : "rgba(47,163,107,.05)";
+      const hints = {
+        "GetCandles":           "Увеличить CHECK_INTERVAL_SEC в настройках",
+        "GetOrderBook":         "Отключить фильтр стакана (use_order_book_filter) в стратегии",
+        "GetLastPrices":        "Используется потоком — уже минимизировано",
+        "GetTradingStatus":     "Кеш 30с — автоматически снижается",
+        "GetPortfolio":         "Вызывается при открытии позиций — норма",
+        "GetTechAnalysis/RSI":  "Отключить API-фильтр (use_api_confirm) в стратегии",
+        "GetTechAnalysis/MACD": "Отключить API-фильтр (use_api_confirm) в стратегии",
+        "GetTechAnalysis/BB":   "Отключить API-фильтр (use_api_confirm) в стратегии",
+      };
+      const breakdown = (s.api_rpm_breakdown || []);
+      const breakdownHtml = breakdown.length ? `
+        <div style="margin-top:8px;font-size:11px">
+          <div style="opacity:.6;margin-bottom:4px">Расход по операциям (запр/мин):</div>
+          ${breakdown.map(r => {
+            const hint = hints[r.op] || "";
+            const barPct = Math.min(r.rpm / (s.api_rpm_limit || 600) * 100, 100);
+            const c = barPct >= 30 ? "#f0a500" : "#aaa";
+            return `<div style="margin-bottom:5px">
+              <div style="display:flex;justify-content:space-between;align-items:center;gap:6px">
+                <span style="color:#ddd;font-weight:500;min-width:200px">${esc(r.op)}</span>
+                <span style="color:${c};font-weight:600;min-width:32px;text-align:right">${r.rpm}</span>
+              </div>
+              <div style="background:rgba(255,255,255,.07);border-radius:3px;height:3px;margin:2px 0">
+                <div style="height:100%;width:${barPct.toFixed(1)}%;background:${c};border-radius:3px"></div>
+              </div>
+              ${hint ? `<div style="color:#888;font-size:10px;margin-top:1px">→ ${esc(hint)}</div>` : ""}
+            </div>`;
+          }).join("")}
+        </div>` : "";
       return `<div class="sgrp">
-        <div class="sgrp-lbl" style="${warn ? 'color:#f0a500;border-color:#f0a500' : ''}">API лимит</div>
+        <div class="sgrp-lbl" style="${warn ? 'color:#f0a500;border-color:#f0a500' : ''}">API лимит <span style="font-weight:400;font-size:10px;opacity:.6">(бот, дашборд не учтён)</span></div>
         <div class="sgrp-cards">
           <div class="crd" style="background:${bg}">
             <div class="lbl">Запросов/мин</div>
@@ -211,6 +241,7 @@ async function renderSummaryCards() {
             <div style="background:rgba(255,255,255,.08);border-radius:4px;height:4px;margin-top:4px;overflow:hidden">
               <div style="height:100%;width:${Math.min(pct,100)}%;background:${color};border-radius:4px;transition:width .5s"></div>
             </div>
+            ${breakdownHtml}
           </div>
         </div>
         ${warn ? `<div style="font-size:11px;color:#f0a500;margin-top:4px;padding:0 2px">⚠️ ${pct >= 95 ? 'Лимит почти исчерпан — возможны ошибки RESOURCE_EXHAUSTED' : 'Нагрузка высокая — рекомендуется увеличить интервал стратегий'}</div>` : ''}
@@ -309,7 +340,7 @@ async function renderMainShell() {
         </div>
       </div>
     </section>
-    <div id="mainChartsGrid" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:18px"></div>
+    <div id="mainChartsGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:6px;margin-bottom:18px"></div>
 
     <!-- ── Позиции ── -->
     <section class="block">
@@ -1410,7 +1441,22 @@ async function renderPortfolioTab() {
       </div>
     </section>
     <section class="block">
-      <div class="row between"><h2>Активные stop orders</h2></div>
+      <div class="row between">
+        <h2>Активные ордера <span class="note">(лимитные / рыночные в очереди)</span></h2>
+        <button class="btn btn-danger" id="btnCancelAllOrders" style="font-size:12px">Отменить все</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Тикер/FIGI</th><th>Тип</th><th>Направление</th><th>Лотов</th><th>Исп.</th><th>Цена</th><th>Сумма, ₽</th><th>Создан</th><th>Действие</th></tr></thead>
+          <tbody id="activeOrdersBody"></tbody>
+        </table>
+      </div>
+    </section>
+    <section class="block">
+      <div class="row between">
+        <h2>Активные stop orders</h2>
+        <button class="btn btn-danger" id="btnCancelAllStops" style="font-size:12px">Отменить все</button>
+      </div>
       <div class="table-wrap">
         <table>
           <thead><tr><th>FIGI</th><th>Тип</th><th>Направление</th><th>Лоты</th><th>Цена</th><th>Stop</th><th>Создан</th><th>Действие</th></tr></thead>
@@ -1451,6 +1497,8 @@ async function renderPortfolioTab() {
 
   document.getElementById("btnCloseAllPositions")?.addEventListener("click", closeAllPositionsConfirm);
   document.getElementById("btnClearLocalPositions")?.addEventListener("click", clearLocalPositions);
+  document.getElementById("btnCancelAllOrders")?.addEventListener("click", cancelAllActiveOrders);
+  document.getElementById("btnCancelAllStops")?.addEventListener("click", cancelAllStopOrders);
   host.querySelectorAll("[data-close-one]").forEach((btn) => {
     btn.addEventListener("click", () => closeOnePosition(btn.dataset.figi, btn.dataset.qty, btn.dataset.direction));
   });
@@ -1462,6 +1510,32 @@ async function renderPortfolioTab() {
     showToast(`Портфель: данные из локальной БД (ошибка API: ${data.broker_error.slice(0, 80)})`, "error", 6000);
   }
 
+  // Активные ордера (лимитные/рыночные в очереди)
+  try {
+    const ordersData = await apiGet("/api/orders/active");
+    const ordersBody = document.getElementById("activeOrdersBody");
+    if (ordersBody) {
+      const dirLabel = d => String(d).includes("BUY") ? '<span style="color:#2fa36b">BUY</span>' : String(d).includes("SELL") ? '<span style="color:#ff7b7b">SELL</span>' : esc(d);
+      ordersBody.innerHTML = (ordersData.items || []).map(x => `
+        <tr>
+          <td><b>${esc(x.figi || "")}</b></td>
+          <td>${esc((x.order_type || "").replace("ORDER_TYPE_",""))}</td>
+          <td>${dirLabel(x.direction)}</td>
+          <td>${esc(x.lots_requested || "")}</td>
+          <td>${esc(x.lots_executed || "0")}</td>
+          <td>${esc(x.price || "")}</td>
+          <td><b>${esc(x.total_amount || "")}</b></td>
+          <td style="font-size:11px">${esc((x.created_at || "").slice(0,19).replace("T"," "))}</td>
+          <td><button class="btn btn-danger" onclick="cancelActiveOrder('${esc(x.order_id)}')">Отменить</button></td>
+        </tr>
+      `).join("") || `<tr><td colspan="9" class="muted">Нет активных ордеров — резерв средств отсутствует</td></tr>`;
+    }
+  } catch (e) {
+    const ordersBody = document.getElementById("activeOrdersBody");
+    if (ordersBody) ordersBody.innerHTML = `<tr><td colspan="9">Ошибка: ${esc(e.message)}</td></tr>`;
+  }
+
+  // Активные stop orders
   try {
     const stopData = await apiGet("/api/dashboard/stop-orders");
     const stopBody = document.getElementById("activeStopOrdersBody");
@@ -1472,14 +1546,19 @@ async function renderPortfolioTab() {
           <td>${esc(x.direction || "")}</td><td>${esc(x.lots_requested || "")}</td>
           <td>${esc(x.price || "")}</td><td>${esc(x.stop_price || "")}</td>
           <td>${esc(x.created_at || "")}</td>
-          <td><button class="btn btn-danger" data-cancel-stop="${esc(x.stop_order_id || "")}">Отменить</button></td>
+          <td><button class="btn btn-danger" onclick="cancelStopOrder('${esc(x.stop_order_id || "")}')">Отменить</button></td>
         </tr>
-      `).join("") || `<tr><td colspan="8">Нет активных stop orders</td></tr>`;
+      `).join("") || `<tr><td colspan="8" class="muted">Нет активных stop orders</td></tr>`;
     }
   } catch (e) {
     const stopBody = document.getElementById("activeStopOrdersBody");
     if (stopBody) stopBody.innerHTML = `<tr><td colspan="8">Ошибка: ${esc(e.message)}</td></tr>`;
   }
+
+  // Навешиваем обработчики на data-cancel-stop (legacy)
+  host.querySelectorAll("[data-cancel-stop]").forEach(btn => {
+    btn.addEventListener("click", () => cancelStopOrder(btn.dataset.cancelStop));
+  });
 }
 
 async function closeOnePosition(figi, qty, direction) {
@@ -1505,6 +1584,54 @@ async function clearLocalPositions() {
     await renderSummaryCards();
   } catch (e) {
     showToast(`Ошибка: ${e.message}`, "error");
+  }
+}
+
+async function cancelActiveOrder(orderId) {
+  if (!confirm(`Отменить ордер ${orderId}?`)) return;
+  try {
+    await apiPostForm(`/api/orders/${encodeURIComponent(orderId)}/cancel`, {});
+    showToast("Ордер отменён", "success");
+    await renderPortfolioTab();
+    await renderSummaryCards();
+  } catch (e) {
+    showToast(`Ошибка: ${e.message}`, "error", 6000);
+  }
+}
+
+async function cancelAllActiveOrders() {
+  if (!confirm("Отменить все активные ордера? Это освободит заблокированные средства.")) return;
+  try {
+    const r = await apiPostForm("/api/orders/cancel-all", {});
+    showToast(`Отменено ордеров: ${r.cancelled || 0}`, "success");
+    await renderPortfolioTab();
+    await renderSummaryCards();
+  } catch (e) {
+    showToast(`Ошибка: ${e.message}`, "error", 6000);
+  }
+}
+
+async function cancelStopOrder(stopId) {
+  if (!confirm(`Отменить стоп-ордер ${stopId}?`)) return;
+  try {
+    await apiPostForm(`/api/stop-orders/${encodeURIComponent(stopId)}/cancel`, {});
+    showToast("Стоп-ордер отменён", "success");
+    await renderPortfolioTab();
+    await renderSummaryCards();
+  } catch (e) {
+    showToast(`Ошибка: ${e.message}`, "error", 6000);
+  }
+}
+
+async function cancelAllStopOrders() {
+  if (!confirm("Отменить все стоп-ордера?")) return;
+  try {
+    const r = await apiPostForm("/api/stop-orders/cancel-all", {});
+    showToast(`Отменено стопов: ${r.cancelled || 0}`, "success");
+    await renderPortfolioTab();
+    await renderSummaryCards();
+  } catch (e) {
+    showToast(`Ошибка: ${e.message}`, "error", 6000);
   }
 }
 
@@ -2255,16 +2382,16 @@ async function _renderMainCharts() {
     if (grid) grid.innerHTML = "";
     return;
   }
-  const figis = _mainChartFigis.slice(0, 10);
+  const figis = _mainChartFigis; // показываем ВСЕ, без ограничения в 10
 
   // Плейсхолдеры
   grid.innerHTML = figis.map(f => `
-    <div class="block" style="padding:12px;margin-bottom:0">
-      <div class="row between" style="margin-bottom:6px">
-        <span style="font-size:13px;font-weight:700">${esc(f.ticker)}</span>
-        <span class="note" style="font-size:11px" id="mc-price-${f.figi}"></span>
+    <div class="block" style="padding:8px;margin-bottom:0">
+      <div class="row between" style="margin-bottom:4px">
+        <span style="font-size:12px;font-weight:700">${esc(f.ticker)}</span>
+        <span class="note" style="font-size:10px" id="mc-price-${f.figi}"></span>
       </div>
-      <div id="mc-${f.figi}" style="height:160px"></div>
+      <div id="mc-${f.figi}" style="height:120px"></div>
     </div>`).join("");
 
   try {

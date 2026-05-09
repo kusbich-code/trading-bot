@@ -226,6 +226,8 @@ class BotState:
         set_runtime("current_trade_date", self.current_trade_date)
         set_runtime("api_rpm", str(_rate.rpm))
         set_runtime("api_rpm_limit", "600")
+        import json as _j
+        set_runtime("api_rpm_breakdown", _j.dumps(_rate.breakdown()))
 
 
 state = BotState()
@@ -244,7 +246,7 @@ def _orders_stream_worker():
         try:
             with _bot_client_cls(settings.TINVEST_TOKEN) as sc:
                 log.info("OrdersStream: подключён")
-                for resp in sc.orders_stream.trade_stream(accounts=[account_id]):
+                for resp in sc.orders_stream.trades_stream(accounts=[account_id]):
                     ot = getattr(resp, "order_trades", None)
                     if ot is None:
                         continue  # пинг-фрейм
@@ -281,17 +283,25 @@ class _ApiRateTracker:
     """Скользящее окно 60 с: считает реальные вызовы API по всем потокам."""
     def __init__(self, warn_threshold: int = 480, hard_limit: int = 570):
         self._ts: _collections.deque = _collections.deque()
+        self._by_op: Dict[str, _collections.deque] = {}
         self._lock = Lock()
-        self.warn  = warn_threshold   # предупреждение в UI
-        self.limit = hard_limit       # принудительная пауза
+        self.warn  = warn_threshold
+        self.limit = hard_limit
 
-    def record(self):
+    def record(self, op: str = ""):
         now = time.monotonic()
+        cutoff = now - 60.0
         with self._lock:
-            cutoff = now - 60.0
             while self._ts and self._ts[0] < cutoff:
                 self._ts.popleft()
             self._ts.append(now)
+            if op:
+                if op not in self._by_op:
+                    self._by_op[op] = _collections.deque()
+                q = self._by_op[op]
+                while q and q[0] < cutoff:
+                    q.popleft()
+                q.append(now)
             return len(self._ts)
 
     @property
@@ -303,8 +313,21 @@ class _ApiRateTracker:
                 self._ts.popleft()
             return len(self._ts)
 
+    def breakdown(self) -> List[dict]:
+        """Топ операций по числу вызовов за последнюю минуту."""
+        now = time.monotonic()
+        cutoff = now - 60.0
+        with self._lock:
+            result = []
+            for op, q in self._by_op.items():
+                while q and q[0] < cutoff:
+                    q.popleft()
+                if q:
+                    result.append({"op": op, "rpm": len(q)})
+            result.sort(key=lambda x: x["rpm"], reverse=True)
+            return result
+
     def throttle_if_needed(self):
-        """Блокирует вызывающий поток если близко к лимиту."""
         if self.rpm >= self.limit:
             time.sleep(1.0)
 
@@ -433,13 +456,13 @@ def quotation_from_decimal(price: Decimal) -> Quotation:
 
 
 def get_last_price(client, figi: str, instrument_uid: str = "") -> Decimal:
-    _rate.record()
+    _rate.record("GetLastPrices")
     resp = client.market_data.get_last_prices(instrument_id=[instrument_uid or figi])
     return quotation_to_decimal(resp.last_prices[0].price)
 
 def get_order_book_spread_pct(client, figi: str, instrument_uid: str = "") -> Decimal:
     try:
-        _rate.record()
+        _rate.record("GetOrderBook")
         book = client.market_data.get_order_book(instrument_id=instrument_uid or figi, depth=1)
         bids = getattr(book, "bids", []) or []
         asks = getattr(book, "asks", []) or []
@@ -786,7 +809,7 @@ def sync_portfolio_positions(client):
         log.warning(f"sync_portfolio_positions error: {e}")
 
 def get_candles(client, figi: str, n=20, instrument_uid: str = ""):
-    _rate.record()
+    _rate.record("GetCandles")
     now = datetime.now(timezone.utc)
     resp = client.market_data.get_candles(
         instrument_id=instrument_uid or figi,
@@ -818,7 +841,7 @@ def get_trading_status(client, instrument_id: str):
     _cached = _status_cache.get(instrument_id)
     if _cached and (_now_ts - _cached[0]) < _STATUS_TTL:
         return _cached[1]
-    _rate.record()
+    _rate.record("GetTradingStatus")
     try:
         resp = client.market_data.get_trading_status(instrument_id=instrument_id)
         status = getattr(resp, "trading_status", "UNKNOWN")
@@ -843,7 +866,7 @@ def is_tradable(status) -> bool:
 
 def get_money_balance(client) -> float:
     try:
-        _rate.record()
+        _rate.record("GetPortfolio")
         portfolio = client.operations.get_portfolio(account_id=settings.TINVEST_ACCOUNT_ID)
         total = getattr(portfolio, "total_amount_portfolio", None)
         if total:
@@ -1161,7 +1184,7 @@ def get_api_indicators(client, instrument_uid: str, figi: str = "") -> dict:
 
     # RSI — значение в поле signal
     try:
-        _rate.record()
+        _rate.record("GetTechAnalysis/RSI")
         resp = client.market_data.get_tech_analysis(request=GetTechAnalysisRequest(
             indicator_type=IndicatorType.INDICATOR_TYPE_RSI,
             instrument_uid=instr_id,
@@ -1178,7 +1201,7 @@ def get_api_indicators(client, instrument_uid: str, figi: str = "") -> dict:
 
     # MACD — macd=линия MACD, signal=сигнальная линия
     try:
-        _rate.record()
+        _rate.record("GetTechAnalysis/MACD")
         resp = client.market_data.get_tech_analysis(request=GetTechAnalysisRequest(
             indicator_type=IndicatorType.INDICATOR_TYPE_MACD,
             instrument_uid=instr_id,
@@ -1196,7 +1219,7 @@ def get_api_indicators(client, instrument_uid: str, figi: str = "") -> dict:
 
     # BB — upper/middle/lower bands
     try:
-        _rate.record()
+        _rate.record("GetTechAnalysis/BB")
         resp = client.market_data.get_tech_analysis(request=GetTechAnalysisRequest(
             indicator_type=IndicatorType.INDICATOR_TYPE_BB,
             instrument_uid=instr_id,
