@@ -313,7 +313,7 @@ class _ApiRateTracker:
                 self._ts.popleft()
             return len(self._ts)
 
-    def breakdown(self) -> List[dict]:
+    def breakdown(self) -> list:
         """Топ операций по числу вызовов за последнюю минуту."""
         now = time.monotonic()
         cutoff = now - 60.0
