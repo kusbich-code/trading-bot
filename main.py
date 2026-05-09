@@ -1420,6 +1420,7 @@ def process_instrument(client, item,
         raise
 
     if len(candles) < 5:
+        _save_skip(f"Нет данных свечей ({len(candles)} баров)", "no_candles")
         return
 
     # Вычисляем сигнал всегда — до всех проверок, чтобы дашборд показывал актуальный сигнал
