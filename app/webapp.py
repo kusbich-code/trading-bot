@@ -90,6 +90,7 @@ from app.services.tbank_client import (
     get_positions_detailed,
     get_operations_by_cursor,
     sandbox_pay_in,
+    sandbox_reset_account,
 )
 from app.services.strategy_engine import evaluate_signal
 from app.services.backtest_engine import run_backtest, result_to_dict
@@ -772,6 +773,47 @@ def api_sandbox_pay_in(amount: int = Form(100_000)):
         return JSONResponse({"ok": True, "balance_ui": fmt_money(new_balance)})
     except Exception as e:
         logger.exception("sandbox pay-in error")
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/sandbox/reset")
+def api_sandbox_reset(amount: int = Form(100_000)):
+    """Сброс sandbox-счёта: закрывает текущий, создаёт новый, пополняет на amount.
+    Возвращает новый account_id — нужно обновить TINVEST_ACCOUNT_ID в .env.
+    """
+    s = get_all_settings()
+    if str(s.get("tinvestusesandbox", "true")).lower() != "true":
+        raise HTTPException(status_code=400, detail="Только для Sandbox режима")
+    try:
+        result = sandbox_reset_account(amount)
+        new_id = result["account_id"]
+        env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
+        try:
+            import re as _re
+            with open(env_path, "r") as _f:
+                env_text = _f.read()
+            env_text = _re.sub(
+                r"TINVEST_ACCOUNT_ID=.*",
+                f"TINVEST_ACCOUNT_ID={new_id}",
+                env_text,
+            )
+            with open(env_path, "w") as _f:
+                _f.write(env_text)
+        except Exception as _ee:
+            logger.warning("Не удалось обновить .env: %s", _ee)
+        # Обновляем settings в памяти текущего процесса
+        from app import config as _cfg
+        _cfg.settings.TINVEST_ACCOUNT_ID = new_id
+        log_event("SERVICE_CONTROL",
+                  f"Sandbox сброс: новый счёт {new_id}, баланс {result['balance']:.0f} ₽")
+        return JSONResponse({
+            "ok": True,
+            "account_id": new_id,
+            "balance": result["balance"],
+            "note": "Бот будет перезапущен для применения нового account_id",
+        })
+    except Exception as e:
+        logger.exception("sandbox reset error")
         raise HTTPException(status_code=400, detail=str(e))
 
 

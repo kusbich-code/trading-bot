@@ -274,6 +274,8 @@ async function renderMainShell() {
             <option value="1000000">1 000 000 ₽</option>
           </select>
           <button class="btn btn-primary" id="btnSandboxPayIn">Пополнить счёт</button>
+          <input id="sandboxResetAmount" class="field" type="number" placeholder="Сумма сброса ₽" style="width:150px" value="59518">
+          <button class="btn" style="background:#c0392b;color:#fff" onclick="sandboxResetBalance()" title="Закрывает текущий счёт и создаёт новый с указанным балансом">Сбросить баланс</button>
         </div>
       </div>
     </section>
@@ -2101,6 +2103,21 @@ async function sandboxPayIn() {
     await renderMainData();
   } catch (e) {
     showToast(`Ошибка пополнения: ${e.message}`, "error", 6000);
+  }
+}
+
+async function sandboxResetBalance() {
+  const inp = document.getElementById("sandboxResetAmount");
+  const amount = inp ? parseInt(inp.value) || 59518 : 59518;
+  if (!confirm(`Сбросить Sandbox счёт? Текущий счёт будет закрыт, создан новый с балансом ${amount.toLocaleString("ru")} ₽. Бот будет перезапущен.`)) return;
+  try {
+    showToast("Сбрасываю счёт...", "info", 3000);
+    const res = await apiPostForm("/api/sandbox/reset", { amount });
+    showToast(`Новый счёт создан. Баланс: ${Math.round(res.balance).toLocaleString("ru")} ₽. Перезапуск бота...`, "success", 6000);
+    await apiPost("/api/bot/restart");
+    setTimeout(() => { renderSummaryCards(); renderMainData(); }, 4000);
+  } catch (e) {
+    showToast(`Ошибка сброса: ${e.message}`, "error", 6000);
   }
 }
 

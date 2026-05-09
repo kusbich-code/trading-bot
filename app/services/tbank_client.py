@@ -440,6 +440,34 @@ def sandbox_pay_in(amount_rub: int = 100_000) -> Decimal:
         return _money_value_to_decimal(balance) if balance else Decimal("0")
 
 
+def sandbox_reset_account(target_balance_rub: int = 100_000) -> dict:
+    """Закрывает текущий sandbox-счёт, создаёт новый, пополняет до target_balance_rub.
+    Возвращает {'account_id': ..., 'balance': ...}.
+    """
+    from t_tech.invest.sandbox.client import SandboxClient
+    with SandboxClient(settings.TINVEST_TOKEN) as client:
+        old_id = _account_id()
+        try:
+            client.sandbox.close_sandbox_account(account_id=old_id)
+        except Exception:
+            pass
+        new_resp = client.sandbox.open_sandbox_account()
+        new_id = getattr(new_resp, "account_id", None)
+        if not new_id:
+            raise RuntimeError("Не удалось создать новый sandbox-счёт")
+        try:
+            from t_tech.invest import MoneyValue
+            amount = MoneyValue(currency="RUB", units=int(target_balance_rub), nano=0)
+            bal_resp = client.sandbox.sandbox_pay_in(account_id=new_id, amount=amount)
+        except Exception:
+            bal_resp = None
+        balance = Decimal("0")
+        if bal_resp:
+            b = getattr(bal_resp, "balance", None)
+            balance = _money_value_to_decimal(b) if b else Decimal(str(target_balance_rub))
+        return {"account_id": new_id, "balance": float(balance)}
+
+
 def get_operations_by_cursor(
     from_dt=None,
     to_dt=None,
