@@ -414,14 +414,7 @@ def dashboard_page():
 
     <div id="mainSummaryRow" style="display:none;flex-wrap:wrap;gap:14px;align-items:flex-start;margin-bottom:18px">
       <section id="summaryCards" class="summary-grid" style="flex:1;min-width:300px;margin-bottom:0"></section>
-      <div id="newsWidget" style="flex:0 0 380px;min-width:260px;border-radius:8px;overflow:hidden">
-        <div class="tradingview-widget-container" style="height:270px">
-          <div class="tradingview-widget-container__widget" style="height:100%"></div>
-          <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-timeline.js" async>
-          {{"feedMode":"market","market":"stock","isTransparent":true,"displayMode":"compact","width":"100%","height":270,"colorTheme":"dark","locale":"ru"}}
-          </script>
-        </div>
-      </div>
+      <div id="newsWidget" style="flex:0 0 380px;min-width:260px;border-radius:8px;overflow:hidden;height:270px;background:#0a1628"></div>
     </div>
 
     <section id="view-main" data-view="главное"></section>
@@ -491,8 +484,8 @@ def dashboard_page():
     </div>
   </div>
 
-  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
-  <script src="/static/dashboard.js?v={v}"></script>
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js" defer></script>
+  <script src="/static/dashboard.js?v={v}" defer></script>
 </body>
 </html>""")
 

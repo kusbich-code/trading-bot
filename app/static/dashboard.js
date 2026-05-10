@@ -214,7 +214,7 @@ async function renderSummaryCards() {
   const host = document.getElementById("summaryCards");
   if (!host) return;
   const wrapper = document.getElementById("mainSummaryRow");
-  if (wrapper && wrapper.style.display === "none") wrapper.style.display = "flex";
+  if (wrapper && wrapper.style.display === "none") { wrapper.style.display = "flex"; _initNewsWidget(); }
   const hasError = s.last_error && s.last_error !== "—";
 
   const newHtml = _buildSummaryHtml(s, hasError);
@@ -343,7 +343,24 @@ function helpCard(title, bullets) {
 function toggleSummaryCardsVisibility() {
   const wrapper = document.getElementById("mainSummaryRow");
   if (!wrapper) return;
-  wrapper.style.display = getTabFromHash() === "главное" ? "flex" : "none";
+  const show = getTabFromHash() === "главное";
+  wrapper.style.display = show ? "flex" : "none";
+  if (show) _initNewsWidget();
+}
+
+function _initNewsWidget() {
+  const host = document.getElementById("newsWidget");
+  if (!host || host.dataset.tvLoaded) return;
+  host.dataset.tvLoaded = "1";
+  host.innerHTML = `<div class="tradingview-widget-container" style="height:270px">
+    <div class="tradingview-widget-container__widget" style="height:100%"></div>
+  </div>`;
+  const s = document.createElement("script");
+  s.type = "text/javascript";
+  s.src = "https://s3.tradingview.com/external-embedding/embed-widget-timeline.js";
+  s.async = true;
+  s.text = '{"feedMode":"market","market":"stock","isTransparent":true,"displayMode":"compact","width":"100%","height":270,"colorTheme":"dark","locale":"ru"}';
+  host.querySelector(".tradingview-widget-container").appendChild(s);
 }
 
 // ── Main tab ──────────────────────────────────────────────────────────────────
