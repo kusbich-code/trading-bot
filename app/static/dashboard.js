@@ -1,6 +1,8 @@
-const REFRESH_SUMMARY_MS = 7000;
-const REFRESH_QUOTES_MS = 5000;
-const REFRESH_PORTFOLIO_MS = 10000;
+const REFRESH_SUMMARY_MS   = 4000;   // summary cards (баланс, статус)
+const REFRESH_QUOTES_MS    = 2000;   // цены в позициях главной
+const REFRESH_PORTFOLIO_MS = 5000;   // вкладка портфель
+const REFRESH_PARALLEL_MS  = 3000;   // тикеры с сигналами (САМОЕ ВАЖНОЕ)
+const REFRESH_TRADES_MS    = 8000;   // история сделок (лёгкая)
 
 let instrumentSearchData = [];
 let refreshTimersStarted = false;
@@ -118,6 +120,58 @@ function diffTbody(tbody, rowsHtml) {
   tbody.dataset.renderedHtml = next;
 }
 
+// Обновляет tbody построчно, мигает изменившимися ячейками
+function diffTbodyFlash(tbody, rows) {
+  if (!tbody) return;
+  rows.forEach(({ key, html, flashCols }) => {
+    const existing = tbody.querySelector(`tr[data-key="${CSS.escape(key)}"]`);
+    if (!existing) {
+      // Новая строка — добавить в конец
+      const tmp = document.createElement('tbody');
+      tmp.innerHTML = html;
+      const newTr = tmp.firstElementChild;
+      if (newTr) tbody.appendChild(newTr);
+      return;
+    }
+    const tmpDiv = document.createElement('tbody');
+    tmpDiv.innerHTML = html;
+    const newTr = tmpDiv.firstElementChild;
+    if (!newTr) return;
+
+    // Сравниваем ячейки
+    const oldCells = existing.cells;
+    const newCells = newTr.cells;
+    let changed = false;
+    for (let c = 0; c < Math.min(oldCells.length, newCells.length); c++) {
+      const oldH = oldCells[c].innerHTML;
+      const newH = newCells[c].innerHTML;
+      if (oldH !== newH) {
+        oldCells[c].innerHTML = newH;
+        if (!flashCols || flashCols.includes(c)) {
+          _flashCell(oldCells[c]);
+          changed = true;
+        }
+      }
+    }
+    // Если изменился стиль строки
+    if (existing.getAttribute('style') !== newTr.getAttribute('style')) {
+      existing.setAttribute('style', newTr.getAttribute('style') || '');
+    }
+    _ = changed;
+  });
+  // Удаляем устаревшие строки
+  const newKeys = new Set(rows.map(r => r.key));
+  Array.from(tbody.querySelectorAll('tr[data-key]')).forEach(tr => {
+    if (!newKeys.has(tr.dataset.key)) tr.remove();
+  });
+}
+
+function _flashCell(cell) {
+  cell.classList.remove('cell-updated');
+  void cell.offsetWidth;
+  cell.classList.add('cell-updated');
+}
+
 function ensureViewsExist() {
   const required = ["главное", "портфель", "настройки", "история", "график", "бэктест", "аналитик"];
   const root = document.querySelector(".app") || document.body;
@@ -161,7 +215,33 @@ async function renderSummaryCards() {
   if (!host) return;
   host.style.cssText = "display:block;margin-bottom:18px";
   const hasError = s.last_error && s.last_error !== "—";
-  host.innerHTML = `<div class="sgroups">
+
+  const newHtml = _buildSummaryHtml(s, hasError);
+  const isFirst = !host.dataset.built;
+  // Запомним старые значения .val перед перезаписью
+  const oldVals = isFirst ? [] : Array.from(host.querySelectorAll('.val')).map(e => e.textContent.trim());
+  host.innerHTML = newHtml;
+  host.dataset.built = "1";
+  if (isFirst) {
+    // Первый рендер: fade-in карточек
+    host.querySelectorAll('.crd').forEach((c, i) => {
+      c.style.animationDelay = (i * 0.03) + 's';
+      c.classList.add('card-appear');
+    });
+  } else {
+    // Повторный рендер: мигаем изменившимися значениями
+    Array.from(host.querySelectorAll('.val')).forEach((el, i) => {
+      if (oldVals[i] !== undefined && oldVals[i] !== el.textContent.trim()) {
+        el.classList.remove('cell-updated');
+        void el.offsetWidth;
+        el.classList.add('cell-updated');
+      }
+    });
+  }
+}
+
+function _buildSummaryHtml(s, hasError) {
+  return `<div class="sgroups">
     <div class="sgrp">
       <div class="sgrp-lbl">Сервис</div>
       <div class="sgrp-cards">
@@ -513,7 +593,14 @@ async function refreshQuotesOnly() {
   const map = {};
   for (const q of quotes) map[q.figi] = q;
   document.querySelectorAll(".live-price[data-figi]").forEach((el) => {
-    if (map[el.dataset.figi]) el.textContent = map[el.dataset.figi].last_price_ui;
+    const q = map[el.dataset.figi];
+    if (!q) return;
+    const prev = el.textContent;
+    const next = q.last_price_ui;
+    if (prev !== next) {
+      el.textContent = next;
+      _flashCell(el);
+    }
   });
   document.querySelectorAll(".live-time[data-figi]").forEach((el) => {
     if (map[el.dataset.figi]) el.textContent = map[el.dataset.figi].price_time;
@@ -2265,15 +2352,30 @@ async function sandboxResetBalance() {
 let _mainChartInterval = "1min";
 let _mainChartHours    = 4;
 let _mainChartFigis    = [];  // [{figi, ticker}]
-const _prevSignals     = {};  // figi → {action, time} — для обнаружения смены сигнала
+const _prevSignals     = {};  // figi → {action, time}
+let _psLastUpdate      = 0;   // timestamp последнего обновления тикеров
+let _psLastFigis       = "";  // список figi для определения нужности перерисовки графиков
 
-// CSS-анимация мигания строки (вставляется один раз)
+// CSS-анимации (вставляются один раз)
 (function() {
   if (!document.getElementById('sig-flash-style')) {
     const s = document.createElement('style');
     s.id = 'sig-flash-style';
-    s.textContent = `@keyframes sigFlash{0%{background:rgba(76,141,255,.35)}50%{background:rgba(76,141,255,.15)}100%{background:inherit}}` +
-      `.sig-flash{animation:sigFlash .8s ease-out 3}`;
+    s.textContent = [
+      // Строка при смене сигнала BUY/SELL — синяя волна
+      `@keyframes sigFlash{0%{background:rgba(76,141,255,.4)}60%{background:rgba(76,141,255,.15)}100%{background:inherit}}`,
+      `.sig-flash{animation:sigFlash .9s ease-out 2}`,
+      // Ячейка при изменении значения — зелёный акцент
+      `@keyframes cellUpd{0%{background:rgba(47,163,107,.45)}100%{background:transparent}}`,
+      `.cell-updated{animation:cellUpd .7s ease-out forwards}`,
+      // Мигающая точка «live» — пульс
+      `@keyframes liveDot{0%,100%{opacity:1}50%{opacity:.25}}`,
+      `.live-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#2fa36b;animation:liveDot 1.4s ease-in-out infinite;vertical-align:middle;margin-right:5px}`,
+      `.live-dot.stale{background:#888;animation:none}`,
+      // Fade-in для карточек при первом рендере
+      `@keyframes fadeInUp{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}`,
+      `.card-appear{animation:fadeInUp .25s ease-out}`,
+    ].join('');
     document.head.appendChild(s);
   }
 })();
@@ -2373,42 +2475,90 @@ async function refreshParallelStatus() {
       </tr>`;
     }).join("");
 
-    body.innerHTML = `
-      <div class="table-wrap" style="margin-bottom:12px">
-        <table><thead><tr>
-          <th>Стратегия</th><th>Статус</th>
-          <th>PnL день</th><th>PnL нед.</th><th>PnL мес.</th>
-          <th>Win% мес.</th><th>Сделок мес.</th><th>Обновлено</th>
-        </tr></thead><tbody>${stratRows}</tbody></table>
-      </div>
-      <div class="table-wrap">
-        <table><thead><tr>
-          <th>Тикер</th><th>Лоты (стоимость)</th><th>SL/TP</th>
-          <th>Цена</th><th>Обновлено</th><th>Объём 1м</th><th>Сигнал</th>
-        </tr></thead><tbody>${instrRows}</tbody></table>
-      </div>
-      ${coord.owner_strategy_id != null ? `<div class="note" style="margin-top:8px;color:#f5a623">
-        &#9679; Открыта позиция по ${esc(coord.owner_ticker || coord.owner_figi || "?")} — новые ордера заблокированы до её закрытия
-      </div>` : ""}`;
+    // ── Инициализация структуры тела (один раз) ──────────────────────────────
+    if (!body.dataset.built) {
+      body.dataset.built = "1";
+      body.innerHTML = `
+        <div class="table-wrap" style="margin-bottom:12px">
+          <table><thead><tr>
+            <th>Стратегия</th><th>Статус</th>
+            <th>PnL день</th><th>PnL нед.</th><th>PnL мес.</th>
+            <th>Win% мес.</th><th>Сделок мес.</th><th>Обновлено</th>
+          </tr></thead><tbody id="_psStratBody"></tbody></table>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;margin:6px 0 4px">
+          <span class="live-dot" id="_psLiveDot"></span>
+          <span style="font-size:11px;color:#9fb3d8" id="_psUpdTime"></span>
+        </div>
+        <div class="table-wrap">
+          <table><thead><tr>
+            <th>Тикер</th><th>Лоты (стоимость)</th><th>SL/TP</th>
+            <th>Цена</th><th>Обновлено</th><th>Объём 1м</th><th>Сигнал</th>
+          </tr></thead><tbody id="_psInstrBody"></tbody></table>
+        </div>
+        <div id="_psCoordNote"></div>`;
+    }
 
-    // Мигание строк при смене сигнала
+    // ── Стратегии (diff) ──────────────────────────────────────────────────────
+    diffTbody(document.getElementById('_psStratBody'), stratRows);
+
+    // ── Инструменты: smart row diff с мигающими ячейками ─────────────────────
+    const instrTbody = document.getElementById('_psInstrBody');
+    if (instrTbody) {
+      // Сохраняем старые данные до перезаписи
+      const prevHtml = {};
+      instrTbody.querySelectorAll('tr[data-figi]').forEach(tr => {
+        prevHtml[tr.dataset.figi] = Array.from(tr.cells).map(c => c.innerHTML);
+      });
+
+      diffTbody(instrTbody, instrRows);
+
+      // Мигание ячеек изменившихся строк
+      instrTbody.querySelectorAll('tr[data-figi]').forEach(tr => {
+        const figi = tr.dataset.figi;
+        const old = prevHtml[figi];
+        if (!old) return; // новая строка — не мигаем
+        Array.from(tr.cells).forEach((cell, c) => {
+          if (old[c] !== cell.innerHTML) _flashCell(cell);
+        });
+      });
+    }
+
+    // ── Сигнальная анимация строк при смене action ─────────────────────────
     instruments.forEach(i => {
       const prev = _prevSignals[i.figi];
-      const changed = prev && (prev.action !== i.signal_action || prev.time !== i.signal_time) && i.signal_action !== "HOLD";
+      const changed = prev && (prev.action !== i.signal_action || prev.time !== i.signal_time)
+                      && i.signal_action !== "HOLD";
       _prevSignals[i.figi] = { action: i.signal_action, time: i.signal_time };
       if (changed) {
-        const tr = body.querySelector(`tr[data-figi="${i.figi}"]`);
-        if (tr) {
-          tr.classList.remove('sig-flash');
-          void tr.offsetWidth; // reflow to restart animation
-          tr.classList.add('sig-flash');
-        }
+        const tr = instrTbody && instrTbody.querySelector(`tr[data-figi="${i.figi}"]`);
+        if (tr) { tr.classList.remove('sig-flash'); void tr.offsetWidth; tr.classList.add('sig-flash'); }
       }
     });
 
-    // Обновляем figis для графиков
-    _mainChartFigis = instruments.map(i => ({figi: i.figi, ticker: i.ticker}));
-    await _renderMainCharts();
+    // ── Заметка о координаторе позиции ────────────────────────────────────────
+    const coordNote = document.getElementById('_psCoordNote');
+    if (coordNote) {
+      coordNote.innerHTML = coord.owner_strategy_id != null
+        ? `<div class="note" style="margin-top:6px;color:#f5a623">&#9679; Открыта позиция по ${esc(coord.owner_ticker || coord.owner_figi || "?")} — новые ордера заблокированы</div>`
+        : "";
+    }
+
+    // ── Live-dot + "обновлено X сек назад" ────────────────────────────────────
+    const now = Date.now();
+    _psLastUpdate = now;
+    const dot = document.getElementById('_psLiveDot');
+    if (dot) { dot.classList.remove('stale'); }
+
+    // ── Графики: только если список инструментов изменился ────────────────────
+    const newFigis = instruments.map(i => i.figi).join(',');
+    if (newFigis !== (_psLastFigis || "")) {
+      _psLastFigis = newFigis;
+      _mainChartFigis = instruments.map(i => ({figi: i.figi, ticker: i.ticker}));
+      await _renderMainCharts();
+    } else {
+      _mainChartFigis = instruments.map(i => ({figi: i.figi, ticker: i.ticker}));
+    }
   } catch (e) { console.error("refreshParallelStatus:", e); }
 }
 
@@ -3653,15 +3803,50 @@ function bindRouter() {
 function startRefreshLoops() {
   if (refreshTimersStarted) return;
   refreshTimersStarted = true;
+
+  // ── Тикеры + сигналы (самое важное — 3 сек) ──────────────────────────────
+  setInterval(async () => {
+    try { if (getTabFromHash() === "главное") await refreshParallelStatus(); } catch {}
+  }, REFRESH_PARALLEL_MS);
+
+  // ── Summary cards — баланс, статус (4 сек) ──────────────────────────────
   setInterval(async () => {
     try { if (getTabFromHash() === "главное") await renderSummaryCards(); } catch {}
   }, REFRESH_SUMMARY_MS);
+
+  // ── Цены в позициях (2 сек) ───────────────────────────────────────────────
   setInterval(async () => {
     try { await refreshQuotesOnly(); } catch {}
   }, REFRESH_QUOTES_MS);
+
+  // ── Портфель (5 сек когда вкладка активна) ────────────────────────────────
   setInterval(async () => {
     try { if (getTabFromHash() === "портфель") await renderPortfolioTab(); } catch {}
   }, REFRESH_PORTFOLIO_MS);
+
+  // ── История: только сделки за сегодня (8 сек когда вкладка активна) ───────
+  setInterval(async () => {
+    try {
+      if (getTabFromHash() === "история") {
+        await _histLoadStats();
+        await _histLoadTradesAndLogs();
+      }
+    } catch {}
+  }, REFRESH_TRADES_MS);
+
+  // ── "Live dot" + счётчик "X сек назад" (каждую секунду) ──────────────────
+  setInterval(() => {
+    const el = document.getElementById('_psUpdTime');
+    const dot = document.getElementById('_psLiveDot');
+    if (!el) return;
+    const age = _psLastUpdate ? Math.round((Date.now() - _psLastUpdate) / 1000) : null;
+    if (age === null) { el.textContent = ""; return; }
+    el.textContent = age < 5 ? "только что" : `${age} сек назад`;
+    if (dot) {
+      if (age > 10) dot.classList.add('stale');
+      else dot.classList.remove('stale');
+    }
+  }, 1000);
 }
 
 async function bootstrapDashboard() {
