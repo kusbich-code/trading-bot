@@ -2265,6 +2265,18 @@ async function sandboxResetBalance() {
 let _mainChartInterval = "1min";
 let _mainChartHours    = 4;
 let _mainChartFigis    = [];  // [{figi, ticker}]
+const _prevSignals     = {};  // figi → {action, time} — для обнаружения смены сигнала
+
+// CSS-анимация мигания строки (вставляется один раз)
+(function() {
+  if (!document.getElementById('sig-flash-style')) {
+    const s = document.createElement('style');
+    s.id = 'sig-flash-style';
+    s.textContent = `@keyframes sigFlash{0%{background:rgba(76,141,255,.35)}50%{background:rgba(76,141,255,.15)}100%{background:inherit}}` +
+      `.sig-flash{animation:sigFlash .8s ease-out 3}`;
+    document.head.appendChild(s);
+  }
+})();
 
 async function refreshParallelStatus() {
   try {
@@ -2341,7 +2353,7 @@ async function refreshParallelStatus() {
       const tickerCell = isCoordOwner
         ? `<b>${esc(i.ticker)}</b> <span style="color:#f5a623;font-size:10px">&#9679; позиция</span>`
         : `<b>${esc(i.ticker)}</b>`;
-      return `<tr style="${rowBg(idx)}">
+      return `<tr data-figi="${esc(i.figi)}" style="${rowBg(idx)}">
         <td>${tickerCell}</td>
         <td>${esc(i.lots)} <span class="muted" style="font-size:10px">(${esc(i.lot_cost_ui || "")})</span></td>
         <td class="muted" style="white-space:nowrap">
@@ -2378,6 +2390,21 @@ async function refreshParallelStatus() {
       ${coord.owner_strategy_id != null ? `<div class="note" style="margin-top:8px;color:#f5a623">
         &#9679; Открыта позиция по ${esc(coord.owner_ticker || coord.owner_figi || "?")} — новые ордера заблокированы до её закрытия
       </div>` : ""}`;
+
+    // Мигание строк при смене сигнала
+    instruments.forEach(i => {
+      const prev = _prevSignals[i.figi];
+      const changed = prev && (prev.action !== i.signal_action || prev.time !== i.signal_time) && i.signal_action !== "HOLD";
+      _prevSignals[i.figi] = { action: i.signal_action, time: i.signal_time };
+      if (changed) {
+        const tr = body.querySelector(`tr[data-figi="${i.figi}"]`);
+        if (tr) {
+          tr.classList.remove('sig-flash');
+          void tr.offsetWidth; // reflow to restart animation
+          tr.classList.add('sig-flash');
+        }
+      }
+    });
 
     // Обновляем figis для графиков
     _mainChartFigis = instruments.map(i => ({figi: i.figi, ticker: i.ticker}));

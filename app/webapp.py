@@ -2010,16 +2010,31 @@ async def api_strategy_instruments_add(strategy_id: int, request: Request):
         figi = (item.get("figi") or "").strip()
         if not figi:
             continue
+
+        # Всегда берём lot и min_price_increment из брокера — не доверяем фронтенду
+        real_lot = int(item.get("lot") or 1)
+        real_step = str(item.get("min_price_increment", item.get("minpriceincrement", "0.01")) or "0.01")
+        real_uid = (item.get("uid") or item.get("instrument_uid") or "").strip()
+        try:
+            from app.instruments import get_instrument_meta
+            _meta = get_instrument_meta(figi)
+            if _meta:
+                real_lot = int(_meta.get("lot") or real_lot)
+                real_step = str(_meta.get("min_price_increment") or real_step)
+                real_uid = real_uid or _meta.get("uid", "")
+        except Exception as _e:
+            logger.warning("Не удалось получить метаданные для %s: %s", figi, _e)
+
         inst = {
             "ticker": (item.get("ticker") or "").strip(),
             "figi": figi,
-            "instrument_uid": (item.get("uid") or item.get("instrument_uid") or "").strip(),
+            "instrument_uid": real_uid,
             "name": item.get("name", ""),
             "class_code": item.get("class_code", item.get("classcode", "")),
             "instrument_type": item.get("instrument_type", item.get("instrumenttype", "share")),
             "currency": item.get("currency", "RUB"),
-            "lot": int(item.get("lot") or 1),
-            "min_price_increment": str(item.get("min_price_increment", item.get("minpriceincrement", "0.01")) or "0.01"),
+            "lot": real_lot,
+            "min_price_increment": real_step,
             "lots_override": int(item.get("lots_override", 1) or 1),
             "stop_loss_pct": str(item.get("stop_loss_pct", "0.0025") or "0.0025"),
             "take_profit_pct": str(item.get("take_profit_pct", "0.005") or "0.005"),
