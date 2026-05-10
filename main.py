@@ -1792,7 +1792,7 @@ def process_instrument(client, item,
         if _coord is not None and not _coord.try_claim(_strategy_id, figi, ticker):
             return  # другой поток только что захватил первым
 
-        order_result = place_order_checked(client, ticker, figi, lot, price, OrderDirection.ORDER_DIRECTION_BUY)
+        order_result = place_order_checked(client, ticker, figi, lot, price, OrderDirection.ORDER_DIRECTION_BUY, market=True)
         if not order_result:
             state.order_cooldowns[figi] = _now()
             if _coord is not None:
@@ -1840,7 +1840,7 @@ def process_instrument(client, item,
         if _coord is not None and not _coord.try_claim(_strategy_id, figi, ticker):
             return
 
-        order_result = place_order_checked(client, ticker, figi, lot, price, OrderDirection.ORDER_DIRECTION_SELL)
+        order_result = place_order_checked(client, ticker, figi, lot, price, OrderDirection.ORDER_DIRECTION_SELL, market=True)
         if not order_result:
             state.order_cooldowns[figi] = _now()
             if _coord is not None:

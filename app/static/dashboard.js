@@ -312,26 +312,10 @@ function _buildSummaryHtml(s, hasError) {
             </div>`;
           }).join("")}
         </div>` : "";
-      const tvHtml = `
-        <div style="flex:1;min-width:280px">
-          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;cursor:pointer" onclick="toggleRbkTv()">
-            <span style="font-size:12px;font-weight:700;color:#eef4ff">📺 РБК ТВ</span>
-            <span style="font-size:10px;color:#4c8dff;background:rgba(76,141,255,.15);border:1px solid rgba(76,141,255,.3);border-radius:4px;padding:1px 5px">LIVE</span>
-            <span id="rbkToggleIcon" style="font-size:10px;color:#9fb3d8;margin-left:auto">▲</span>
-          </div>
-          <div id="rbkTvContainer">
-            <iframe
-              src="https://www.youtube.com/embed/live_stream?channel=UCDRauHqcaOtK9oaQqLoxWRw&autoplay=1&mute=1"
-              style="width:100%;height:220px;border:none;border-radius:6px;background:#000"
-              allow="autoplay; fullscreen; picture-in-picture"
-              allowfullscreen>
-            </iframe>
-          </div>
-        </div>`;
       return `<div class="sgrp" style="flex:1;min-width:320px">
         <div class="sgrp-lbl" style="${warn ? 'color:#f0a500;border-color:#f0a500' : ''}">API лимит <span style="font-weight:400;font-size:10px;opacity:.6">(бот, дашборд не учтён)</span></div>
-        <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-start">
-          <div class="sgrp-cards" style="flex:0 0 auto;min-width:200px">
+        <div style="display:grid;grid-template-columns:minmax(200px,auto) 1fr;gap:14px;align-items:start">
+          <div>
             <div class="crd" style="background:${bg}">
               <div class="lbl">Запросов/мин</div>
               <div class="val" style="color:${color};font-size:15px">${s.api_rpm} <span style="font-size:11px;opacity:.7">/ ${s.api_rpm_limit}</span></div>
@@ -341,9 +325,24 @@ function _buildSummaryHtml(s, hasError) {
               ${breakdownHtml}
             </div>
           </div>
-          ${tvHtml}
+          <div>
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;cursor:pointer" onclick="toggleRbkTv()">
+              <span style="font-size:12px;font-weight:700;color:#eef4ff">📺 РБК ТВ</span>
+              <span style="font-size:10px;color:#e8404a;background:rgba(232,64,74,.15);border:1px solid rgba(232,64,74,.4);border-radius:4px;padding:1px 5px">● LIVE</span>
+              <span id="rbkToggleIcon" style="font-size:10px;color:#9fb3d8;margin-left:auto">▲ скрыть</span>
+            </div>
+            <div id="rbkTvContainer">
+              <iframe
+                src="https://tv.rbc.ru/"
+                style="width:100%;height:240px;border:none;border-radius:8px;background:#000"
+                allow="autoplay; fullscreen; picture-in-picture"
+                allowfullscreen
+                loading="lazy">
+              </iframe>
+            </div>
+          </div>
         </div>
-        ${warn ? `<div style="font-size:11px;color:#f0a500;margin-top:4px;padding:0 2px">⚠️ ${pct >= 95 ? 'Лимит почти исчерпан — возможны ошибки RESOURCE_EXHAUSTED' : 'Нагрузка высокая — рекомендуется увеличить интервал стратегий'}</div>` : ''}
+        ${warn ? `<div style="font-size:11px;color:#f0a500;margin-top:6px">⚠️ ${pct >= 95 ? 'Лимит почти исчерпан — возможны ошибки RESOURCE_EXHAUSTED' : 'Нагрузка высокая — рекомендуется увеличить интервал стратегий'}</div>` : ''}
       </div>`;
     })() : ""}
   </div>`;
