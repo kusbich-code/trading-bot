@@ -412,17 +412,17 @@ def dashboard_page():
       <a href="#/аналитик" class="tab-link" data-tab-link="аналитик">Аналитик</a>
     </nav>
 
-    <section id="summaryCards" class="summary-grid"></section>
-
-    <section id="newsWidget" style="display:none;margin-bottom:18px">
-      <iframe
-        src="https://freeserv.dukascopy.com/2.0/?path=news_reel%2Findex&lang=ru&bgColor=0a1628&lnkColor=4c8dff&header=0&rows=14"
-        style="width:100%;height:270px;border:none;border-radius:8px;background:#0a1628"
-        frameborder="0"
-        allowtransparency="true"
-        loading="lazy">
-      </iframe>
-    </section>
+    <div id="mainSummaryRow" style="display:none;flex-wrap:wrap;gap:14px;align-items:flex-start;margin-bottom:18px">
+      <section id="summaryCards" class="summary-grid" style="flex:1;min-width:300px;margin-bottom:0"></section>
+      <div id="newsWidget" style="flex:0 0 380px;min-width:260px;border-radius:8px;overflow:hidden">
+        <div class="tradingview-widget-container" style="height:270px">
+          <div class="tradingview-widget-container__widget" style="height:100%"></div>
+          <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-timeline.js" async>
+          {"feedMode":"market","market":"stock","isTransparent":true,"displayMode":"compact","width":"100%","height":270,"colorTheme":"dark","locale":"ru"}
+          </script>
+        </div>
+      </div>
+    </div>
 
     <section id="view-main" data-view="главное"></section>
     <section id="view-portfolio" data-view="портфель" class="hidden"></section>
@@ -554,6 +554,9 @@ def api_dashboard_main():
             "pct_change": f"{pct:+.2f}%",
             "pnl_positive": pnl_d >= 0,
             "opened_at": opened_at,
+            "avg_price_raw": float(avg_d),
+            "qty_raw": float(qty),
+            "position_value_ui": fmt_money(cur_d * qty),
         }
 
     with _portfolio_cache_lock:

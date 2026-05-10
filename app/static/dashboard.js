@@ -213,7 +213,8 @@ async function renderSummaryCards() {
   const s = await apiGet("/api/dashboard/summary");
   const host = document.getElementById("summaryCards");
   if (!host) return;
-  host.style.cssText = "display:block;margin-bottom:18px";
+  const wrapper = document.getElementById("mainSummaryRow");
+  if (wrapper && wrapper.style.display === "none") wrapper.style.display = "flex";
   const hasError = s.last_error && s.last_error !== "—";
 
   const newHtml = _buildSummaryHtml(s, hasError);
@@ -340,12 +341,9 @@ function helpCard(title, bullets) {
 }
 
 function toggleSummaryCardsVisibility() {
-  const host = document.getElementById("summaryCards");
-  if (!host) return;
-  const show = getTabFromHash() === "главное";
-  host.style.display = show ? "grid" : "none";
-  const news = document.getElementById("newsWidget");
-  if (news) news.style.display = show ? "block" : "none";
+  const wrapper = document.getElementById("mainSummaryRow");
+  if (!wrapper) return;
+  wrapper.style.display = getTabFromHash() === "главное" ? "flex" : "none";
 }
 
 // ── Main tab ──────────────────────────────────────────────────────────────────
@@ -430,7 +428,7 @@ async function renderMainShell() {
       <div class="row between"><h2>Позиции <span class="note">(API брокера)</span></h2></div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Тикер</th><th>Направление</th><th>Лотов</th><th>Вход</th><th>Тек. цена</th><th>Изм.%</th><th>ПнЛ</th><th>Действие</th></tr></thead>
+          <thead><tr><th>Тикер</th><th>Направление</th><th>Лотов</th><th>Вход</th><th>Тек. цена</th><th>Изм.%</th><th>ПнЛ</th><th>Сумма</th><th>Действие</th></tr></thead>
           <tbody id="mainPositionsBody"></tbody>
         </table>
       </div>
@@ -469,14 +467,15 @@ async function renderMainData() {
       const pnlColor = pnlVal >= 0 ? "#2fa36b" : "#ff7b7b";
       const pct = p.pct_change || "";
       const pctColor = pct.startsWith("+") ? "#2fa36b" : pct.startsWith("-") ? "#ff7b7b" : "#9fb3d8";
-      return `<tr>
+      return `<tr data-figi="${esc(p.figi)}" data-qty="${p.qty_raw||0}" data-avg="${p.avg_price_raw||0}" data-dir="${esc(p.direction)}">
         <td><b>${esc(p.ticker)}</b></td>
         <td>${dirBadge}</td>
         <td>${esc(p.qty)}</td>
         <td class="muted">${esc(p.entry_price_ui)}</td>
-        <td><b>${esc(p.current_price_ui)}</b></td>
-        <td style="color:${pctColor};font-weight:600">${esc(pct)}</td>
-        <td style="font-weight:700;color:${pnlColor}">${esc(p.unrealized_pnl_ui)}</td>
+        <td class="live-pos-price"><b>${esc(p.current_price_ui)}</b></td>
+        <td class="live-pos-pct" style="color:${pctColor};font-weight:600">${esc(pct)}</td>
+        <td class="live-pos-pnl" style="font-weight:700;color:${pnlColor}">${esc(p.unrealized_pnl_ui)}</td>
+        <td class="live-pos-value" style="color:#9fb3d8;font-size:12px">${esc(p.position_value_ui||"—")}</td>
         <td>${p.figi && p.qty && p.direction ? `
           <button class="btn btn-danger" style="padding:5px 10px"
             onclick="closeOnePosition('${esc(p.figi)}','${esc(p.qty)}','${esc(p.direction)}')">
@@ -608,6 +607,47 @@ async function refreshQuotesOnly() {
   document.querySelectorAll(".live-time[data-figi]").forEach((el) => {
     if (map[el.dataset.figi]) el.textContent = map[el.dataset.figi].price_time;
   });
+
+  // ── Live positions: price / pct / pnl / value ─────────────────────────────
+  document.querySelectorAll("#mainPositionsBody tr[data-figi]").forEach(row => {
+    const q = map[row.dataset.figi];
+    if (!q) return;
+    const price = parseFloat(q.last_price_ui) || 0;
+    if (!price) return;
+    const qty = parseFloat(row.dataset.qty) || 0;
+    const avg  = parseFloat(row.dataset.avg) || 0;
+    const dir  = row.dataset.dir || "BUY";
+    if (!qty || !avg) return;
+
+    const pnl   = dir === "BUY" ? (price - avg) * qty : (avg - price) * qty;
+    const pct   = (price - avg) / avg * 100;
+    const value = price * qty;
+
+    const _upd = (sel, text, color) => {
+      const el = row.querySelector(sel);
+      if (!el) return;
+      if (el.textContent.trim() === text && (!color || el.style.color === color)) return;
+      el.textContent = text;
+      if (color) el.style.color = color;
+      _flashCell(el);
+    };
+
+    const priceUi = price === 0 ? "—" : price.toFixed(2);
+    const pctUi   = (pct >= 0 ? "+" : "") + pct.toFixed(2) + "%";
+    const pnlUi   = pnl.toFixed(2);
+    const valUi   = _fmtSum(value);
+
+    _upd(".live-pos-price", priceUi, null);
+    _upd(".live-pos-pct",   pctUi,   pct >= 0 ? "#2fa36b" : "#ff7b7b");
+    _upd(".live-pos-pnl",   pnlUi,   pnl >= 0 ? "#2fa36b" : "#ff7b7b");
+    _upd(".live-pos-value", valUi,   null);
+  });
+}
+
+function _fmtSum(v) {
+  if (!v && v !== 0) return "—";
+  const n = Math.round(parseFloat(v));
+  return n.toLocaleString("ru-RU") + " ₽";
 }
 
 // ── Settings tab ──────────────────────────────────────────────────────────────
