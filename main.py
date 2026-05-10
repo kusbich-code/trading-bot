@@ -976,7 +976,9 @@ def maybe_reset_daily():
         log_event("DAILY_RESET", "Daily counters reset")
 
 
-def place_order_checked(client, ticker: str, figi: str, lots: int, raw_price: Decimal, direction: OrderDirection):
+def place_order_checked(client, ticker: str, figi: str, lots: int, raw_price: Decimal, direction: OrderDirection,
+                        market: bool = False):
+    """market=True → рыночный ордер (для закрытия позиций, гарантирует исполнение)."""
     meta = state.instrument_meta.get(ticker)
     if not meta:
         log_event("ORDER_ERROR", "NO_META_SKIP", ticker=ticker, level="ERROR")
@@ -989,15 +991,18 @@ def place_order_checked(client, ticker: str, figi: str, lots: int, raw_price: De
 
     try:
         uid = meta.get("instrument_uid", "") or ""
-        resp = client.orders.post_order(
+        order_type = OrderType.ORDER_TYPE_MARKET if market else OrderType.ORDER_TYPE_LIMIT
+        post_kwargs: dict = dict(
             instrument_id=uid or figi,
             quantity=lots,
-            price=q,
             direction=direction,
             account_id=settings.TINVEST_ACCOUNT_ID,
-            order_type=OrderType.ORDER_TYPE_LIMIT,
+            order_type=order_type,
             order_id=request_order_id,
         )
+        if not market:
+            post_kwargs["price"] = q
+        resp = client.orders.post_order(**post_kwargs)
 
         response_order_id = getattr(resp, "order_id", request_order_id)
         log_event("ORDER_OPEN", f"post_order success request={request_order_id} response={response_order_id}", ticker=ticker)
@@ -1651,7 +1656,7 @@ def process_instrument(client, item,
             close_dir = OrderDirection.ORDER_DIRECTION_SELL if direction == "BUY" else OrderDirection.ORDER_DIRECTION_BUY
             # Отменяем ВСЕ ордера по figi перед закрытием (нативные стопы + лимитники)
             _cancel_all_orders_for_figi(client, figi, ticker)
-            order_result = place_order_checked(client, ticker, figi, qty, price, close_dir)
+            order_result = place_order_checked(client, ticker, figi, qty, price, close_dir, market=True)
             if not order_result:
                 return
 
