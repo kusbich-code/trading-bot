@@ -484,7 +484,7 @@ def dashboard_page():
     </div>
   </div>
 
-  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js" defer></script>
+  <script src="/static/plotly-2.35.2.min.js" defer></script>
   <script src="/static/dashboard.js?v={v}" defer></script>
 </body>
 </html>""")
