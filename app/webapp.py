@@ -560,9 +560,10 @@ def api_dashboard_main():
     # Priority: portfolio_stream cache → get_broker_positions() REST → BOT DB
     def _fmt_pos(figi, direction, qty, avg, cur, pnl, opened_at=""):
         avg_d = safe_decimal(avg)
-        # Текущую цену берём из market_state (свежее чем portfolio stream который может устаревать)
+        # Брокерская current_price — самая точная (именно её видит терминал)
+        broker_price = safe_decimal(cur)
         mkt_price = safe_decimal(market_map.get(figi, {}).get("last_price", 0))
-        cur_d = mkt_price if mkt_price > 0 else safe_decimal(cur)
+        cur_d = broker_price if broker_price > 0 else mkt_price
         # PnL пересчитываем по свежей цене
         if direction == "BUY":
             pnl_d = (cur_d - avg_d) * qty
@@ -679,13 +680,24 @@ def api_multi_candles(figis: str = "", interval: str = "1min", hours: int = 4):
 
 @app.get("/api/dashboard/quotes")
 def api_dashboard_quotes():
+    # Брокерские цены из кэша портфеля (самые точные — те что видит терминал)
+    with _portfolio_cache_lock:
+        cached_pos = _portfolio_cache.get("positions") or []
+    broker_prices = {p["figi"]: safe_decimal(p.get("current_price", 0)) for p in cached_pos}
+
     rows = get_instrument_market_state()
-    return JSONResponse([{
-        "figi": r.get("figi", ""),
-        "ticker": r.get("ticker", ""),
-        "last_price_ui": fmt_money(r.get("last_price", 0)),
-        "price_time": r.get("price_time", "-"),
-    } for r in rows])
+    result = []
+    for r in rows:
+        figi = r.get("figi", "")
+        mkt = safe_decimal(r.get("last_price", 0))
+        price = broker_prices.get(figi) or mkt
+        result.append({
+            "figi": figi,
+            "ticker": r.get("ticker", ""),
+            "last_price_ui": fmt_money(price),
+            "price_time": r.get("price_time", "-"),
+        })
+    return JSONResponse(result)
 
 
 @app.get("/api/dashboard/portfolio")
