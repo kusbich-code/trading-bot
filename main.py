@@ -879,12 +879,24 @@ def is_tradable(status) -> bool:
 
 
 def get_money_balance(client) -> float:
+    """Возвращает ДОСТУПНЫЕ наличные (withdraw_limits.money) — то что брокер реально разрешит потратить.
+    НЕ total_amount_portfolio — тот включает нереализованный PnL позиций и может вводить в заблуждение.
+    """
     try:
         _rate.record("GetPortfolio")
+        wl = client.operations.get_withdraw_limits(account_id=settings.TINVEST_ACCOUNT_ID)
+        rub = next(
+            (quotation_to_decimal(m) for m in getattr(wl, "money", [])
+             if (getattr(m, "currency", "") or "").lower() in ("rub", "ruble", "")),
+            None,
+        )
+        if rub is not None:
+            return float(rub)
+        # Fallback: total_amount_currencies из portfolio
         portfolio = client.operations.get_portfolio(account_id=settings.TINVEST_ACCOUNT_ID)
-        total = getattr(portfolio, "total_amount_portfolio", None)
-        if total:
-            return float(quotation_to_decimal(total))
+        curr = getattr(portfolio, "total_amount_currencies", None)
+        if curr:
+            return float(quotation_to_decimal(curr))
     except Exception as e:
         log.warning(f"Не удалось получить баланс портфеля: {e}")
     return 0.0

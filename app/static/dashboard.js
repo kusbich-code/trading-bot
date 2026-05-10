@@ -312,17 +312,36 @@ function _buildSummaryHtml(s, hasError) {
             </div>`;
           }).join("")}
         </div>` : "";
-      return `<div class="sgrp">
-        <div class="sgrp-lbl" style="${warn ? 'color:#f0a500;border-color:#f0a500' : ''}">API лимит <span style="font-weight:400;font-size:10px;opacity:.6">(бот, дашборд не учтён)</span></div>
-        <div class="sgrp-cards">
-          <div class="crd" style="background:${bg}">
-            <div class="lbl">Запросов/мин</div>
-            <div class="val" style="color:${color};font-size:15px">${s.api_rpm} <span style="font-size:11px;opacity:.7">/ ${s.api_rpm_limit}</span></div>
-            <div style="background:rgba(255,255,255,.08);border-radius:4px;height:4px;margin-top:4px;overflow:hidden">
-              <div style="height:100%;width:${Math.min(pct,100)}%;background:${color};border-radius:4px;transition:width .5s"></div>
-            </div>
-            ${breakdownHtml}
+      const tvHtml = `
+        <div style="flex:1;min-width:280px">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;cursor:pointer" onclick="toggleRbkTv()">
+            <span style="font-size:12px;font-weight:700;color:#eef4ff">📺 РБК ТВ</span>
+            <span style="font-size:10px;color:#4c8dff;background:rgba(76,141,255,.15);border:1px solid rgba(76,141,255,.3);border-radius:4px;padding:1px 5px">LIVE</span>
+            <span id="rbkToggleIcon" style="font-size:10px;color:#9fb3d8;margin-left:auto">▲</span>
           </div>
+          <div id="rbkTvContainer">
+            <iframe
+              src="https://www.youtube.com/embed/live_stream?channel=UCDRauHqcaOtK9oaQqLoxWRw&autoplay=1&mute=1"
+              style="width:100%;height:220px;border:none;border-radius:6px;background:#000"
+              allow="autoplay; fullscreen; picture-in-picture"
+              allowfullscreen>
+            </iframe>
+          </div>
+        </div>`;
+      return `<div class="sgrp" style="flex:1;min-width:320px">
+        <div class="sgrp-lbl" style="${warn ? 'color:#f0a500;border-color:#f0a500' : ''}">API лимит <span style="font-weight:400;font-size:10px;opacity:.6">(бот, дашборд не учтён)</span></div>
+        <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-start">
+          <div class="sgrp-cards" style="flex:0 0 auto;min-width:200px">
+            <div class="crd" style="background:${bg}">
+              <div class="lbl">Запросов/мин</div>
+              <div class="val" style="color:${color};font-size:15px">${s.api_rpm} <span style="font-size:11px;opacity:.7">/ ${s.api_rpm_limit}</span></div>
+              <div style="background:rgba(255,255,255,.08);border-radius:4px;height:4px;margin-top:4px;overflow:hidden">
+                <div style="height:100%;width:${Math.min(pct,100)}%;background:${color};border-radius:4px;transition:width .5s"></div>
+              </div>
+              ${breakdownHtml}
+            </div>
+          </div>
+          ${tvHtml}
         </div>
         ${warn ? `<div style="font-size:11px;color:#f0a500;margin-top:4px;padding:0 2px">⚠️ ${pct >= 95 ? 'Лимит почти исчерпан — возможны ошибки RESOURCE_EXHAUSTED' : 'Нагрузка высокая — рекомендуется увеличить интервал стратегий'}</div>` : ''}
       </div>`;
@@ -370,26 +389,6 @@ async function renderMainShell() {
     </section>
 
     <div id="balanceWarningsBox"></div>
-
-    <!-- ── РБК ТВ стрим ── -->
-    <section class="block" id="rbkTvBlock" style="padding:10px 14px">
-      <div class="row between" style="margin-bottom:8px;cursor:pointer" onclick="toggleRbkTv()">
-        <div class="row" style="gap:8px;align-items:center">
-          <span style="font-size:13px;font-weight:700;color:#eef4ff">📺 РБК ТВ</span>
-          <span style="font-size:11px;color:#4c8dff;background:rgba(76,141,255,.15);border:1px solid rgba(76,141,255,.3);border-radius:4px;padding:1px 6px">LIVE</span>
-          <span style="font-size:10px;color:#9fb3d8">финансовые новости</span>
-        </div>
-        <span id="rbkToggleIcon" style="font-size:11px;color:#9fb3d8">▲ скрыть</span>
-      </div>
-      <div id="rbkTvContainer">
-        <iframe
-          src="https://www.rbc.ru/v10/iframe/live_channel.html?channel=tv&mute=0"
-          style="width:100%;height:360px;border:none;border-radius:6px;background:#000"
-          allow="autoplay; fullscreen"
-          allowfullscreen>
-        </iframe>
-      </div>
-    </section>
 
     <section class="block" id="sandboxBlock" style="display:none">
       <div class="row between">
