@@ -371,6 +371,26 @@ async function renderMainShell() {
 
     <div id="balanceWarningsBox"></div>
 
+    <!-- ── РБК ТВ стрим ── -->
+    <section class="block" id="rbkTvBlock" style="padding:10px 14px">
+      <div class="row between" style="margin-bottom:8px;cursor:pointer" onclick="toggleRbkTv()">
+        <div class="row" style="gap:8px;align-items:center">
+          <span style="font-size:13px;font-weight:700;color:#eef4ff">📺 РБК ТВ</span>
+          <span style="font-size:11px;color:#4c8dff;background:rgba(76,141,255,.15);border:1px solid rgba(76,141,255,.3);border-radius:4px;padding:1px 6px">LIVE</span>
+          <span style="font-size:10px;color:#9fb3d8">финансовые новости</span>
+        </div>
+        <span id="rbkToggleIcon" style="font-size:11px;color:#9fb3d8">▲ скрыть</span>
+      </div>
+      <div id="rbkTvContainer">
+        <iframe
+          src="https://www.rbc.ru/v10/iframe/live_channel.html?channel=tv&mute=0"
+          style="width:100%;height:360px;border:none;border-radius:6px;background:#000"
+          allow="autoplay; fullscreen"
+          allowfullscreen>
+        </iframe>
+      </div>
+    </section>
+
     <section class="block" id="sandboxBlock" style="display:none">
       <div class="row between">
         <div class="row">
@@ -2318,6 +2338,31 @@ async function telegramDiag() {
     if (box) box.innerHTML = `<div class="banner-warning" style="margin-top:8px">Ошибка: ${esc(e.message)}</div>`;
   }
 }
+
+function toggleRbkTv() {
+  const container = document.getElementById('rbkTvContainer');
+  const icon = document.getElementById('rbkToggleIcon');
+  if (!container) return;
+  const hidden = container.style.display === 'none';
+  container.style.display = hidden ? '' : 'none';
+  if (icon) icon.textContent = hidden ? '▲ скрыть' : '▼ показать';
+  try { localStorage.setItem('rbkTvHidden', hidden ? '0' : '1'); } catch {}
+}
+
+// Восстанавливаем состояние при загрузке
+(function() {
+  try {
+    if (localStorage.getItem('rbkTvHidden') === '1') {
+      // Применяем после рендера шелла
+      document.addEventListener('DOMContentLoaded', () => {
+        const c = document.getElementById('rbkTvContainer');
+        const icon = document.getElementById('rbkToggleIcon');
+        if (c) c.style.display = 'none';
+        if (icon) icon.textContent = '▼ показать';
+      }, {once: true});
+    }
+  } catch {}
+})();
 
 async function sandboxPayIn() {
   const select = document.getElementById("sandboxAmount");
