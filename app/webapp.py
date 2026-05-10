@@ -414,6 +414,16 @@ def dashboard_page():
 
     <section id="summaryCards" class="summary-grid"></section>
 
+    <section id="newsWidget" style="display:none;margin-bottom:18px">
+      <iframe
+        src="https://freeserv.dukascopy.com/2.0/?path=news_reel%2Findex&lang=ru&bgColor=0a1628&lnkColor=4c8dff&header=0&rows=14"
+        style="width:100%;height:270px;border:none;border-radius:8px;background:#0a1628"
+        frameborder="0"
+        allowtransparency="true"
+        loading="lazy">
+      </iframe>
+    </section>
+
     <section id="view-main" data-view="главное"></section>
     <section id="view-portfolio" data-view="портфель" class="hidden"></section>
     <section id="view-settings" data-view="настройки" class="hidden"></section>

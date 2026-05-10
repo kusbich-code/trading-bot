@@ -314,32 +314,14 @@ function _buildSummaryHtml(s, hasError) {
         </div>` : "";
       return `<div class="sgrp" style="flex:1;min-width:320px">
         <div class="sgrp-lbl" style="${warn ? 'color:#f0a500;border-color:#f0a500' : ''}">API лимит <span style="font-weight:400;font-size:10px;opacity:.6">(бот, дашборд не учтён)</span></div>
-        <div style="display:grid;grid-template-columns:minmax(200px,auto) 1fr;gap:14px;align-items:start">
-          <div>
-            <div class="crd" style="background:${bg}">
-              <div class="lbl">Запросов/мин</div>
-              <div class="val" style="color:${color};font-size:15px">${s.api_rpm} <span style="font-size:11px;opacity:.7">/ ${s.api_rpm_limit}</span></div>
-              <div style="background:rgba(255,255,255,.08);border-radius:4px;height:4px;margin-top:4px;overflow:hidden">
-                <div style="height:100%;width:${Math.min(pct,100)}%;background:${color};border-radius:4px;transition:width .5s"></div>
-              </div>
-              ${breakdownHtml}
+        <div class="sgrp-cards">
+          <div class="crd" style="background:${bg}">
+            <div class="lbl">Запросов/мин</div>
+            <div class="val" style="color:${color};font-size:15px">${s.api_rpm} <span style="font-size:11px;opacity:.7">/ ${s.api_rpm_limit}</span></div>
+            <div style="background:rgba(255,255,255,.08);border-radius:4px;height:4px;margin-top:4px;overflow:hidden">
+              <div style="height:100%;width:${Math.min(pct,100)}%;background:${color};border-radius:4px;transition:width .5s"></div>
             </div>
-          </div>
-          <div>
-            <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;cursor:pointer" onclick="toggleRbkTv()">
-              <span style="font-size:12px;font-weight:700;color:#eef4ff">📺 РБК ТВ</span>
-              <span style="font-size:10px;color:#e8404a;background:rgba(232,64,74,.15);border:1px solid rgba(232,64,74,.4);border-radius:4px;padding:1px 5px">● LIVE</span>
-              <span id="rbkToggleIcon" style="font-size:10px;color:#9fb3d8;margin-left:auto">▲ скрыть</span>
-            </div>
-            <div id="rbkTvContainer">
-              <iframe
-                src="https://tv.rbc.ru/"
-                style="width:100%;height:240px;border:none;border-radius:8px;background:#000"
-                allow="autoplay; fullscreen; picture-in-picture"
-                allowfullscreen
-                loading="lazy">
-              </iframe>
-            </div>
+            ${breakdownHtml}
           </div>
         </div>
         ${warn ? `<div style="font-size:11px;color:#f0a500;margin-top:6px">⚠️ ${pct >= 95 ? 'Лимит почти исчерпан — возможны ошибки RESOURCE_EXHAUSTED' : 'Нагрузка высокая — рекомендуется увеличить интервал стратегий'}</div>` : ''}
@@ -360,7 +342,10 @@ function helpCard(title, bullets) {
 function toggleSummaryCardsVisibility() {
   const host = document.getElementById("summaryCards");
   if (!host) return;
-  host.style.display = getTabFromHash() === "главное" ? "grid" : "none";
+  const show = getTabFromHash() === "главное";
+  host.style.display = show ? "grid" : "none";
+  const news = document.getElementById("newsWidget");
+  if (news) news.style.display = show ? "block" : "none";
 }
 
 // ── Main tab ──────────────────────────────────────────────────────────────────
@@ -2336,31 +2321,6 @@ async function telegramDiag() {
     if (box) box.innerHTML = `<div class="banner-warning" style="margin-top:8px">Ошибка: ${esc(e.message)}</div>`;
   }
 }
-
-function toggleRbkTv() {
-  const container = document.getElementById('rbkTvContainer');
-  const icon = document.getElementById('rbkToggleIcon');
-  if (!container) return;
-  const hidden = container.style.display === 'none';
-  container.style.display = hidden ? '' : 'none';
-  if (icon) icon.textContent = hidden ? '▲ скрыть' : '▼ показать';
-  try { localStorage.setItem('rbkTvHidden', hidden ? '0' : '1'); } catch {}
-}
-
-// Восстанавливаем состояние при загрузке
-(function() {
-  try {
-    if (localStorage.getItem('rbkTvHidden') === '1') {
-      // Применяем после рендера шелла
-      document.addEventListener('DOMContentLoaded', () => {
-        const c = document.getElementById('rbkTvContainer');
-        const icon = document.getElementById('rbkToggleIcon');
-        if (c) c.style.display = 'none';
-        if (icon) icon.textContent = '▼ показать';
-      }, {once: true});
-    }
-  } catch {}
-})();
 
 async function sandboxPayIn() {
   const select = document.getElementById("sandboxAmount");
