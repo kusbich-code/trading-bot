@@ -505,7 +505,7 @@ def api_news():
         return JSONResponse(_news_cache["data"])
     try:
         req = urllib.request.Request(
-            "https://www.finam.ru/analysis/newsitem/rss/",
+            "https://www.kommersant.ru/RSS/section-economics.xml",
             headers={"User-Agent": "Mozilla/5.0"}
         )
         with urllib.request.urlopen(req, timeout=6) as resp:

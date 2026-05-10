@@ -367,7 +367,7 @@ async function _renderNews() {
     host.innerHTML = `
       <div style="height:270px;overflow-y:auto;padding:6px 10px 6px 10px;scrollbar-width:thin;scrollbar-color:#1e3a5f #0a1628">
         <div style="font-size:10px;font-weight:700;color:#4a7aaa;text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid #1a3050">
-          Финансовые новости — Финам
+          Коммерсантъ · Экономика
         </div>
         ${news.map(n => `
           <div style="margin-bottom:7px;padding-bottom:7px;border-bottom:1px solid rgba(30,58,95,.6)">
