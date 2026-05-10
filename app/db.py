@@ -149,9 +149,16 @@ def init_db():
             last_price TEXT DEFAULT '0',
             price_time TEXT DEFAULT '',
             volume_1m INTEGER DEFAULT 0,
-            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            bid_price TEXT DEFAULT '0',
+            ask_price TEXT DEFAULT '0'
         )
         """)
+        for _col in ("bid_price", "ask_price"):
+            try:
+                cur.execute(f"ALTER TABLE instrument_market_state ADD COLUMN {_col} TEXT DEFAULT '0'")
+            except Exception:
+                pass
 
         # --- Новая схема профилей/стратегий ---
 
@@ -927,16 +934,20 @@ def fix_ticker_by_figi(figi: str, canonical_ticker: str, canonical_name: str = "
 
 # ── market state ──────────────────────────────────────────────────────────────
 
-def upsert_instrument_market_state(figi: str, ticker: str, last_price, price_time: str, volume_1m: int = 0):
+def upsert_instrument_market_state(figi: str, ticker: str, last_price, price_time: str, volume_1m: int = 0,
+                                    bid_price=None, ask_price=None):
     with db_cursor() as cur:
         cur.execute("""
-        INSERT INTO instrument_market_state(figi, ticker, last_price, price_time, volume_1m, updated_at)
-        VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        INSERT INTO instrument_market_state(figi, ticker, last_price, price_time, volume_1m, updated_at, bid_price, ask_price)
+        VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?)
         ON CONFLICT(figi) DO UPDATE SET
             ticker = excluded.ticker, last_price = excluded.last_price,
             price_time = excluded.price_time, volume_1m = excluded.volume_1m,
-            updated_at = CURRENT_TIMESTAMP
-        """, (figi, ticker, str(last_price), price_time, int(volume_1m)))
+            updated_at = CURRENT_TIMESTAMP,
+            bid_price = CASE WHEN excluded.bid_price != '0' THEN excluded.bid_price ELSE bid_price END,
+            ask_price = CASE WHEN excluded.ask_price != '0' THEN excluded.ask_price ELSE ask_price END
+        """, (figi, ticker, str(last_price), price_time, int(volume_1m),
+              str(bid_price) if bid_price else '0', str(ask_price) if ask_price else '0'))
 
 
 def get_instrument_market_state():

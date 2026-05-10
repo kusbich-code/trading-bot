@@ -1485,12 +1485,16 @@ def process_instrument(client, item,
             bid_vol = ask_vol = 0
 
         # Сохраняем цену всегда — до любых дальнейших проверок
+        _bid = ob_stream.get("bid_price") if ob_stream else None
+        _ask = ob_stream.get("ask_price") if ob_stream else None
         upsert_instrument_market_state(
             figi=figi,
             ticker=ticker,
             last_price=price,
             price_time=_now().strftime("%Y-%m-%d %H:%M:%S"),
             volume_1m=last_volume,
+            bid_price=_bid,
+            ask_price=_ask,
         )
     except Exception as e:
         msg = str(e)
