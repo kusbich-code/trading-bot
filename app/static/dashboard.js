@@ -2344,8 +2344,11 @@ async function refreshParallelStatus() {
       return `<tr style="${rowBg(idx)}">
         <td>${tickerCell}</td>
         <td>${esc(i.lots)} <span class="muted" style="font-size:10px">(${esc(i.lot_cost_ui || "")})</span></td>
-        <td class="muted">${esc(i.sl_pct)}</td>
-        <td class="muted">${esc(i.tp_pct)}</td>
+        <td class="muted" style="white-space:nowrap">
+          <span style="color:#ff7b7b;font-size:11px">▼${esc(i.sl_pct)}</span>
+          <span style="color:#888;margin:0 2px">/</span>
+          <span style="color:#2fa36b;font-size:11px">▲${esc(i.tp_pct)}</span>
+        </td>
         <td>${esc(i.last_price_ui)}</td>
         <td class="muted" style="font-size:11px">${esc(i.price_time)}</td>
         <td class="muted" style="font-size:12px">${esc(i.volume_ui)}</td>
@@ -2368,7 +2371,7 @@ async function refreshParallelStatus() {
       </div>
       <div class="table-wrap">
         <table><thead><tr>
-          <th>Тикер</th><th>Лоты (стоимость)</th><th>SL%</th><th>TP%</th>
+          <th>Тикер</th><th>Лоты (стоимость)</th><th>SL/TP</th>
           <th>Цена</th><th>Обновлено</th><th>Объём 1м</th><th>Сигнал</th>
         </tr></thead><tbody>${instrRows}</tbody></table>
       </div>
