@@ -418,7 +418,7 @@ def dashboard_page():
         <div class="tradingview-widget-container" style="height:270px">
           <div class="tradingview-widget-container__widget" style="height:100%"></div>
           <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-timeline.js" async>
-          {"feedMode":"market","market":"stock","isTransparent":true,"displayMode":"compact","width":"100%","height":270,"colorTheme":"dark","locale":"ru"}
+          {{"feedMode":"market","market":"stock","isTransparent":true,"displayMode":"compact","width":"100%","height":270,"colorTheme":"dark","locale":"ru"}}
           </script>
         </div>
       </div>
