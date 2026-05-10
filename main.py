@@ -712,6 +712,12 @@ def _handle_manual_close(bp: dict, market_map: dict, client=None):
     notify(f"{reason_ui}\n{ticker} | {direction}\nВход: {float(entry_price):.4f} → Выход: {float(exit_price):.4f}\nPnL ≈ {pnl_sign}{float(pnl):.2f} ₽")
     # Cooldown 60 сек после закрытия — защита от немедленного реверса
     state.close_cooldowns[figi] = _now()
+    # Отменяем ВСЕ оставшиеся ордера по этому figi (второй стоп, зависшие лимитники)
+    if client is not None:
+        try:
+            _cancel_all_orders_for_figi(client, figi, ticker)
+        except Exception as _ce:
+            log.warning("_cancel_all_orders_for_figi %s: %s", ticker, _ce)
 
     # Освобождаем координатор если он был заблокирован на этой позиции
     try:
@@ -1164,6 +1170,49 @@ def _cancel_native_stops(client, ticker: str, stop_ids: dict):
             log.warning("Не удалось отменить стоп-ордер %s=%s: %s", key, sid, e)
 
 
+def _cancel_all_orders_for_figi(client, figi: str, ticker: str = ""):
+    """Отменяет ВСЕ активные ордера (обычные + стоп) для данного figi.
+    Вызывается после закрытия позиции чтобы освободить заблокированные средства.
+    """
+    # Стоп-ордера
+    try:
+        resp = client.stop_orders.get_stop_orders(account_id=settings.TINVEST_ACCOUNT_ID)
+        for s in getattr(resp, "stop_orders", []):
+            if getattr(s, "figi", "") == figi or getattr(s, "instrument_uid", "") == figi:
+                sid = getattr(s, "stop_order_id", None)
+                if not sid:
+                    continue
+                try:
+                    client.stop_orders.cancel_stop_order(
+                        account_id=settings.TINVEST_ACCOUNT_ID,
+                        stop_order_id=sid,
+                    )
+                    log_event("STOP_ORDER", f"{ticker or figi[:8]} auto-cancel stop {sid[:8]}", ticker=ticker)
+                except Exception as e:
+                    log.warning("cancel stop %s: %s", sid[:8], e)
+    except Exception as e:
+        log.warning("get_stop_orders in _cancel_all: %s", e)
+
+    # Лимитные / рыночные ордера в очереди
+    try:
+        resp = client.orders.get_orders(account_id=settings.TINVEST_ACCOUNT_ID)
+        for o in getattr(resp, "orders", []):
+            if getattr(o, "figi", "") == figi or getattr(o, "instrument_uid", "") == figi:
+                oid = getattr(o, "order_id", None)
+                if not oid:
+                    continue
+                try:
+                    client.orders.cancel_order(
+                        account_id=settings.TINVEST_ACCOUNT_ID,
+                        order_id=oid,
+                    )
+                    log_event("ORDER", f"{ticker or figi[:8]} auto-cancel order {oid[:8]}", ticker=ticker)
+                except Exception as e:
+                    log.warning("cancel order %s: %s", oid[:8], e)
+    except Exception as e:
+        log.warning("get_orders in _cancel_all: %s", e)
+
+
 _CANDLE_TO_INDICATOR_INTERVAL = {
     CandleInterval.CANDLE_INTERVAL_1_MIN:  IndicatorInterval.INDICATOR_INTERVAL_ONE_MINUTE,
     CandleInterval.CANDLE_INTERVAL_5_MIN:  IndicatorInterval.INDICATOR_INTERVAL_FIVE_MINUTES,
@@ -1576,10 +1625,8 @@ def process_instrument(client, item,
 
         if close_signal:
             close_dir = OrderDirection.ORDER_DIRECTION_SELL if direction == "BUY" else OrderDirection.ORDER_DIRECTION_BUY
-            # Отменяем нативные стоп-ордера перед ручным закрытием
-            _stop_ids = pos.get("native_stop_ids", {})
-            if _stop_ids:
-                _cancel_native_stops(client, ticker, _stop_ids)
+            # Отменяем ВСЕ ордера по figi перед закрытием (нативные стопы + лимитники)
+            _cancel_all_orders_for_figi(client, figi, ticker)
             order_result = place_order_checked(client, ticker, figi, qty, price, close_dir)
             if not order_result:
                 return

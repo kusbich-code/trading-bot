@@ -2267,8 +2267,9 @@ def api_close_position(figi: str = Form(...), qty: int = Form(...), direction: s
             row = _cur.fetchone()
             uid = (row["instrument_uid"] or "") if row else ""
 
-    # Отменяем все нативные стоп-ордера для этого figi ПЕРЕД закрытием
+    # Отменяем ВСЕ ордера (стоп + лимитные) для этого figi ПЕРЕД закрытием
     cancelled_stops = 0
+    cancelled_orders = 0
     try:
         active_stops = get_active_stop_orders()
         for s in active_stops:
@@ -2282,6 +2283,19 @@ def api_close_position(figi: str = Form(...), qty: int = Form(...), direction: s
             log_event("STOP_ORDER", f"manual close: отменено {cancelled_stops} стоп-ордеров для {figi}", ticker=figi)
     except Exception as _e:
         logger.warning("get_active_stop_orders before close: %s", _e)
+    try:
+        active_orders = get_active_orders()
+        for o in active_orders:
+            if o.get("figi") == figi or (uid and o.get("instrument_uid") == uid):
+                try:
+                    cancel_order(o["order_id"])
+                    cancelled_orders += 1
+                except Exception as _oe:
+                    logger.warning("cancel order %s: %s", o.get("order_id"), _oe)
+        if cancelled_orders:
+            log_event("ORDER", f"manual close: отменено {cancelled_orders} ордеров для {figi}", ticker=figi)
+    except Exception as _e:
+        logger.warning("get_active_orders before close: %s", _e)
 
     try:
         result = post_market_close(figi=figi, quantity=int(qty), direction=close_direction, instrument_uid=uid)
