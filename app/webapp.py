@@ -2,6 +2,9 @@ import json
 import os
 import logging
 import threading
+import time
+import urllib.request
+import xml.etree.ElementTree as ET
 logger = logging.getLogger(__name__)
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, Optional
@@ -488,6 +491,38 @@ def dashboard_page():
   <script src="/static/dashboard.js?v={v}" defer></script>
 </body>
 </html>""")
+
+
+# ── News RSS proxy ─────────────────────────────────────────────────────────────
+
+_news_cache: Dict[str, Any] = {"data": [], "ts": 0.0}
+_NEWS_TTL = 300  # 5 min
+
+@app.get("/api/news")
+def api_news():
+    now = time.time()
+    if now - _news_cache["ts"] < _NEWS_TTL and _news_cache["data"]:
+        return JSONResponse(_news_cache["data"])
+    try:
+        req = urllib.request.Request(
+            "https://www.finam.ru/analysis/newsitem/rss/",
+            headers={"User-Agent": "Mozilla/5.0"}
+        )
+        with urllib.request.urlopen(req, timeout=6) as resp:
+            root = ET.fromstring(resp.read())
+        items = root.findall(".//item")
+        news = []
+        for item in items[:20]:
+            title = (item.findtext("title") or "").strip()
+            link  = (item.findtext("link")  or "").strip()
+            pub   = (item.findtext("pubDate") or "").strip()
+            if title:
+                news.append({"title": title, "link": link, "date": pub[:16]})
+        _news_cache["data"] = news
+        _news_cache["ts"] = now
+    except Exception as e:
+        logger.warning(f"News RSS fetch failed: {e}")
+    return JSONResponse(_news_cache["data"])
 
 
 # ── dashboard data endpoints ───────────────────────────────────────────────────

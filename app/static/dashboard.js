@@ -350,17 +350,37 @@ function toggleSummaryCardsVisibility() {
 
 function _initNewsWidget() {
   const host = document.getElementById("newsWidget");
-  if (!host || host.dataset.tvLoaded) return;
-  host.dataset.tvLoaded = "1";
-  host.innerHTML = `<div class="tradingview-widget-container" style="height:270px">
-    <div class="tradingview-widget-container__widget" style="height:100%"></div>
-  </div>`;
-  const s = document.createElement("script");
-  s.type = "text/javascript";
-  s.src = "https://s3.tradingview.com/external-embedding/embed-widget-timeline.js";
-  s.async = true;
-  s.text = '{"feedMode":"market","market":"stock","isTransparent":true,"displayMode":"compact","width":"100%","height":270,"colorTheme":"dark","locale":"ru"}';
-  host.querySelector(".tradingview-widget-container").appendChild(s);
+  if (!host || host.dataset.newsInited) return;
+  host.dataset.newsInited = "1";
+  _renderNews();
+}
+
+async function _renderNews() {
+  const host = document.getElementById("newsWidget");
+  if (!host) return;
+  try {
+    const news = await apiGet("/api/news");
+    if (!news || !news.length) {
+      host.innerHTML = `<div style="padding:12px;color:#4a7aaa;font-size:12px">Нет новостей</div>`;
+      return;
+    }
+    host.innerHTML = `
+      <div style="height:270px;overflow-y:auto;padding:6px 10px 6px 10px;scrollbar-width:thin;scrollbar-color:#1e3a5f #0a1628">
+        <div style="font-size:10px;font-weight:700;color:#4a7aaa;text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid #1a3050">
+          Финансовые новости — Финам
+        </div>
+        ${news.map(n => `
+          <div style="margin-bottom:7px;padding-bottom:7px;border-bottom:1px solid rgba(30,58,95,.6)">
+            <a href="${esc(n.link)}" target="_blank" rel="noopener"
+               style="color:#c8deff;font-size:11.5px;line-height:1.45;text-decoration:none;display:block">
+              ${esc(n.title)}
+            </a>
+            <span style="color:#3a6a9a;font-size:10px;margin-top:2px;display:block">${esc(n.date)}</span>
+          </div>`).join("")}
+      </div>`;
+  } catch(e) {
+    host.innerHTML = `<div style="padding:12px;color:#4a7aaa;font-size:12px">Ошибка загрузки новостей</div>`;
+  }
 }
 
 // ── Main tab ──────────────────────────────────────────────────────────────────
@@ -3893,6 +3913,11 @@ function startRefreshLoops() {
       }
     } catch {}
   }, REFRESH_TRADES_MS);
+
+  // ── Новости (5 мин) ───────────────────────────────────────────────────────
+  setInterval(() => {
+    try { if (getTabFromHash() === "главное") _renderNews(); } catch {}
+  }, 300000);
 
   // ── "Live dot" + счётчик "X сек назад" (каждую секунду) ──────────────────
   setInterval(() => {
