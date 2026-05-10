@@ -1003,17 +1003,11 @@ def place_order_checked(client, ticker: str, figi: str, lots: int, raw_price: De
         log_event("ORDER_OPEN", f"post_order success request={request_order_id} response={response_order_id}", ticker=ticker)
 
         execution_report_status = "ORDER_STATE_PENDING"
-        avg_price = rounded_price   # всегда за штуку; используется как резервный
-        lots_executed = lots
+        avg_price = rounded_price   # цена за штуку, уточняется из исполнения
+        lots_executed = 0           # ← 0 по умолчанию, НЕ lots (чтобы не записать фиктивную позицию)
 
         def _accept_fill_price(ep: Decimal) -> bool:
-            """
-            Sandbox возвращает executed_order_price как цену за ЛОТ (не за штуку).
-            Например, SBER lot=10, price=323.7 → sandbox вернёт 3237.
-            Реальное исполнение лимитного ордера отклоняется ≤ 5% от лимитной цены.
-            Если возвращённая цена отклоняется больше, это цена за лот — отклоняем,
-            чтобы сохранить корректную цену за штуку rounded_price.
-            """
+            # sandbox возвращает цену за лот для некоторых инструментов — проверяем отклонение ≤5%
             if ep <= 0 or rounded_price <= 0:
                 return False
             ratio = ep / rounded_price
@@ -1035,16 +1029,12 @@ def place_order_checked(client, ticker: str, figi: str, lots: int, raw_price: De
                     _ep = weighted / Decimal(str(total_filled))
                     if _accept_fill_price(_ep):
                         avg_price = _ep
-                    elif _ep > 0:
-                        log_event("ORDER_FILL",
-                            f"{ticker} stream price {_ep} отклонён (≠ per-share limit {rounded_price}), используем limit",
-                            ticker=ticker)
                     lots_executed = total_filled
             execution_report_status = "ORDER_STATE_FILL"
             log_event("ORDER_FILL", f"stream fill: {ticker} qty={lots_executed} price={avg_price}", ticker=ticker)
         except _queue.Empty:
-            # Резервный вариант: опрос get_order_state
-            for _ in range(4):
+            # Резервный вариант: опрос get_order_state (до 8 попыток × 1 с = 8 с)
+            for _attempt in range(8):
                 try:
                     time.sleep(1)
                     order_state = client.orders.get_order_state(
@@ -1052,25 +1042,59 @@ def place_order_checked(client, ticker: str, figi: str, lots: int, raw_price: De
                         order_id=response_order_id,
                     )
                     execution_report_status = str(getattr(order_state, "execution_report_status", "UNKNOWN"))
-                    executed_order_price = getattr(order_state, "executed_order_price", None)
                     lots_executed_raw = getattr(order_state, "lots_executed", None)
+                    if lots_executed_raw is not None:
+                        lots_executed = int(lots_executed_raw)
+                    executed_order_price = getattr(order_state, "executed_order_price", None)
                     if executed_order_price:
                         _ep = quotation_to_decimal(executed_order_price)
                         if _accept_fill_price(_ep):
                             avg_price = _ep
-                        elif _ep > 0:
-                            log_event("ORDER_FILL",
-                                f"{ticker} poll price {_ep} отклонён (≠ per-share limit {rounded_price}), используем limit",
-                                ticker=ticker)
-                    if lots_executed_raw is not None:
-                        lots_executed = int(lots_executed_raw)
-                    break
+
+                    # Ордер исполнен (полностью или частично) — выходим
+                    if "FILL" in execution_report_status:
+                        log_event("ORDER_FILL",
+                            f"poll fill: {ticker} qty={lots_executed} price={avg_price} status={execution_report_status}",
+                            ticker=ticker)
+                        break
+
+                    # Ордер отменён или отклонён — нет смысла ждать дальше
+                    if any(x in execution_report_status for x in ("CANCEL", "REJECT")):
+                        log_event("ORDER_CANCEL",
+                            f"{ticker} ордер {execution_report_status} qty_filled={lots_executed}",
+                            ticker=ticker, level="WARNING")
+                        break
+
+                    # Ещё pending — продолжаем ждать
                 except Exception as e:
                     msg = str(e)
                     if "50005" in msg or "Order not found" in msg:
                         continue
+                    break
+
+            # Если так и не заполнен — отменяем и возвращаем None
+            if lots_executed == 0 and "FILL" not in execution_report_status:
+                try:
+                    client.orders.cancel_order(
+                        account_id=settings.TINVEST_ACCOUNT_ID,
+                        order_id=response_order_id,
+                    )
+                except Exception:
+                    pass
+                log_event("ORDER_CANCEL",
+                    f"{ticker} ордер не исполнен ({execution_report_status}) — отменён",
+                    ticker=ticker, level="WARNING")
+                _pending_orders.pop(response_order_id, None)
+                return None
         finally:
             _pending_orders.pop(response_order_id, None)
+
+        # Финальная проверка: если лоты не заполнены — не создаём позицию
+        if lots_executed == 0:
+            log_event("ORDER_CANCEL",
+                f"{ticker} ордер вернул lots_executed=0 — позиция не открыта",
+                ticker=ticker, level="WARNING")
+            return None
 
         return {
             "response_order_id": response_order_id,
@@ -1758,7 +1782,7 @@ def process_instrument(client, item,
                 _coord.release(_strategy_id)
             return
         _ep = float(order_result["executed_price"])
-        _qty_filled = int(order_result["lots_executed"] or lot)
+        _qty_filled = int(order_result["lots_executed"])
         # Нативные стоп-ордера на бирже — сработают даже при зависании бота
         _stop_ids = _place_native_stops(
             client, ticker, figi, instrument_uid, "BUY", _qty_filled,
@@ -1806,7 +1830,7 @@ def process_instrument(client, item,
                 _coord.release(_strategy_id)
             return
         _ep = float(order_result["executed_price"])
-        _qty_filled = int(order_result["lots_executed"] or lot)
+        _qty_filled = int(order_result["lots_executed"])
         _stop_ids = _place_native_stops(
             client, ticker, figi, instrument_uid, "SELL", _qty_filled,
             Decimal(str(_ep)), stop_loss_pct, take_profit_pct,
