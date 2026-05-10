@@ -415,9 +415,9 @@ def dashboard_page():
       <a href="#/аналитик" class="tab-link" data-tab-link="аналитик">Аналитик</a>
     </nav>
 
-    <div id="mainSummaryRow" style="display:none;flex-wrap:wrap;gap:14px;align-items:flex-start;margin-bottom:18px">
-      <section id="summaryCards" class="summary-grid" style="flex:1;min-width:300px;margin-bottom:0"></section>
-      <div id="newsWidget" style="flex:0 0 380px;min-width:260px;border-radius:8px;overflow:hidden;height:270px;background:#0a1628"></div>
+    <div id="mainSummaryRow" style="display:none;gap:10px;margin-bottom:18px">
+      <section id="summaryCards" style="min-width:0;margin-bottom:0"></section>
+      <div id="newsWidget" style="min-width:0;border-radius:10px;overflow:hidden;background:#0a1628;border:1px solid rgba(76,141,255,.12)"></div>
     </div>
 
     <section id="view-main" data-view="главное"></section>

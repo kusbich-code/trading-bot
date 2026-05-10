@@ -214,7 +214,7 @@ async function renderSummaryCards() {
   const host = document.getElementById("summaryCards");
   if (!host) return;
   const wrapper = document.getElementById("mainSummaryRow");
-  if (wrapper && wrapper.style.display === "none") { wrapper.style.display = "flex"; _initNewsWidget(); }
+  if (wrapper && wrapper.style.display === "none") { wrapper.style.cssText = "display:grid;grid-template-columns:1fr 330px;gap:10px;margin-bottom:18px"; _initNewsWidget(); }
   const hasError = s.last_error && s.last_error !== "—";
 
   const newHtml = _buildSummaryHtml(s, hasError);
@@ -242,7 +242,7 @@ async function renderSummaryCards() {
 }
 
 function _buildSummaryHtml(s, hasError) {
-  return `<div class="sgroups">
+  return `<div class="sgroups" style="margin-bottom:0;height:100%">
     <div class="sgrp">
       <div class="sgrp-lbl">Сервис</div>
       <div class="sgrp-cards">
@@ -344,7 +344,7 @@ function toggleSummaryCardsVisibility() {
   const wrapper = document.getElementById("mainSummaryRow");
   if (!wrapper) return;
   const show = getTabFromHash() === "главное";
-  wrapper.style.display = show ? "flex" : "none";
+  wrapper.style.display = show ? "grid" : "none";
   if (show) _initNewsWidget();
 }
 
@@ -364,19 +364,23 @@ async function _renderNews() {
       host.innerHTML = `<div style="padding:12px;color:#4a7aaa;font-size:12px">Нет новостей</div>`;
       return;
     }
+    host.style.cssText = host.style.cssText; // keep existing
     host.innerHTML = `
-      <div style="height:270px;overflow-y:auto;padding:6px 10px 6px 10px;scrollbar-width:thin;scrollbar-color:#1e3a5f #0a1628">
-        <div style="font-size:10px;font-weight:700;color:#4a7aaa;text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid #1a3050">
-          Коммерсантъ · Экономика
+      <div style="display:flex;flex-direction:column;height:100%;min-height:180px">
+        <div style="padding:10px 12px 8px;border-bottom:1px solid rgba(76,141,255,.12);flex-shrink:0;display:flex;align-items:center;gap:8px">
+          <span style="font-size:10px;font-weight:700;color:#7ab0e8;text-transform:uppercase;letter-spacing:.08em">Коммерсантъ</span>
+          <span style="font-size:9px;color:#3a6080;background:rgba(76,141,255,.1);border:1px solid rgba(76,141,255,.2);border-radius:3px;padding:1px 5px">Экономика</span>
         </div>
-        ${news.map(n => `
-          <div style="margin-bottom:7px;padding-bottom:7px;border-bottom:1px solid rgba(30,58,95,.6)">
-            <a href="${esc(n.link)}" target="_blank" rel="noopener"
-               style="color:#c8deff;font-size:11.5px;line-height:1.45;text-decoration:none;display:block">
-              ${esc(n.title)}
-            </a>
-            <span style="color:#3a6a9a;font-size:10px;margin-top:2px;display:block">${esc(n.date)}</span>
-          </div>`).join("")}
+        <div style="flex:1;overflow-y:auto;padding:8px 12px;scrollbar-width:thin;scrollbar-color:#1e3a5f #0a1628">
+          ${news.map(n => `
+            <div style="margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid rgba(30,58,95,.5)">
+              <a href="${esc(n.link)}" target="_blank" rel="noopener"
+                 style="color:#c4dcff;font-size:11.5px;line-height:1.45;text-decoration:none;display:block">
+                ${esc(n.title)}
+              </a>
+              <span style="color:#2e5a80;font-size:10px;margin-top:2px;display:block">${esc(n.date)}</span>
+            </div>`).join("")}
+        </div>
       </div>`;
   } catch(e) {
     host.innerHTML = `<div style="padding:12px;color:#4a7aaa;font-size:12px">Ошибка загрузки новостей</div>`;
