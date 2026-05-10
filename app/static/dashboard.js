@@ -214,15 +214,23 @@ async function renderSummaryCards() {
   const host = document.getElementById("summaryCards");
   if (!host) return;
   const wrapper = document.getElementById("mainSummaryRow");
-  if (wrapper && wrapper.style.display === "none") { wrapper.style.cssText = "display:grid;grid-template-columns:1fr 330px;gap:10px;margin-bottom:18px"; _initNewsWidget(); }
+  if (wrapper && wrapper.style.display === "none") wrapper.style.display = "block";
   const hasError = s.last_error && s.last_error !== "—";
 
   const newHtml = _buildSummaryHtml(s, hasError);
   const isFirst = !host.dataset.built;
+  const savedNewsHtml = !isFirst ? (document.getElementById("newsWidgetInner")?.innerHTML ?? null) : null;
   // Запомним старые значения .val перед перезаписью
   const oldVals = isFirst ? [] : Array.from(host.querySelectorAll('.val')).map(e => e.textContent.trim());
   host.innerHTML = newHtml;
   host.dataset.built = "1";
+  // Восстанавливаем новости (newsWidgetInner внутри summaryCards пересоздаётся при каждом рендере)
+  if (savedNewsHtml !== null) {
+    const nw = document.getElementById("newsWidgetInner");
+    if (nw) { nw.innerHTML = savedNewsHtml; nw.dataset.newsInited = "1"; }
+  } else {
+    _initNewsWidget();
+  }
   if (isFirst) {
     // Первый рендер: fade-in карточек
     host.querySelectorAll('.crd').forEach((c, i) => {
@@ -313,19 +321,22 @@ function _buildSummaryHtml(s, hasError) {
             </div>`;
           }).join("")}
         </div>` : "";
-      return `<div class="sgrp" style="flex:1;min-width:320px">
-        <div class="sgrp-lbl" style="${warn ? 'color:#f0a500;border-color:#f0a500' : ''}">API лимит <span style="font-weight:400;font-size:10px;opacity:.6">(бот, дашборд не учтён)</span></div>
-        <div class="sgrp-cards">
-          <div class="crd" style="background:${bg}">
-            <div class="lbl">Запросов/мин</div>
-            <div class="val" style="color:${color};font-size:15px">${s.api_rpm} <span style="font-size:11px;opacity:.7">/ ${s.api_rpm_limit}</span></div>
-            <div style="background:rgba(255,255,255,.08);border-radius:4px;height:4px;margin-top:4px;overflow:hidden">
-              <div style="height:100%;width:${Math.min(pct,100)}%;background:${color};border-radius:4px;transition:width .5s"></div>
+      return `<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
+        <div class="sgrp">
+          <div class="sgrp-lbl" style="${warn ? 'color:#f0a500;border-color:#f0a500' : ''}">API</div>
+          <div class="sgrp-cards" style="grid-template-columns:1fr">
+            <div class="crd" style="background:${bg}">
+              <div class="lbl">Запросов/мин <span style="opacity:.5;font-size:9px">(бот)</span></div>
+              <div class="val" style="color:${color};font-size:15px">${s.api_rpm} <span style="font-size:11px;opacity:.7">/ ${s.api_rpm_limit}</span></div>
+              <div style="background:rgba(255,255,255,.08);border-radius:4px;height:4px;margin-top:4px;overflow:hidden">
+                <div style="height:100%;width:${Math.min(pct,100)}%;background:${color};border-radius:4px;transition:width .5s"></div>
+              </div>
+              ${breakdownHtml}
+              ${warn ? `<div style="font-size:10px;color:#f0a500;margin-top:6px">⚠️ ${pct >= 95 ? 'Лимит исчерпан' : 'Нагрузка высокая'}</div>` : ''}
             </div>
-            ${breakdownHtml}
           </div>
         </div>
-        ${warn ? `<div style="font-size:11px;color:#f0a500;margin-top:6px">⚠️ ${pct >= 95 ? 'Лимит почти исчерпан — возможны ошибки RESOURCE_EXHAUSTED' : 'Нагрузка высокая — рекомендуется увеличить интервал стратегий'}</div>` : ''}
+        <div id="newsWidgetInner" style="background:#0a1628;border:1px solid rgba(76,141,255,.12);border-radius:10px;overflow:hidden"></div>
       </div>`;
     })() : ""}
   </div>`;
@@ -344,19 +355,19 @@ function toggleSummaryCardsVisibility() {
   const wrapper = document.getElementById("mainSummaryRow");
   if (!wrapper) return;
   const show = getTabFromHash() === "главное";
-  wrapper.style.display = show ? "grid" : "none";
+  wrapper.style.display = show ? "block" : "none";
   if (show) _initNewsWidget();
 }
 
 function _initNewsWidget() {
-  const host = document.getElementById("newsWidget");
+  const host = document.getElementById("newsWidgetInner");
   if (!host || host.dataset.newsInited) return;
   host.dataset.newsInited = "1";
   _renderNews();
 }
 
 async function _renderNews() {
-  const host = document.getElementById("newsWidget");
+  const host = document.getElementById("newsWidgetInner");
   if (!host) return;
   try {
     const news = await apiGet("/api/news");
