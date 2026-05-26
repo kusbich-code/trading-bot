@@ -553,8 +553,8 @@ async function renderMainData() {
           ? '<span class="badge" style="background:rgba(191,77,90,.2);color:#ff7b7b">SELL</span>'
           : esc(t.direction);
       return `<tr style="background:${bg}">
-        <td class="muted" style="font-size:12px;white-space:nowrap">${esc(t.open_time ? t.open_time.slice(11,19) : "—")}</td>
-        <td class="muted" style="font-size:12px;white-space:nowrap">${esc(t.time ? t.time.slice(11,19) : "—")}</td>
+        <td class="muted" style="font-size:12px;white-space:nowrap">${esc(t.open_time || "—")}</td>
+        <td class="muted" style="font-size:12px;white-space:nowrap">${esc(t.time || "—")}</td>
         <td class="muted" style="font-size:12px;white-space:nowrap">${esc(t.duration_ui || "—")}</td>
         <td><b>${esc(t.ticker)}</b></td>
         <td>${badge}</td>
@@ -2125,8 +2125,8 @@ function _histRenderTrades(trades) {
       ? `<span class="badge" style="background:rgba(47,163,107,.2);color:#2fa36b">BUY</span>`
       : `<span class="badge" style="background:rgba(191,77,90,.2);color:#ff7b7b">SELL</span>`;
     return `<tr style="background:${bg}">
-      <td class="muted" style="font-size:12px;white-space:nowrap">${esc(t.open_time ? t.open_time.slice(11,19) : "—")}</td>
-      <td class="muted" style="font-size:12px;white-space:nowrap">${esc(t.time ? t.time.slice(11,19) : "—")}</td>
+      <td class="muted" style="font-size:12px;white-space:nowrap">${esc(t.open_time || "—")}</td>
+      <td class="muted" style="font-size:12px;white-space:nowrap">${esc(t.time || "—")}</td>
       <td class="muted" style="font-size:12px;white-space:nowrap">${esc(t.duration_ui || "—")}</td>
       <td><b>${esc(t.ticker)}</b></td>
       <td>${badge}</td>
