@@ -491,7 +491,7 @@ async function renderMainShell() {
       <div class="row between"><h2>Сделки</h2><div class="note">Сегодня</div></div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Время</th><th>Тикер</th><th>Напр.</th><th>Вход</th><th>Выход</th><th>Кол-во</th><th>ПнЛ</th><th>%</th><th>Причина</th></tr></thead>
+          <thead><tr><th>Открыто</th><th>Закрыто</th><th>Длит.</th><th>Тикер</th><th>Напр.</th><th>Вход</th><th>Выход</th><th>Кол-во</th><th>ПнЛ</th><th>%</th><th>Причина</th></tr></thead>
           <tbody id="mainTradesBody"></tbody>
         </table>
       </div>
@@ -553,7 +553,9 @@ async function renderMainData() {
           ? '<span class="badge" style="background:rgba(191,77,90,.2);color:#ff7b7b">SELL</span>'
           : esc(t.direction);
       return `<tr style="background:${bg}">
-        <td class="muted" style="font-size:12px;white-space:nowrap">${esc(t.time)}</td>
+        <td class="muted" style="font-size:12px;white-space:nowrap">${esc(t.open_time ? t.open_time.slice(11,19) : "—")}</td>
+        <td class="muted" style="font-size:12px;white-space:nowrap">${esc(t.time ? t.time.slice(11,19) : "—")}</td>
+        <td class="muted" style="font-size:12px;white-space:nowrap">${esc(t.duration_ui || "—")}</td>
         <td><b>${esc(t.ticker)}</b></td>
         <td>${badge}</td>
         <td>${esc(t.entry_ui)}</td><td>${esc(t.exit_ui)}</td>
@@ -2123,7 +2125,9 @@ function _histRenderTrades(trades) {
       ? `<span class="badge" style="background:rgba(47,163,107,.2);color:#2fa36b">BUY</span>`
       : `<span class="badge" style="background:rgba(191,77,90,.2);color:#ff7b7b">SELL</span>`;
     return `<tr style="background:${bg}">
-      <td class="muted" style="font-size:12px;white-space:nowrap">${esc(t.time)}</td>
+      <td class="muted" style="font-size:12px;white-space:nowrap">${esc(t.open_time ? t.open_time.slice(11,19) : "—")}</td>
+      <td class="muted" style="font-size:12px;white-space:nowrap">${esc(t.time ? t.time.slice(11,19) : "—")}</td>
+      <td class="muted" style="font-size:12px;white-space:nowrap">${esc(t.duration_ui || "—")}</td>
       <td><b>${esc(t.ticker)}</b></td>
       <td>${badge}</td>
       <td>${esc(t.entry_ui)}</td><td>${esc(t.exit_ui)}</td><td>${esc(t.qty)}</td>
@@ -2140,7 +2144,7 @@ function _histRenderTrades(trades) {
     <div class="table-wrap">
       <table id="hTrades">
         <thead><tr>
-          <th>Время</th><th>Тикер</th><th>Напр.</th>
+          <th>Открыто</th><th>Закрыто</th><th>Длит.</th><th>Тикер</th><th>Напр.</th>
           <th>Вход</th><th>Выход</th><th>Лоты</th>
           <th>Комиссия</th><th>PnL</th><th>Причина</th>
         </tr></thead>

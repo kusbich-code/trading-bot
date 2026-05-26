@@ -751,13 +751,14 @@ def add_trade(trade: dict):
         cur.execute("""
         INSERT INTO trades(
             time, ticker, figi, direction, entry, exit, qty,
-            gross_amount, commission, pnl, reason, close_order_id, execution_status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            gross_amount, commission, pnl, reason, close_order_id, execution_status, open_time
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             trade["time"], trade["ticker"], trade["figi"], trade["direction"],
             trade["entry"], trade["exit"], trade["qty"], trade["gross_amount"],
             trade["commission"], trade["pnl"],
             trade.get("reason", ""), trade.get("close_order_id", ""), trade.get("execution_status", ""),
+            trade.get("open_time", ""),
         ))
 
 

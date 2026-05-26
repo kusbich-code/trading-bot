@@ -208,6 +208,21 @@ def fmt_pct_fraction(value: Any) -> str:
     return f"{safe_decimal(value) * Decimal('100'):.2f}"
 
 
+def _fmt_duration(open_time_str: str, close_time_str: str) -> str:
+    if not open_time_str or not close_time_str:
+        return "—"
+    try:
+        from datetime import datetime as _dt
+        t0 = _dt.strptime(open_time_str, "%Y-%m-%d %H:%M:%S")
+        t1 = _dt.strptime(close_time_str, "%Y-%m-%d %H:%M:%S")
+        secs = int(abs((t1 - t0).total_seconds()))
+        h, rem = divmod(secs, 3600)
+        m, s = divmod(rem, 60)
+        return f"{h:02d}:{m:02d}:{s:02d}"
+    except Exception:
+        return "—"
+
+
 def bool01(value: Any) -> str:
     return "1" if str(value) in ("1", "true", "True") else "0"
 
@@ -662,6 +677,8 @@ def api_dashboard_main():
         "pnl_ui":     fmt_money(t.get("pnl", 0)),
         "pnl_pct":    _trade_pnl_pct(t),
         "pnl_positive": float(t.get("pnl", 0) or 0) >= 0,
+        "open_time":  t.get("open_time", "") or "",
+        "duration_ui": _fmt_duration(t.get("open_time", "") or "", t.get("time", "") or ""),
     } for t in get_trades(limit=20)]
 
     return JSONResponse({
@@ -1123,6 +1140,8 @@ def api_dashboard_history(days: int = 0):
             "commission_ui": fmt_money(t.get("commission", 0)),
             "pnl_ui": fmt_money(t.get("pnl", 0)),
             "time": t.get("time", "") or "",
+            "open_time": t.get("open_time", "") or "",
+            "duration_ui": _fmt_duration(t.get("open_time", "") or "", t.get("time", "") or ""),
         } for t in get_trades(limit=500, date_from=date_from)],
         "system_logs": [norm(x) for x in get_system_logs(limit=200, date_from=date_from)],
         "error_logs":  [norm(x) for x in get_error_logs(limit=200,  date_from=date_from)],

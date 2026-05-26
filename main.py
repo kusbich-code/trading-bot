@@ -701,6 +701,7 @@ def _handle_manual_close(bp: dict, market_map: dict, client=None):
 
     add_trade({
         "time":             _now().strftime("%Y-%m-%d %H:%M:%S"),
+        "open_time":        opened_at,
         "ticker":           ticker,
         "figi":             figi,
         "direction":        direction,
@@ -1732,6 +1733,7 @@ def process_instrument(client, item,
 
             trade = {
                 "time": _now().strftime("%Y-%m-%d %H:%M:%S"),
+                "open_time": pos.get("opened_at", ""),
                 "ticker": ticker,
                 "figi": figi,
                 "direction": direction,
