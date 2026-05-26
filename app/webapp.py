@@ -922,9 +922,14 @@ def api_balance_check():
         ticker = inst["ticker"]
         lots_override = int(inst.get("lots_override", 1))
         lot_size = int(inst.get("lot", 1))
+        auto_lots = int(inst.get("auto_lots", 0) or 0)
         last_price = safe_decimal(market_map.get(figi, {}).get("last_price", 0))
         sl_pct = safe_decimal(inst.get("stop_loss_pct", "0.0025")) * 100
         tp_pct = safe_decimal(inst.get("take_profit_pct", "0.005")) * 100
+
+        if auto_lots and last_price > 0:
+            cost_per_lot = Decimal(str(lot_size)) * last_price * (1 + commission_pct)
+            lots_override = max(1, int(cash / cost_per_lot)) if cost_per_lot > 0 else 1
 
         if last_price > 0:
             position_cost = Decimal(str(lots_override)) * Decimal(str(lot_size)) * last_price
@@ -938,6 +943,7 @@ def api_balance_check():
             "ticker": ticker,
             "lots": lots_override,
             "lot_size": lot_size,
+            "auto_lots": auto_lots,
             "price_ui": fmt_price(last_price),
             "position_cost_ui": fmt_money(position_cost),
             "required_ui": fmt_money(required),

@@ -1804,6 +1804,20 @@ def process_instrument(client, item,
             _save_signal(skip_reason="Аналитики T-Bank: BUY против SELL", skip_filter="signal_service")
             return
 
+    # ── Авто-расчёт лотов по балансу ─────────────────────────────────────────
+    if int(item.get("auto_lots", 0) or 0) and sig in ("BUY", "SELL"):
+        _lot_size_v = int(item.get("lot", 1))
+        _comm_v     = Decimal(_cfg("estimated_commission_pct", "0.0004"))
+        _cost_1lot  = Decimal(str(_lot_size_v)) * price * (1 + _comm_v)
+        if _cost_1lot > 0:
+            _avail  = Decimal(str(state.session_balance_current))
+            _auto   = max(1, int(_avail / _cost_1lot))
+            if _auto != lot:
+                log_event("AUTO_LOTS",
+                          f"{ticker}: {float(_avail):.0f}₽ / {float(_cost_1lot):.0f}₽/лот = {_auto} лотов",
+                          ticker=ticker)
+            lot = _auto
+
     # ── Проверка баланса перед ордером ───────────────────────────────────────
     if sig == "BUY":
         lot_size = item.get("lot", 1)

@@ -582,7 +582,7 @@ async function renderMainData() {
           <div>
             <strong>${esc(c.ticker)}</strong> — недостаточно средств.
             Нужно: <strong>${esc(c.required_ui)} ₽</strong>
-            (${esc(c.lots)} лот × ${esc(c.lot_size)} шт × ${esc(c.price_ui)} ₽ + комиссия).
+            (${esc(c.lots)}${c.auto_lots ? " авто" : ""} лот × ${esc(c.lot_size)} шт × ${esc(c.price_ui)} ₽ + комиссия).
             Свободно: <strong>${esc(bc.cash_ui)} ₽</strong>. SL ${esc(c.sl_pct)}% / TP ${esc(c.tp_pct)}%.
           </div>
           ${bc.is_sandbox ? `<button class="btn btn-primary" onclick="sandboxPayIn()">Пополнить Sandbox</button>` : ""}
@@ -990,7 +990,24 @@ function _renderInstrumentForms(instruments, stratId) {
     <form class="form-grid instrument-form block" data-strategy-id="${esc(stratId)}" data-figi="${esc(i.figi)}">
       <label>Тикер<input class="field" value="${esc(i.ticker)}" disabled></label>
       <label>Название<input class="field" value="${esc(i.name)}" disabled></label>
-      <label>Лоты<input class="field" name="lots_override" value="${esc(i.lots_override || 1)}"></label>
+      <label>Лоты
+        <div style="display:flex;align-items:center;gap:6px;margin-top:4px">
+          <input class="field" name="lots_override" type="number" min="1"
+                 value="${esc(i.lots_override || 1)}" style="width:72px"
+                 ${i.auto_lots ? 'style="opacity:.45"' : ''}>
+          <input type="hidden" name="auto_lots" class="auto-lots-hidden" value="${i.auto_lots ? '1' : '0'}">
+          <label style="font-weight:normal;white-space:nowrap;cursor:pointer;display:flex;align-items:center;gap:4px">
+            <input type="checkbox" ${i.auto_lots ? 'checked' : ''}
+                   onchange="(function(cb){
+                     const f=cb.closest('.instrument-form');
+                     f.querySelector('.auto-lots-hidden').value=cb.checked?'1':'0';
+                     const inp=f.querySelector('[name=lots_override]');
+                     inp.style.opacity=cb.checked?'.45':'1';
+                   })(this)">
+            Авто
+          </label>
+        </div>
+      </label>
       <label>SL %<input class="field" name="stop_loss_pct" value="${esc(i.stop_loss_pct_ui)}"></label>
       <label>TP %<input class="field" name="take_profit_pct" value="${esc(i.take_profit_pct_ui)}"></label>
       <label>Спред %<input class="field" name="max_spread_pct" value="${esc(i.max_spread_pct_ui)}"></label>

@@ -235,6 +235,7 @@ def init_db():
             allow_short INTEGER DEFAULT 1,
             priority INTEGER DEFAULT 100,
             enabled INTEGER DEFAULT 1,
+            auto_lots INTEGER DEFAULT 0,
             UNIQUE(strategy_id, figi)
         )
         """)
@@ -1641,7 +1642,7 @@ def add_strategy_instrument(strategy_id: int, item: dict):
 
 def update_strategy_instrument(strategy_id: int, figi: str, fields: dict):
     allowed = {"lots_override", "stop_loss_pct", "take_profit_pct", "max_spread_pct",
-               "min_volume", "allow_long", "allow_short", "priority", "enabled"}
+               "min_volume", "allow_long", "allow_short", "priority", "enabled", "auto_lots"}
     parts, params = [], []
     for key, value in fields.items():
         if key in allowed:
