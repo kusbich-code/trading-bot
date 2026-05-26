@@ -578,7 +578,7 @@ def api_dashboard_main():
         cur_d = mkt_price if mkt_price > 0 else safe_decimal(cur)
         # qty от брокера — в лотах; умножаем на лот → штуки для PnL/стоимости
         lot_size = _lot_map.get(figi, 1)
-        calc_qty = qty * lot_size
+        calc_qty = qty * lot_size   # штуки = лоты × лот_size
         if direction == "BUY":
             pnl_d = (cur_d - avg_d) * calc_qty
         else:
@@ -588,7 +588,7 @@ def api_dashboard_main():
             "ticker": market_map.get(figi, {}).get("ticker", "") or figi[:8],
             "figi": figi,
             "direction": direction,
-            "qty": qty,
+            "qty": qty,                    # лоты — для отображения и кнопки Закрыть
             "entry_price_ui": fmt_price(avg_d),
             "current_price_ui": fmt_price(cur_d),
             "unrealized_pnl_ui": fmt_money(pnl_d),
@@ -596,7 +596,7 @@ def api_dashboard_main():
             "pnl_positive": pnl_d >= 0,
             "opened_at": opened_at,
             "avg_price_raw": float(avg_d),
-            "qty_raw": float(qty),
+            "qty_raw": float(calc_qty),    # штуки — для JS-расчёта PnL в data-qty
             "position_value_ui": fmt_money(cur_d * calc_qty),
         }
 
