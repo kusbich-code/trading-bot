@@ -640,14 +640,14 @@ def get_broker_positions() -> List[Dict[str, Any]]:
         result = []
         for pos in getattr(portfolio, "positions", []):
             figi = getattr(pos, "figi", "") or ""
-            if not figi:
+            instrument_type = str(getattr(pos, "instrument_type", "") or "")
+            if not figi or "currency" in instrument_type.lower() or figi.upper().startswith("RUB"):
                 continue
             quantity = quotation_to_decimal_safe(getattr(pos, "quantity", None))
             quantity_lots = quotation_to_decimal_safe(getattr(pos, "quantity_lots", None))
             avg_price = _money_value_to_decimal(getattr(pos, "average_position_price", None))
             current_price = _money_value_to_decimal(getattr(pos, "current_price", None))
             expected_yield = quotation_to_decimal_safe(getattr(pos, "expected_yield", None))
-            instrument_type = str(getattr(pos, "instrument_type", "") or "")
             direction = "SELL" if quantity < 0 else "BUY"
             lots = int(abs(quantity_lots)) if quantity_lots else int(abs(quantity))
             shares = int(abs(quantity))
