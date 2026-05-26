@@ -569,19 +569,26 @@ def _get_actual_close_price(client, figi: str, instrument_uid: str, opened_at: s
             to=datetime.now(timezone.utc),
             figi=figi,
         )
-        # Берём последнюю операцию типа BROKER_REPORT (sell/buy) для этого figi
+        # Берём последнюю исполненную операцию BUY/SELL для этого figi
+        # T-Bank API: state=1=EXECUTED, operation_type: BUY=1/15/23, SELL=2/22
         for op in reversed(list(ops.operations)):
-            op_type = str(getattr(op, "operation_type", "") or "")
-            op_state = str(getattr(op, "state", "") or "")
-            # Исполненные операции: OPERATION_TYPE_SELL (закрытие лонга) или OPERATION_TYPE_BUY (закрытие шорта)
-            if "EXECUTED" not in op_state and "EXECUTED" not in str(getattr(op, "status", "")):
+            op_type_raw = getattr(op, "operation_type", 0)
+            op_state_raw = getattr(op, "state", 0)
+            # Принимаем и числовые (1) и строковые ("OPERATION_STATE_EXECUTED") значения
+            is_executed = (op_state_raw == 1 or str(op_state_raw) in ("1", "OPERATION_STATE_EXECUTED"))
+            is_trade = (op_type_raw in (1, 2, 15, 22, 23)
+                        or str(op_type_raw) in ("OPERATION_TYPE_BUY", "OPERATION_TYPE_SELL",
+                                                "OPERATION_TYPE_BUY_CARD",
+                                                "OPERATION_TYPE_SELL_MARGIN",
+                                                "OPERATION_TYPE_BUY_MARGIN"))
+            if not is_executed or not is_trade:
                 continue
             price_obj = getattr(op, "price", None)
             if price_obj is None:
                 continue
             price_val = float(quotation_to_decimal(price_obj))
             if price_val > 0:
-                log.debug("Actual close price for %s: %.4f (op_type=%s)", figi[:8], price_val, op_type)
+                log.debug("Actual close price for %s: %.4f (op_type=%s)", figi[:8], price_val, op_type_raw)
                 return price_val
     except Exception as e:
         log.debug("_get_actual_close_price %s: %s", figi[:8], e)
@@ -866,16 +873,34 @@ def get_trading_status(client, instrument_id: str):
     return status
 
 
+MSK_TZ = timezone(timedelta(hours=3))
+
+
+def is_moex_session_open() -> bool:
+    """True если MOEX основная (10:00-18:50) или вечерняя (19:05-23:50) сессия открыта по МСК."""
+    now = datetime.now(MSK_TZ)
+    if now.weekday() >= 5:           # суббота=5, воскресенье=6
+        return False
+    t = now.hour * 60 + now.minute
+    return (600 <= t < 1130) or (1145 <= t < 1430)
+
+
 def is_tradable(status) -> bool:
+    # T-Bank API возвращает enum как целое число (5=NORMAL_TRADING, 1=NOT_AVAILABLE и т.д.)
+    # Используем allowlist вместо denylist чтобы надёжно блокировать всё неизвестное
+    status_int = int(status) if str(status).isdigit() else -1
     status_str = str(status)
-    blocked = [
-        "SECURITY_TRADING_STATUS_NOT_AVAILABLE_FOR_TRADING",
-        "SECURITY_TRADING_STATUS_DEALER_NOT_AVAILABLE_FOR_TRADING",
-        "SECURITY_TRADING_STATUS_BREAK_IN_TRADING",
-        "SECURITY_TRADING_STATUS_CLOSING_AUCTION",
-        "SECURITY_TRADING_STATUS_SESSION_CLOSED",
-    ]
-    return status_str not in blocked
+    # Разрешённые статусы: NORMAL_TRADING(5), DEALER_NORMAL(14), SESSION_OPEN(13),
+    # OPENING_PERIOD(2), CLOSING_PERIOD(3)
+    allowed_ints = {2, 3, 5, 13, 14}
+    allowed_strs = {
+        "SECURITY_TRADING_STATUS_NORMAL_TRADING",
+        "SECURITY_TRADING_STATUS_DEALER_NORMAL_TRADING",
+        "SECURITY_TRADING_STATUS_SESSION_OPEN",
+        "SECURITY_TRADING_STATUS_OPENING_PERIOD",
+        "SECURITY_TRADING_STATUS_CLOSING_PERIOD",
+    }
+    return status_int in allowed_ints or status_str in allowed_strs
 
 
 def get_money_balance(client) -> float:
@@ -1124,6 +1149,14 @@ def place_order_checked(client, ticker: str, figi: str, lots: int, raw_price: De
 
     except Exception as e:
         msg = str(e)
+        if "30034" in msg:
+            # Инструмент недоступен (биржа закрыта / вечерняя сессия не для этого инструмента)
+            # Устанавливаем cooldown 5 мин чтобы не спамить запросами
+            log_event("ORDER_MARKET_CLOSED",
+                      f"{ticker}: PostOrder 30034 — торги недоступны, пауза 5 мин",
+                      ticker=ticker, level="WARNING")
+            state.order_cooldowns[figi] = _now() - timedelta(seconds=BotState.ORDER_COOLDOWN_SEC - 300)
+            return None
         if "figi" in msg.lower():
             log_event("INVALID_FIGI", msg, ticker=ticker, level="WARNING")
             return None
@@ -1545,6 +1578,11 @@ def process_instrument(client, item,
         _save_signal(skip_reason=f"Пауза после ошибки ордера (осталось {remaining}с)", skip_filter="cooldown")
         return
 
+    # Проверка биржевых часов MOEX (Мск) — до размещения ордеров
+    if not is_moex_session_open():
+        _save_signal(skip_reason="Биржа закрыта (MOEX)", skip_filter="market_hours")
+        return
+
     # Session и tradable-проверки
     if not is_session_allowed(client, figi):
         _save_signal(skip_reason="Торговая сессия закрыта", skip_filter="session")
@@ -1674,6 +1712,7 @@ def process_instrument(client, item,
             _cancel_all_orders_for_figi(client, figi, ticker)
             order_result = place_order_checked(client, ticker, figi, qty, price, close_dir, market=True)
             if not order_result:
+                state.order_cooldowns[figi] = _now()
                 return
 
             exit_price = Decimal(str(order_result["executed_price"]))
