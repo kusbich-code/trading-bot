@@ -650,11 +650,13 @@ def get_broker_positions() -> List[Dict[str, Any]]:
             instrument_type = str(getattr(pos, "instrument_type", "") or "")
             direction = "SELL" if quantity < 0 else "BUY"
             lots = int(abs(quantity_lots)) if quantity_lots else int(abs(quantity))
+            shares = int(abs(quantity))
             result.append({
                 "figi": figi,
                 "instrument_type": instrument_type,
                 "direction": direction,
                 "qty": lots,
+                "qty_shares": shares,
                 "avg_price": avg_price,
                 "current_price": current_price,
                 "expected_yield": expected_yield,

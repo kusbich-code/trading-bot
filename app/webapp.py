@@ -137,16 +137,18 @@ def _portfolio_stream_worker():
                             quotation_to_decimal_safe as _qts,
                             _money_value_to_decimal as _mvd,
                         )
+                        qty_raw = _qts(getattr(pos, "quantity", None))
                         qty_lots = _qts(getattr(pos, "quantity_lots", None))
                         avg_p = _mvd(getattr(pos, "average_position_price", None))
                         cur_p = _mvd(getattr(pos, "current_price", None))
                         exp_y = _qts(getattr(pos, "expected_yield", None))
-                        direction = "SELL" if _qts(getattr(pos, "quantity", None)) < 0 else "BUY"
+                        direction = "SELL" if qty_raw < 0 else "BUY"
                         positions.append({
                             "figi": figi,
                             "instrument_type": instrument_type,
                             "direction": direction,
                             "qty": int(abs(qty_lots)),
+                            "qty_shares": int(abs(qty_raw)),
                             "avg_price": str(avg_p),
                             "current_price": str(cur_p),
                             "expected_yield": str(exp_y),
@@ -558,17 +560,18 @@ def api_dashboard_main():
 
     # ── Positions: broker API (same source as portfolio tab) ──────────────────
     # Priority: portfolio_stream cache → get_broker_positions() REST → BOT DB
-    def _fmt_pos(figi, direction, qty, avg, cur, pnl, opened_at=""):
+    def _fmt_pos(figi, direction, qty, avg, cur, pnl, opened_at="", qty_shares=None):
         avg_d = safe_decimal(avg)
         mkt = market_map.get(figi, {})
         mkt_price = safe_decimal(mkt.get("last_price", 0))
         cur_d = mkt_price if mkt_price > 0 else safe_decimal(cur)
-        # PnL пересчитываем по свежей цене
+        # qty_shares — штуки (для правильного расчёта PnL/стоимости),
+        # qty — лоты (для кнопки Закрыть через API брокера)
+        calc_qty = qty_shares if qty_shares is not None else qty
         if direction == "BUY":
-            pnl_d = (cur_d - avg_d) * qty
+            pnl_d = (cur_d - avg_d) * calc_qty
         else:
-            pnl_d = (avg_d - cur_d) * qty
-        # Процент изменения цены
+            pnl_d = (avg_d - cur_d) * calc_qty
         pct = ((cur_d - avg_d) / avg_d * 100) if avg_d > 0 else Decimal("0")
         return {
             "ticker": market_map.get(figi, {}).get("ticker", "") or figi[:8],
@@ -583,7 +586,7 @@ def api_dashboard_main():
             "opened_at": opened_at,
             "avg_price_raw": float(avg_d),
             "qty_raw": float(qty),
-            "position_value_ui": fmt_money(cur_d * qty),
+            "position_value_ui": fmt_money(cur_d * calc_qty),
         }
 
     with _portfolio_cache_lock:
@@ -597,6 +600,7 @@ def api_dashboard_main():
             positions.append(_fmt_pos(
                 pos["figi"], pos["direction"], pos["qty"],
                 pos["avg_price"], pos["current_price"], pos["expected_yield"],
+                qty_shares=pos.get("qty_shares"),
             ))
     else:
         try:
@@ -604,6 +608,7 @@ def api_dashboard_main():
                 positions.append(_fmt_pos(
                     pos["figi"], pos["direction"], pos["qty"],
                     pos["avg_price"], pos["current_price"], pos["expected_yield"],
+                    qty_shares=pos.get("qty_shares"),
                 ))
         except Exception:
             for p in get_open_positions(source="BOT"):
