@@ -560,14 +560,25 @@ def api_dashboard_main():
 
     # ── Positions: broker API (same source as portfolio tab) ──────────────────
     # Priority: portfolio_stream cache → get_broker_positions() REST → BOT DB
+    # Размер лота по figi из strategy_instruments (все стратегии)
+    from app.db import db_cursor as _dbc
+    _lot_map: dict = {}
+    try:
+        with _dbc() as _cur:
+            _cur.execute("SELECT DISTINCT figi, lot FROM strategy_instruments WHERE figi IS NOT NULL AND lot > 0")
+            for _r in _cur.fetchall():
+                _lot_map[_r[0]] = int(_r[1])
+    except Exception:
+        pass
+
     def _fmt_pos(figi, direction, qty, avg, cur, pnl, opened_at="", qty_shares=None):
         avg_d = safe_decimal(avg)
         mkt = market_map.get(figi, {})
         mkt_price = safe_decimal(mkt.get("last_price", 0))
         cur_d = mkt_price if mkt_price > 0 else safe_decimal(cur)
-        # qty_shares — штуки (для правильного расчёта PnL/стоимости),
-        # qty — лоты (для кнопки Закрыть через API брокера)
-        calc_qty = qty_shares if qty_shares is not None else qty
+        # qty от брокера — в лотах; умножаем на лот → штуки для PnL/стоимости
+        lot_size = _lot_map.get(figi, 1)
+        calc_qty = qty * lot_size
         if direction == "BUY":
             pnl_d = (cur_d - avg_d) * calc_qty
         else:
@@ -600,7 +611,6 @@ def api_dashboard_main():
             positions.append(_fmt_pos(
                 pos["figi"], pos["direction"], pos["qty"],
                 pos["avg_price"], pos["current_price"], pos["expected_yield"],
-                qty_shares=pos.get("qty_shares"),
             ))
     else:
         try:
@@ -608,7 +618,6 @@ def api_dashboard_main():
                 positions.append(_fmt_pos(
                     pos["figi"], pos["direction"], pos["qty"],
                     pos["avg_price"], pos["current_price"], pos["expected_yield"],
-                    qty_shares=pos.get("qty_shares"),
                 ))
         except Exception:
             for p in get_open_positions(source="BOT"):
