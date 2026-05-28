@@ -1019,6 +1019,23 @@ def place_order_checked(client, ticker: str, figi: str, lots: int, raw_price: De
     """market=True → рыночный ордер (для закрытия позиций, гарантирует исполнение)."""
     meta = state.instrument_meta.get(ticker)
     if not meta:
+        # Fallback: собираем мету из market_state БД (нужно для закрытия позиций после рестарта)
+        try:
+            _mmap = get_instrument_market_state_map()
+            _ms = next((v for v in _mmap.values() if v.get("ticker") == ticker), None)
+            if _ms and _ms.get("figi"):
+                from app.db import list_active_strategy_instruments as _lasi
+                _instr_row = next((i for i in _lasi() if i["figi"] == figi), None)
+                meta = {
+                    "figi": figi, "instrument_uid": _ms.get("instrument_uid", ""),
+                    "ticker": ticker, "lot": int(_instr_row["lot"]) if _instr_row else 1,
+                    "min_price_increment": str(_instr_row["min_price_increment"]) if _instr_row else "0.01",
+                    "class_code": "", "instrument_type": "share",
+                }
+                state.instrument_meta[ticker] = meta
+        except Exception:
+            pass
+    if not meta:
         log_event("ORDER_ERROR", "NO_META_SKIP", ticker=ticker, level="ERROR")
         return None
 
@@ -1063,16 +1080,21 @@ def place_order_checked(client, ticker: str, figi: str, lots: int, raw_price: De
             order_trades = result_q.get(timeout=6)
             trades = getattr(order_trades, "trades", []) or []
             if trades:
-                total_filled = sum(int(getattr(t, "quantity", 0)) for t in trades)
-                if total_filled > 0:
+                total_filled_shares = sum(int(getattr(t, "quantity", 0)) for t in trades)
+                if total_filled_shares > 0:
                     weighted = sum(
                         quotation_to_decimal(getattr(t, "price")) * int(getattr(t, "quantity", 0))
                         for t in trades
                     )
-                    _ep = weighted / Decimal(str(total_filled))
+                    _ep = weighted / Decimal(str(total_filled_shares))
                     if _accept_fill_price(_ep):
                         avg_price = _ep
-                    lots_executed = total_filled
+                    # OrdersStream trade.quantity → акции; нормализуем в лоты
+                    _lot_sz = int(meta.get("lot", 1))
+                    if _lot_sz > 1 and total_filled_shares % _lot_sz == 0:
+                        lots_executed = total_filled_shares // _lot_sz
+                    else:
+                        lots_executed = total_filled_shares
             execution_report_status = "ORDER_STATE_FILL"
             log_event("ORDER_FILL", f"stream fill: {ticker} qty={lots_executed} price={avg_price}", ticker=ticker)
         except _queue.Empty:
