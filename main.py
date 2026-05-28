@@ -208,6 +208,7 @@ class BotState:
         self.status = "INIT"
         self.session_balance_start = 0.0
         self.session_balance_current = 0.0
+        self.session_total_assets = 0.0    # total portfolio value (cash + positions)
         self.daily_pnl = Decimal("0")
         self.trades_today = 0
         self.open_positions = {}
@@ -933,6 +934,19 @@ def get_money_balance(client) -> float:
     except Exception as e:
         log.warning(f"Не удалось получить баланс портфеля: {e}")
     return 0.0
+
+
+def get_total_assets(client) -> float:
+    """Полная стоимость портфеля: кэш + позиции (total_amount_portfolio)."""
+    try:
+        _rate.record("GetPortfolio")
+        portfolio = client.operations.get_portfolio(account_id=settings.TINVEST_ACCOUNT_ID)
+        total = getattr(portfolio, "total_amount_portfolio", None)
+        if total:
+            return float(quotation_to_decimal(total))
+    except Exception as e:
+        log.warning("Не удалось получить total_assets: %s", e)
+    return state.session_balance_current  # fallback to cash
 
 
 def _fill_all_instrument_uids(client):
@@ -1843,17 +1857,17 @@ def process_instrument(client, item,
             _save_signal(skip_reason="Аналитики T-Bank: BUY против SELL", skip_filter="signal_service")
             return
 
-    # ── Авто-расчёт лотов по балансу ─────────────────────────────────────────
+    # ── Авто-расчёт лотов от суммы ИТОГО портфеля ────────────────────────────
     if int(item.get("auto_lots", 0) or 0) and sig in ("BUY", "SELL"):
         _lot_size_v = int(item.get("lot", 1))
         _comm_v     = Decimal(_cfg("estimated_commission_pct", "0.0004"))
         _cost_1lot  = Decimal(str(_lot_size_v)) * price * (1 + _comm_v)
         if _cost_1lot > 0:
-            _avail  = Decimal(str(state.session_balance_current))
-            _auto   = max(1, int(_avail / _cost_1lot))
+            _total  = Decimal(str(state.session_total_assets or state.session_balance_current))
+            _auto   = max(1, int(_total / _cost_1lot))
             if _auto != lot:
                 log_event("AUTO_LOTS",
-                          f"{ticker}: {float(_avail):.0f}₽ / {float(_cost_1lot):.0f}₽/лот = {_auto} лотов",
+                          f"{ticker}: итого {float(_total):.0f}₽ / {float(_cost_1lot):.0f}₽/лот = {_auto} лотов",
                           ticker=ticker)
             lot = _auto
 
@@ -2299,6 +2313,7 @@ def main():
     with client_cls(settings.TINVEST_TOKEN) as client:
         state.session_balance_start = get_money_balance(client)
         state.session_balance_current = state.session_balance_start
+        state.session_total_assets = get_total_assets(client)
         state.status = "SCANNING"
         state.sync_runtime()
 
@@ -2341,7 +2356,9 @@ def main():
                 sync_portfolio_positions(client)
 
                 state.session_balance_current = get_money_balance(client)
+                state.session_total_assets = get_total_assets(client)
                 set_runtime("session_balance", str(state.session_balance_current))
+                set_runtime("session_total_assets", str(state.session_total_assets))
                 state.status = "SCANNING"
                 state.sync_runtime()
                 sleep_sec = int(get_setting("check_interval_sec", str(settings.CHECK_INTERVAL_SEC)))

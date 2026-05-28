@@ -908,11 +908,11 @@ def api_balance_check():
     instruments = list_strategy_instruments(int(active_strategy_id)) if active_strategy_id else []
     enabled = [x for x in instruments if str(x.get("enabled", 0)) in ("1", "true")]
 
-    # Получаем свободный кэш
+    # Сумма ИТОГО портфеля (кэш + позиции) — база для расчёта авто-лотов
     cash = Decimal("0")
     try:
         portfolio = get_portfolio_snapshot()
-        cash = safe_decimal(portfolio.get("cash", 0))
+        cash = safe_decimal(portfolio.get("total_assets", 0) or portfolio.get("cash", 0))
     except Exception:
         pass
 
@@ -1487,11 +1487,11 @@ def api_parallel_status():
 
     # Unified instruments table across all strategies
     all_instrs = []
-    # Баланс кэша — нужен для расчёта авто-лотов
+    # Сумма ИТОГО — база для расчёта авто-лотов
     _parallel_cash = Decimal("0")
     try:
         _port = get_portfolio_snapshot()
-        _parallel_cash = safe_decimal(_port.get("cash", 0))
+        _parallel_cash = safe_decimal(_port.get("total_assets", 0) or _port.get("cash", 0))
     except Exception:
         pass
 
