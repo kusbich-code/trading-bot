@@ -725,7 +725,15 @@ def _handle_manual_close(bp: dict, market_map: dict, client=None):
     })
     close_position(figi, source="BOT")
     log_event("ORDER_CLOSE", f"{ticker} {reason} exit={float(exit_price):.4f} pnl={float(pnl):.2f}", ticker=ticker)
-    notify(f"{reason_ui}\n{ticker} | {direction}\nВход: {float(entry_price):.4f} → Выход: {float(exit_price):.4f}\nPnL ≈ {pnl_sign}{float(pnl):.2f} ₽")
+    _gross_mc = exit_price * qty  # qty уже в акциях
+    notify(
+        f"{'✅' if float(pnl) >= 0 else '🔴'} {reason_ui}\n"
+        f"{ticker} | {direction}\n"
+        f"Вход: {float(entry_price):.4f} ₽ → Выход: {float(exit_price):.4f} ₽\n"
+        f"Лотов: {qty_lots} × {_lot_sz_mc} шт = {qty} акций\n"
+        f"Сумма: {float(_gross_mc):,.0f} ₽\n"
+        f"PnL ≈ {pnl_sign}{float(pnl):.2f} ₽"
+    )
     # Cooldown 60 сек после закрытия — защита от немедленного реверса
     state.close_cooldowns[figi] = _now()
     # Отменяем ВСЕ оставшиеся ордера по этому figi (второй стоп, зависшие лимитники)
@@ -1811,12 +1819,14 @@ def process_instrument(client, item,
             if _coord is not None:
                 _coord.release(_strategy_id)
 
+            _pnl_sign = "+" if float(pnl) >= 0 else ""
             notify(
-                f"✅ Закрытие позиции\n"
+                f"{'✅' if float(pnl) >= 0 else '🔴'} Закрытие позиции\n"
                 f"{ticker} | {direction}\n"
-                f"Вход: {entry_price}\n"
-                f"Выход: {exit_price}\n"
-                f"PnL: {float(pnl):.2f} ₽\n"
+                f"Вход: {float(entry_price):.4f} ₽ → Выход: {float(exit_price):.4f} ₽\n"
+                f"Лотов: {exec_qty_lots} × {_lot_sz_c} шт = {exec_qty_shares} акций\n"
+                f"Сумма: {float(gross_amount):,.0f} ₽\n"
+                f"PnL: {_pnl_sign}{float(pnl):.2f} ₽\n"
                 f"Причина: {close_reason}"
             )
         return
@@ -1951,7 +1961,17 @@ def process_instrument(client, item,
 
         sl_ui = f"{float(stop_loss_pct)*100:.2f}%"
         tp_ui = f"{float(take_profit_pct)*100:.2f}%"
-        notify(f"🟢 Открытие позиции\n{ticker} | BUY\nЦена: {order_result['executed_price']}\nSL: {sl_ui} | TP: {tp_ui}\n{'✅ Стопы на бирже' if _stop_ids.get('sl_id') else '⚠️ Стопы не размещены'}")
+        _lot_sz_n = int(item.get("lot", 1))
+        _amt_n = _qty_filled * _lot_sz_n * _ep
+        notify(
+            f"🟢 Открытие позиции\n"
+            f"{ticker} | BUY\n"
+            f"Цена: {_ep:.4f} ₽\n"
+            f"Лотов: {_qty_filled} × {_lot_sz_n} шт = {_qty_filled * _lot_sz_n} акций\n"
+            f"Сумма: {_amt_n:,.0f} ₽\n"
+            f"SL: {sl_ui} | TP: {tp_ui}\n"
+            f"{'✅ Стопы на бирже' if _stop_ids.get('sl_id') else '⚠️ Стопы не размещены'}"
+        )
 
     elif sig == "SELL":
         if not allow_short_global or not allow_short:
@@ -1998,7 +2018,17 @@ def process_instrument(client, item,
 
         sl_ui = f"{float(stop_loss_pct)*100:.2f}%"
         tp_ui = f"{float(take_profit_pct)*100:.2f}%"
-        notify(f"🔴 Открытие позиции\n{ticker} | SELL\nЦена: {order_result['executed_price']}\nSL: {sl_ui} | TP: {tp_ui}\n{'✅ Стопы на бирже' if _stop_ids.get('sl_id') else '⚠️ Стопы не размещены'}")
+        _lot_sz_n = int(item.get("lot", 1))
+        _amt_n = _qty_filled * _lot_sz_n * _ep
+        notify(
+            f"🔴 Открытие позиции\n"
+            f"{ticker} | SELL\n"
+            f"Цена: {_ep:.4f} ₽\n"
+            f"Лотов: {_qty_filled} × {_lot_sz_n} шт = {_qty_filled * _lot_sz_n} акций\n"
+            f"Сумма: {_amt_n:,.0f} ₽\n"
+            f"SL: {sl_ui} | TP: {tp_ui}\n"
+            f"{'✅ Стопы на бирже' if _stop_ids.get('sl_id') else '⚠️ Стопы не размещены'}"
+        )
 
 def _parallel_strategy_worker(strategy_id: int, strat_name: str, stop_ev: threading.Event):
     """
