@@ -578,11 +578,15 @@ def api_dashboard_main():
     # Размер лота по figi из strategy_instruments (все стратегии)
     from app.db import db_cursor as _dbc
     _lot_map: dict = {}
+    _sl_tp_map: dict = {}
     try:
         with _dbc() as _cur:
             _cur.execute("SELECT DISTINCT figi, lot FROM strategy_instruments WHERE figi IS NOT NULL AND lot > 0")
             for _r in _cur.fetchall():
                 _lot_map[_r[0]] = int(_r[1])
+            _cur.execute("SELECT figi, stop_loss_pct, take_profit_pct FROM strategy_instruments WHERE figi IS NOT NULL")
+            for _r in _cur.fetchall():
+                _sl_tp_map[_r[0]] = (float(_r[1] or 0), float(_r[2] or 0))
     except Exception:
         pass
 
@@ -599,11 +603,20 @@ def api_dashboard_main():
         else:
             pnl_d = (avg_d - cur_d) * calc_qty
         pct = ((cur_d - avg_d) / avg_d * 100) if avg_d > 0 else Decimal("0")
+        sl_pct, tp_pct = _sl_tp_map.get(figi, (0.0, 0.0))
+        if avg_d > 0 and sl_pct > 0:
+            sl_price = avg_d * Decimal(str(1 - sl_pct)) if direction == "BUY" else avg_d * Decimal(str(1 + sl_pct))
+        else:
+            sl_price = Decimal("0")
+        if avg_d > 0 and tp_pct > 0:
+            tp_price = avg_d * Decimal(str(1 + tp_pct)) if direction == "BUY" else avg_d * Decimal(str(1 - tp_pct))
+        else:
+            tp_price = Decimal("0")
         return {
             "ticker": market_map.get(figi, {}).get("ticker", "") or figi[:8],
             "figi": figi,
             "direction": direction,
-            "qty": qty,                    # лоты — для отображения и кнопки Закрыть
+            "qty": qty,
             "entry_price_ui": fmt_price(avg_d),
             "current_price_ui": fmt_price(cur_d),
             "unrealized_pnl_ui": fmt_money(pnl_d),
@@ -611,8 +624,12 @@ def api_dashboard_main():
             "pnl_positive": pnl_d >= 0,
             "opened_at": opened_at,
             "avg_price_raw": float(avg_d),
-            "qty_raw": float(calc_qty),    # штуки — для JS-расчёта PnL в data-qty
+            "qty_raw": float(calc_qty),
             "position_value_ui": fmt_money(cur_d * calc_qty),
+            "sl_pct_ui": f"{sl_pct*100:.2f}%" if sl_pct > 0 else "—",
+            "tp_pct_ui": f"{tp_pct*100:.2f}%" if tp_pct > 0 else "—",
+            "sl_price_ui": fmt_price(sl_price) if sl_price > 0 else "—",
+            "tp_price_ui": fmt_price(tp_price) if tp_price > 0 else "—",
         }
 
     with _portfolio_cache_lock:

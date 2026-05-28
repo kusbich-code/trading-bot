@@ -480,7 +480,7 @@ async function renderMainShell() {
       <div class="row between"><h2>Позиции <span class="note">(API брокера)</span></h2></div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Тикер</th><th>Направление</th><th>Лотов</th><th>Вход</th><th>Тек. цена</th><th>Изм.%</th><th>ПнЛ</th><th>Сумма</th><th>Действие</th></tr></thead>
+          <thead><tr><th>Тикер</th><th>Направление</th><th>Лотов</th><th>Вход</th><th>Тек. цена</th><th>Изм.%</th><th>ПнЛ</th><th>Сумма</th><th>SL</th><th>TP</th><th>Действие</th></tr></thead>
           <tbody id="mainPositionsBody"></tbody>
         </table>
       </div>
@@ -528,6 +528,14 @@ async function renderMainData() {
         <td class="live-pos-pct" style="color:${pctColor};font-weight:600">${esc(pct)}</td>
         <td class="live-pos-pnl" style="font-weight:700;color:${pnlColor}">${esc(p.unrealized_pnl_ui)}</td>
         <td class="live-pos-value" style="color:#9fb3d8;font-size:12px">${esc(p.position_value_ui||"—")}</td>
+        <td style="font-size:12px;white-space:nowrap;color:#ff7b7b">
+          ${esc(p.sl_price_ui||"—")}<br>
+          <span class="muted">${esc(p.sl_pct_ui||"—")}</span>
+        </td>
+        <td style="font-size:12px;white-space:nowrap;color:#2fa36b">
+          ${esc(p.tp_price_ui||"—")}<br>
+          <span class="muted">${esc(p.tp_pct_ui||"—")}</span>
+        </td>
         <td>${p.figi && p.qty && p.direction ? `
           <button class="btn btn-danger" style="padding:5px 10px"
             onclick="closeOnePosition('${esc(p.figi)}','${esc(p.qty)}','${esc(p.direction)}')">
