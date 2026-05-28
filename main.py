@@ -1606,36 +1606,37 @@ def process_instrument(client, item,
         _save_signal(skip_reason=f"Пауза после ошибки ордера (осталось {remaining}с)", skip_filter="cooldown")
         return
 
-    # Проверка биржевых часов MOEX (Мск) — до размещения ордеров
-    if not is_moex_session_open():
-        _save_signal(skip_reason="Биржа закрыта (MOEX)", skip_filter="market_hours")
-        return
+    # Проверки сессии/торгуемости — только для новых входов.
+    # Открытые позиции проверяются ниже независимо от статуса сессии.
+    if ticker not in positions:
+        if not is_moex_session_open():
+            _save_signal(skip_reason="Биржа закрыта (MOEX)", skip_filter="market_hours")
+            return
 
-    # Session и tradable-проверки
-    if not is_session_allowed(client, figi):
-        _save_signal(skip_reason="Торговая сессия закрыта", skip_filter="session")
-        return
+        if not is_session_allowed(client, figi):
+            _save_signal(skip_reason="Торговая сессия закрыта", skip_filter="session")
+            return
 
-    try:
-        trading_status = get_trading_status(client, figi)
-    except Exception as _tse:
-        _te_msg = str(_tse)
-        if "resource exhausted" in _te_msg.lower() or "RESOURCE_EXHAUSTED" in _te_msg:
-            _save_skip("Лимит запросов API (trading status)", "rate_limit")
-            time.sleep(1.0)
-        return
-    if not is_tradable(trading_status):
-        _save_signal(skip_reason=f"Торговля недоступна: {str(trading_status)[-30:]}", skip_filter="trading_status")
-        return
+        try:
+            trading_status = get_trading_status(client, figi)
+        except Exception as _tse:
+            _te_msg = str(_tse)
+            if "resource exhausted" in _te_msg.lower() or "RESOURCE_EXHAUSTED" in _te_msg:
+                _save_skip("Лимит запросов API (trading status)", "rate_limit")
+                time.sleep(1.0)
+            return
+        if not is_tradable(trading_status):
+            _save_signal(skip_reason=f"Торговля недоступна: {str(trading_status)[-30:]}", skip_filter="trading_status")
+            return
 
-    last_volume = get_last_candle_volume(candles)
-    min_volume = int(item.get("min_volume", 0))
-    if min_volume > 0 and last_volume < min_volume:
-        return
+        last_volume = get_last_candle_volume(candles)
+        min_volume = int(item.get("min_volume", 0))
+        if min_volume > 0 and last_volume < min_volume:
+            return
 
-    max_spread_pct = Decimal(str(item.get("max_spread_pct", "0")))
-    if max_spread_pct > 0 and spread_pct > max_spread_pct:
-        return
+        max_spread_pct = Decimal(str(item.get("max_spread_pct", "0")))
+        if max_spread_pct > 0 and spread_pct > max_spread_pct:
+            return
 
     # Блок А: подтверждение сигнала через API-индикаторы (RSI/MACD/BB)
     # Запускаем только когда есть потенциальный сигнал входа — чтобы не делать 3 лишних API-вызова на каждом HOLD
