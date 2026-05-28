@@ -1873,10 +1873,15 @@ def process_instrument(client, item,
 
     # ── Проверка баланса перед ордером ───────────────────────────────────────
     if sig == "BUY":
+        _auto_lots_on = int(item.get("auto_lots", 0) or 0)
         lot_size = item.get("lot", 1)
         commission_pct = Decimal(_cfg("estimated_commission_pct", "0.0004"))
         required = Decimal(str(lot)) * Decimal(str(lot_size)) * price * (1 + commission_pct)
-        available = Decimal(str(state.session_balance_current))
+        # В авто-режиме сравниваем с итого портфелем (та же база что и при расчёте лотов)
+        if _auto_lots_on and state.session_total_assets > 0:
+            available = Decimal(str(state.session_total_assets))
+        else:
+            available = Decimal(str(state.session_balance_current))
         if available < required:
             _reason = f"Недостаточно средств: нужно {float(required):.0f} ₽, доступно {float(available):.0f} ₽"
             log_event("BALANCE_WARNING",
