@@ -605,8 +605,15 @@ def _handle_manual_close(bp: dict, market_map: dict, client=None):
     ticker      = bp["ticker"]
     direction   = bp["direction"]
     entry_price = Decimal(str(bp["entry_price"]))
-    qty         = int(bp["qty"])
+    qty_lots    = int(bp["qty"])
     opened_at   = bp.get("opened_at", "")
+    # lot_size для расчёта денежных сумм
+    try:
+        from app.db import list_active_strategy_instruments as _lasi_mc
+        _lot_sz_mc = next((int(i.get("lot", 1)) for i in _lasi_mc() if i["figi"] == figi), 1)
+    except Exception:
+        _lot_sz_mc = int(state.instrument_meta.get(ticker, {}).get("lot", 1))
+    qty = qty_lots * _lot_sz_mc  # акции для денежных расчётов
 
     sl_tp  = get_instrument_sl_tp(figi)
     sl_pct = Decimal(str(sl_tp["sl_pct"]))
@@ -1674,10 +1681,12 @@ def process_instrument(client, item,
             pos["entry_price"] = float(entry_price)  # исправляем также в памяти
 
         unrealized_pnl = Decimal("0")
+        _lot_sz_u = int(item.get("lot", 1))
+        _qty_shares_u = qty * _lot_sz_u
         if direction == "BUY":
-            unrealized_pnl = (price - entry_price) * qty
+            unrealized_pnl = (price - entry_price) * _qty_shares_u
         else:
-            unrealized_pnl = (entry_price - price) * qty
+            unrealized_pnl = (entry_price - price) * _qty_shares_u
 
         upsert_position({
             "ticker": ticker,
@@ -1745,16 +1754,18 @@ def process_instrument(client, item,
                 return
 
             exit_price = Decimal(str(order_result["executed_price"]))
-            exec_qty = int(order_result["lots_executed"] or qty)
-            gross_amount = exit_price * exec_qty
-           
+            exec_qty_lots = int(order_result["lots_executed"] or qty)
+            _lot_sz_c = int(item.get("lot", 1))
+            exec_qty_shares = exec_qty_lots * _lot_sz_c  # акции для денежных расчётов
+
             estimated_commission_pct = Decimal(_cfg("estimated_commission_pct", str(settings.ESTIMATED_COMMISSION_PCT)))
-            commission = (entry_price * exec_qty + exit_price * exec_qty) * estimated_commission_pct
+            gross_amount = exit_price * exec_qty_shares
+            commission = (entry_price * exec_qty_shares + exit_price * exec_qty_shares) * estimated_commission_pct
 
             if direction == "BUY":
-                pnl = (exit_price - entry_price) * exec_qty - commission
+                pnl = (exit_price - entry_price) * exec_qty_shares - commission
             else:
-                pnl = (entry_price - exit_price) * exec_qty - commission
+                pnl = (entry_price - exit_price) * exec_qty_shares - commission
 
             state.daily_pnl += pnl
             state.trades_today += 1
@@ -1767,7 +1778,7 @@ def process_instrument(client, item,
                 "direction": direction,
                 "entry": float(entry_price),
                 "exit": float(exit_price),
-                "qty": exec_qty,
+                "qty": exec_qty_lots,
                 "gross_amount": float(gross_amount),
                 "commission": float(commission),
                 "pnl": float(pnl),
