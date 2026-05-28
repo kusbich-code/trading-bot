@@ -1109,7 +1109,12 @@ def place_order_checked(client, ticker: str, figi: str, lots: int, raw_price: De
                     execution_report_status = str(getattr(order_state, "execution_report_status", "UNKNOWN"))
                     lots_executed_raw = getattr(order_state, "lots_executed", None)
                     if lots_executed_raw is not None:
-                        lots_executed = int(lots_executed_raw)
+                        _le = int(lots_executed_raw)
+                        _lot_sz2 = int(meta.get("lot", 1))
+                        if _lot_sz2 > 1 and _le > 0 and _le % _lot_sz2 == 0:
+                            lots_executed = _le // _lot_sz2
+                        else:
+                            lots_executed = _le
                     executed_order_price = getattr(order_state, "executed_order_price", None)
                     if executed_order_price:
                         _ep = quotation_to_decimal(executed_order_price)
@@ -2258,6 +2263,26 @@ def main():
 
     _refresh_parallel_workers()
     log.info("Parallel strategy workers started")
+
+    # Восстанавливаем BOT-позиции из БД в state.open_positions при перезапуске
+    try:
+        for _bp in get_open_positions(source="BOT"):
+            _tk = _bp.get("ticker", "")
+            if _tk and _tk not in state.open_positions:
+                state.open_positions[_tk] = {
+                    "figi":        _bp["figi"],
+                    "direction":   _bp["direction"],
+                    "entry_price": float(_bp.get("entry_price", 0)),
+                    "qty":         int(_bp.get("qty", 0)),
+                    "opened_at":   _bp.get("opened_at", ""),
+                    "trailing_stop": 0.0,
+                    "native_stop_ids": {},
+                }
+        if state.open_positions:
+            log.info("Восстановлено %d BOT-позиций из БД: %s",
+                     len(state.open_positions), list(state.open_positions))
+    except Exception as _rpe:
+        log.warning("Ошибка восстановления позиций из БД: %s", _rpe)
 
     with client_cls(settings.TINVEST_TOKEN) as client:
         state.session_balance_start = get_money_balance(client)
