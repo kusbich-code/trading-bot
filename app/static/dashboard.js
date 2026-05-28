@@ -993,8 +993,8 @@ function _renderInstrumentForms(instruments, stratId) {
       <label>Лоты
         <div style="display:flex;align-items:center;gap:6px;margin-top:4px">
           <input class="field" name="lots_override" type="number" min="1"
-                 value="${esc(i.lots_override || 1)}" style="width:72px"
-                 ${i.auto_lots ? 'style="opacity:.45"' : ''}>
+                 value="${esc(i.lots_override || 1)}"
+                 style="width:72px;opacity:${i.auto_lots ? '.45' : '1'}">
           <input type="hidden" name="auto_lots" class="auto-lots-hidden" value="${i.auto_lots ? '1' : '0'}">
           <label style="font-weight:normal;white-space:nowrap;cursor:pointer;display:flex;align-items:center;gap:4px">
             <input type="checkbox" ${i.auto_lots ? 'checked' : ''}

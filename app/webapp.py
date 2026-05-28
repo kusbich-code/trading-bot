@@ -1487,6 +1487,14 @@ def api_parallel_status():
 
     # Unified instruments table across all strategies
     all_instrs = []
+    # Баланс кэша — нужен для расчёта авто-лотов
+    _parallel_cash = Decimal("0")
+    try:
+        _port = get_portfolio_snapshot()
+        _parallel_cash = safe_decimal(_port.get("cash", 0))
+    except Exception:
+        pass
+
     seen_figis: set = set()
     for strat in parallel_strats:
         sid = strat["strategy_id"]
@@ -1507,12 +1515,20 @@ def api_parallel_status():
                 sig_info = {}
             upnl = float(pos.get("unrealized_pnl", 0)) if pos else 0.0
             volume = int(mkt.get("volume_1m", 0) or 0)
-            lot_count = int(instr.get("lots_override", 1) or 1)
-            lot_size  = int(instr.get("lot", 1) or 1)
-            last_price = float(mkt.get("last_price", 0) or 0)
+            lot_size      = int(instr.get("lot", 1) or 1)
+            lots_override = int(instr.get("lots_override", 1) or 1)
+            auto_lots_on  = int(instr.get("auto_lots", 0) or 0)
+            last_price    = float(mkt.get("last_price", 0) or 0)
+            if auto_lots_on and last_price > 0 and _parallel_cash > 0:
+                _commission_pct = safe_decimal(get_setting("estimated_commission_pct", "0.0004"))
+                _cost_per_lot = Decimal(str(lot_size)) * Decimal(str(last_price)) * (1 + _commission_pct)
+                lot_count = max(1, int(_parallel_cash / _cost_per_lot)) if _cost_per_lot > 0 else 1
+            else:
+                lot_count = lots_override
             lot_cost_rub = lot_count * lot_size * last_price
             lot_cost_ui = (
-                f"{lot_cost_rub:,.0f} ₽".replace(",", " ") if lot_cost_rub > 0 else "—"
+                f"{lot_count} авт.×{lot_size}={lot_count*lot_size} шт" if auto_lots_on and lot_cost_rub > 0
+                else f"{lot_cost_rub:,.0f} ₽".replace(",", " ") if lot_cost_rub > 0 else "—"
             )
             all_instrs.append({
                 "figi":            figi,
@@ -1520,6 +1536,7 @@ def api_parallel_status():
                 "strategy_id":     sid,
                 "strategy_name":   strat["name"],
                 "lots":            lot_count,
+                "auto_lots":       auto_lots_on,
                 "lot_size":        lot_size,
                 "lot_cost_rub":    lot_cost_rub,
                 "lot_cost_ui":     lot_cost_ui,
@@ -2136,6 +2153,7 @@ def api_strategy_instruments_update(
     strategy_id: int,
     figi: str = Form(...),
     lots_override: str = Form("1"),
+    auto_lots: str = Form("0"),
     stop_loss_pct: str = Form("0.25"),
     take_profit_pct: str = Form("0.50"),
     max_spread_pct: str = Form("0"),
@@ -2147,6 +2165,7 @@ def api_strategy_instruments_update(
 ):
     update_strategy_instrument(strategy_id, figi, {
         "lots_override": lots_override,
+        "auto_lots": int(bool01(auto_lots)),
         "stop_loss_pct": str(safe_decimal(stop_loss_pct) / Decimal("100")),
         "take_profit_pct": str(safe_decimal(take_profit_pct) / Decimal("100")),
         "max_spread_pct": str(safe_decimal(max_spread_pct) / Decimal("100")),
