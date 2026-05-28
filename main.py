@@ -1961,6 +1961,8 @@ def process_instrument(client, item,
 
         sl_ui = f"{float(stop_loss_pct)*100:.2f}%"
         tp_ui = f"{float(take_profit_pct)*100:.2f}%"
+        _sl_price = Decimal(str(_ep)) * (1 - stop_loss_pct)
+        _tp_price = Decimal(str(_ep)) * (1 + take_profit_pct)
         _lot_sz_n = int(item.get("lot", 1))
         _amt_n = _qty_filled * _lot_sz_n * _ep
         notify(
@@ -1969,7 +1971,7 @@ def process_instrument(client, item,
             f"Цена: {_ep:.4f} ₽\n"
             f"Лотов: {_qty_filled} × {_lot_sz_n} шт = {_qty_filled * _lot_sz_n} акций\n"
             f"Сумма: {_amt_n:,.0f} ₽\n"
-            f"SL: {sl_ui} | TP: {tp_ui}\n"
+            f"SL: {sl_ui} ({float(_sl_price):.4f} ₽) | TP: {tp_ui} ({float(_tp_price):.4f} ₽)\n"
             f"{'✅ Стопы на бирже' if _stop_ids.get('sl_id') else '⚠️ Стопы не размещены'}"
         )
 
@@ -2018,6 +2020,8 @@ def process_instrument(client, item,
 
         sl_ui = f"{float(stop_loss_pct)*100:.2f}%"
         tp_ui = f"{float(take_profit_pct)*100:.2f}%"
+        _sl_price = Decimal(str(_ep)) * (1 + stop_loss_pct)
+        _tp_price = Decimal(str(_ep)) * (1 - take_profit_pct)
         _lot_sz_n = int(item.get("lot", 1))
         _amt_n = _qty_filled * _lot_sz_n * _ep
         notify(
@@ -2026,7 +2030,7 @@ def process_instrument(client, item,
             f"Цена: {_ep:.4f} ₽\n"
             f"Лотов: {_qty_filled} × {_lot_sz_n} шт = {_qty_filled * _lot_sz_n} акций\n"
             f"Сумма: {_amt_n:,.0f} ₽\n"
-            f"SL: {sl_ui} | TP: {tp_ui}\n"
+            f"SL: {sl_ui} ({float(_sl_price):.4f} ₽) | TP: {tp_ui} ({float(_tp_price):.4f} ₽)\n"
             f"{'✅ Стопы на бирже' if _stop_ids.get('sl_id') else '⚠️ Стопы не размещены'}"
         )
 
