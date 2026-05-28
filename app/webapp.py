@@ -1526,10 +1526,7 @@ def api_parallel_status():
             else:
                 lot_count = lots_override
             lot_cost_rub = lot_count * lot_size * last_price
-            lot_cost_ui = (
-                f"{lot_count} авт.×{lot_size}={lot_count*lot_size} шт" if auto_lots_on and lot_cost_rub > 0
-                else f"{lot_cost_rub:,.0f} ₽".replace(",", " ") if lot_cost_rub > 0 else "—"
-            )
+            lot_cost_ui = f"{lot_cost_rub:,.0f} ₽".replace(",", " ") if lot_cost_rub > 0 else "—"
             all_instrs.append({
                 "figi":            figi,
                 "ticker":          instr["ticker"],
