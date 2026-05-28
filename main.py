@@ -2021,6 +2021,16 @@ def _parallel_strategy_worker(strategy_id: int, strat_name: str, stop_ev: thread
     if stop_ev.is_set():
         return
 
+    # Если total_assets ещё не инициализирован — обновляем из API
+    if state.session_total_assets <= 0:
+        try:
+            from app.services.tbank_client import get_portfolio_snapshot as _gps2
+            _prt = _gps2()
+            state.session_total_assets = float(Decimal(str(_prt.get("total_assets", 0) or 0)))
+            state.session_balance_current = float(Decimal(str(_prt.get("cash", 0) or 0)))
+        except Exception:
+            pass
+
     # Восстанавливаем позиции из БД при старте (на случай перезапуска бота)
     positions: Dict = {}
     try:
@@ -2291,6 +2301,17 @@ def main():
     Thread(target=_orders_stream_worker, daemon=True, name="orders-stream").start()
     Thread(target=_market_data_stream_worker, daemon=True, name="market-data-stream").start()
     log.info("OrdersStream + MarketDataStream workers started")
+
+    # Инициализируем total_assets ДО запуска параллельных воркеров
+    try:
+        from app.services.tbank_client import get_portfolio_snapshot as _gps
+        _init_port = _gps()
+        state.session_total_assets = float(Decimal(str(_init_port.get("total_assets", 0) or 0)))
+        state.session_balance_current = float(Decimal(str(_init_port.get("cash", 0) or 0)))
+        log.info("Инициализация: total_assets=%.2f cash=%.2f",
+                 state.session_total_assets, state.session_balance_current)
+    except Exception as _ie:
+        log.warning("Ошибка инициализации баланса: %s", _ie)
 
     _refresh_parallel_workers()
     log.info("Parallel strategy workers started")
