@@ -2773,7 +2773,27 @@ async function refreshParallelStatus() {
       const tickerCell = isCoordOwner
         ? `<b>${esc(i.ticker)}</b> <span style="color:#f5a623;font-size:10px">&#9679; позиция</span>`
         : `<b>${esc(i.ticker)}</b>`;
-      return `<tr data-figi="${esc(i.figi)}" style="${rowBg(idx)}">
+      // Ячейка дневного лимита потерь
+      const maxLoss = i.max_daily_loss_rub || 0;
+      const dailyPnl = i.daily_pnl || 0;
+      const blocked  = i.is_loss_blocked;
+      const blockCnt = i.loss_block_count_month || 0;
+      let lossCell = '<span class="muted" style="font-size:11px">—</span>';
+      if (maxLoss > 0) {
+        const pnlColor = dailyPnl >= 0 ? "#2fa36b" : "#ff7b7b";
+        const limitFmt = maxLoss.toLocaleString("ru-RU");
+        const pnlFmt   = (dailyPnl >= 0 ? "+" : "") + dailyPnl.toFixed(0);
+        lossCell = `
+          <div style="font-size:11px;line-height:1.4">
+            ${blocked
+              ? `<span style="background:rgba(191,77,90,.2);color:#ff7b7b;border:1px solid #bf4d5a;border-radius:3px;padding:1px 5px;font-size:10px;font-weight:700">⛔ СТОП</span>`
+              : `<span style="color:#555;font-size:10px">Лимит: −${limitFmt} ₽</span>`
+            }
+            <div><span style="color:${pnlColor}">${pnlFmt} ₽</span> сегодня</div>
+            ${blockCnt > 0 ? `<div class="muted" style="font-size:10px">Сработал ${blockCnt}× за 30 дн.</div>` : ""}
+          </div>`;
+      }
+      return `<tr data-figi="${esc(i.figi)}" style="${rowBg(idx)}${blocked ? ';opacity:.7' : ''}">
         <td>${tickerCell}</td>
         <td>${esc(i.lots)} <span class="muted" style="font-size:10px">(${esc(i.lot_cost_ui || "")})</span></td>
         <td class="muted" style="white-space:nowrap">
@@ -2784,6 +2804,7 @@ async function refreshParallelStatus() {
         <td>${esc(i.last_price_ui)}</td>
         <td class="muted" style="font-size:11px">${esc(i.price_time)}</td>
         <td class="muted" style="font-size:12px">${esc(i.volume_ui)}</td>
+        <td>${lossCell}</td>
         <td>
           <span style="color:${sigColor};font-weight:700;font-size:12px">${sigLabel}</span>
           ${score ? `<span class="muted" style="font-size:11px;margin-left:4px">${score > 0 ? "+" : ""}${score}</span>` : ""}
@@ -2811,7 +2832,7 @@ async function refreshParallelStatus() {
         <div class="table-wrap">
           <table><thead><tr>
             <th>Тикер</th><th>Лоты (стоимость)</th><th>SL/TP</th>
-            <th>Цена</th><th>Обновлено</th><th>Объём 1м</th><th>Сигнал</th>
+            <th>Цена</th><th>Обновлено</th><th>Объём 1м</th><th>Лимит/день</th><th>Сигнал</th>
           </tr></thead><tbody id="_psInstrBody"></tbody></table>
         </div>
         <div id="_psCoordNote"></div>`;

@@ -619,12 +619,21 @@ def api_news_ticker(figi: str = "", hours: int = 4):
     info = mmap.get(figi, {})
     ticker = info.get("ticker", "")
 
-    # Строим поисковой запрос: тикер + биржа для русских акций
-    search_q = urllib.request.quote(f"{ticker} акции MOEX" if ticker else figi)
-    url = (
-        f"https://news.google.com/rss/search"
-        f"?q={search_q}&hl=ru&gl=RU&ceid=RU:ru"
-    )
+    # Получаем русское название компании из strategy_instruments
+    _company_name = ticker
+    try:
+        from app.db import db_cursor as _dbc3
+        with _dbc3() as _c3:
+            _c3.execute("SELECT name FROM strategy_instruments WHERE figi=? AND name!='' LIMIT 1", (figi,))
+            _row = _c3.fetchone()
+            if _row and _row[0]:
+                _company_name = _row[0].split()[0]  # первое слово названия
+    except Exception:
+        pass
+
+    # Яндекс.Новости RSS поиск — within=2 (сутки), фильтруем по времени сами
+    search_q = urllib.request.quote(f"{_company_name} акции")
+    url = f"https://news.yandex.ru/export.rss?text={search_q}&within=2&rss=1"
 
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
     news = []
@@ -1652,6 +1661,34 @@ def api_parallel_status():
     except Exception:
         pass
 
+    # Дневной PnL по тикерам и счётчик блокировок за месяц (из event_logs)
+    from datetime import datetime as _dt2, timedelta as _td2
+    _today_str  = _dt2.now().strftime("%Y-%m-%d")
+    _month_str  = (_dt2.now() - _td2(days=30)).strftime("%Y-%m-%d")
+    _daily_pnl_cache: dict = {}  # ticker → float
+    _block_count_cache: dict = {}  # ticker → int
+
+    try:
+        from app.db import db_cursor as _dbc2
+        with _dbc2() as _cur2:
+            # Дневной PnL по тикерам
+            _cur2.execute(
+                "SELECT ticker, COALESCE(SUM(pnl),0) FROM trades WHERE time>=? GROUP BY ticker",
+                (_today_str,)
+            )
+            for _r in _cur2.fetchall():
+                _daily_pnl_cache[_r[0]] = float(_r[1])
+            # Блокировки за месяц: event_type=BALANCE_WARNING, skip_filter='instrument_daily_loss'
+            _cur2.execute(
+                "SELECT ticker, COUNT(*) FROM event_logs WHERE event_type='BALANCE_WARNING' "
+                "AND message LIKE '%Дневной лимит%' AND event_time>=? GROUP BY ticker",
+                (_month_str,)
+            )
+            for _r in _cur2.fetchall():
+                _block_count_cache[_r[0]] = int(_r[1])
+    except Exception:
+        pass
+
     seen_figis: set = set()
     for strat in parallel_strats:
         sid = strat["strategy_id"]
@@ -1708,6 +1745,15 @@ def api_parallel_status():
                 "signal_skip_filter":  sig_info.get("skip_filter", ""),
                 "unrealized_pnl":  upnl,
                 "in_position":     pos is not None,
+                # Дневной лимит потерь
+                "max_daily_loss_rub": float(instr.get("max_daily_loss_rub", 0) or 0),
+                "daily_pnl":       _daily_pnl_cache.get(instr["ticker"], 0.0),
+                "daily_pnl_ui":    fmt_money(_daily_pnl_cache.get(instr["ticker"], 0.0)),
+                "is_loss_blocked": (
+                    float(instr.get("max_daily_loss_rub", 0) or 0) > 0
+                    and _daily_pnl_cache.get(instr["ticker"], 0.0) <= -float(instr.get("max_daily_loss_rub", 0) or 0)
+                ),
+                "loss_block_count_month": _block_count_cache.get(instr["ticker"], 0),
             })
 
     coord_raw = get_runtime("parallel_coord") or ""
