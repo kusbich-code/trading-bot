@@ -166,10 +166,12 @@ function diffTbodyFlash(tbody, rows) {
   });
 }
 
-function _flashCell(cell) {
-  cell.classList.remove('cell-updated');
+function _flashCell(cell, dir) {
+  cell.classList.remove('cell-updated', 'cell-updated-up', 'cell-updated-down');
   void cell.offsetWidth;
-  cell.classList.add('cell-updated');
+  if (dir === 'up')        cell.classList.add('cell-updated-up');
+  else if (dir === 'down') cell.classList.add('cell-updated-down');
+  else                     cell.classList.add('cell-updated');
 }
 
 function ensureViewsExist() {
@@ -662,8 +664,10 @@ async function refreshQuotesOnly() {
     const prev = el.textContent;
     const next = q.last_price_ui;
     if (prev !== next) {
+      const prevVal = parseFloat(prev.replace(/[^\d.-]/g, "")) || 0;
+      const nextVal = parseFloat(next.replace(/[^\d.-]/g, "")) || 0;
       el.textContent = next;
-      _flashCell(el);
+      _flashCell(el, nextVal > prevVal ? 'up' : nextVal < prevVal ? 'down' : undefined);
     }
   });
   document.querySelectorAll(".live-time[data-figi]").forEach((el) => {
@@ -685,13 +689,13 @@ async function refreshQuotesOnly() {
     const pct   = (price - avg) / avg * 100;
     const value = price * qty;
 
-    const _upd = (sel, text, color) => {
+    const _upd = (sel, text, color, dir) => {
       const el = row.querySelector(sel);
       if (!el) return;
       if (el.textContent.trim() === text && (!color || el.style.color === color)) return;
       el.textContent = text;
       if (color) el.style.color = color;
-      _flashCell(el);
+      _flashCell(el, dir);
     };
 
     const priceUi = price === 0 ? "—" : price.toFixed(2);
@@ -699,10 +703,13 @@ async function refreshQuotesOnly() {
     const pnlUi   = pnl.toFixed(2);
     const valUi   = _fmtSum(value);
 
-    _upd(".live-pos-price", priceUi, null);
-    _upd(".live-pos-pct",   pctUi,   pct >= 0 ? "#2fa36b" : "#ff7b7b");
-    _upd(".live-pos-pnl",   pnlUi,   pnl >= 0 ? "#2fa36b" : "#ff7b7b");
-    _upd(".live-pos-value", valUi,   null);
+    const prevPriceVal = parseFloat(row.querySelector(".live-pos-price")?.textContent || "0") || 0;
+    const priceDir = price > prevPriceVal ? 'up' : price < prevPriceVal ? 'down' : undefined;
+
+    _upd(".live-pos-price", priceUi, null, priceDir);
+    _upd(".live-pos-pct",   pctUi,   pct >= 0 ? "#2fa36b" : "#ff7b7b", priceDir);
+    _upd(".live-pos-pnl",   pnlUi,   pnl >= 0 ? "#2fa36b" : "#ff7b7b", priceDir);
+    _upd(".live-pos-value", valUi,   null, priceDir);
   });
 }
 
@@ -2490,8 +2497,11 @@ let _psLastFigis       = "";  // список figi для определения
       `@keyframes sigFlash{0%{background:rgba(76,141,255,.4)}60%{background:rgba(76,141,255,.15)}100%{background:inherit}}`,
       `.sig-flash{animation:sigFlash .9s ease-out 2}`,
       // Ячейка при изменении значения — зелёный акцент
-      `@keyframes cellUpd{0%{background:rgba(47,163,107,.45)}100%{background:transparent}}`,
-      `.cell-updated{animation:cellUpd .7s ease-out forwards}`,
+      `@keyframes cellUpdUp{0%{background:rgba(47,163,107,.45)}100%{background:transparent}}`,
+      `@keyframes cellUpdDown{0%{background:rgba(191,77,90,.45)}100%{background:transparent}}`,
+      `.cell-updated-up{animation:cellUpdUp .7s ease-out forwards}`,
+      `.cell-updated-down{animation:cellUpdDown .7s ease-out forwards}`,
+      `.cell-updated{animation:cellUpdUp .7s ease-out forwards}`,
       // Мигающая точка «live» — пульс
       `@keyframes liveDot{0%,100%{opacity:1}50%{opacity:.25}}`,
       `.live-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#2fa36b;animation:liveDot 1.4s ease-in-out infinite;vertical-align:middle;margin-right:5px}`,
