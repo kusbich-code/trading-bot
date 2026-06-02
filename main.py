@@ -1625,8 +1625,9 @@ def process_instrument(client, item,
     # Вычисляем сигнал всегда — до всех проверок, чтобы дашборд показывал актуальный сигнал
     candles_dict = _candles_to_dicts(candles)
     sig_result = _evaluate_signal(tradingmode, candles_dict)
-    sig   = sig_result["action"]
-    score = sig_result["score"]
+    sig     = sig_result["action"]
+    score   = sig_result["score"]
+    reasons = sig_result.get("reasons", [])
 
     def _save_signal(action=None, skip_reason="", skip_filter=""):
         try:
@@ -1637,6 +1638,7 @@ def process_instrument(client, item,
                 "time": _now().strftime("%H:%M:%S"),
                 "skip_reason": skip_reason,
                 "skip_filter": skip_filter,
+                "reasons": reasons,
             }))
         except Exception:
             pass

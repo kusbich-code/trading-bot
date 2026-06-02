@@ -868,6 +868,50 @@ function _renderPosChart(figi, candles) {
   }
 }
 
+// ── Signal score popup ────────────────────────────────────────────────────────
+
+let _sigPopup = null;
+
+function _showSignalPopup(sigEl, tr) {
+  if (_sigPopup) { _sigPopup.remove(); _sigPopup = null; }
+  const action  = tr.dataset.sigAction  || "—";
+  const score   = parseInt(tr.dataset.sigScore || "0") || 0;
+  const mode    = tr.dataset.sigMode    || "";
+  const skip    = tr.dataset.sigSkip    || "";
+  const filter  = tr.dataset.sigFilter  || "";
+  const reasons = (tr.dataset.sigReasons || "").split("||").filter(Boolean);
+  const ticker  = tr.querySelector("td b")?.textContent || "";
+  const sigColor  = action === "BUY" ? "#2fa36b" : action === "SELL" ? "#ff7b7b" : "#9fb3d8";
+  const modeLabel = { trend: "Тренд (SMA9/SMA21)", mean_reversion: "Возврат к средней (Z-score)", breakout: "Пробой (объём+диапазон)" }[mode] || mode;
+  const scoreHelp = { trend: "Score = среднее((разрыв SMA)×1000, |моментум|×15), макс 100. Чем больше расхождение SMA и моментум — тем выше.", mean_reversion: "Score = min(|Z-score|×30, 100). Z — отклонение цены от 20-периодной средней в сигмах. Сигнал при |Z|≥1.8.", breakout: "Score = среднее((отрыв от диапазона)×100, коэф.объёма×30), макс 100. Нужен пробой 20-свечного диапазона с объёмом ≥1.2×средний." }[mode] || "Score 0..100";
+  const popup = document.createElement("div");
+  popup.id = "_sigPopup";
+  popup.style.cssText = "position:fixed;z-index:9999;background:#1a2235;border:1px solid rgba(255,255,255,.15);border-radius:8px;padding:14px 16px;min-width:290px;max-width:400px;box-shadow:0 8px 32px rgba(0,0,0,.5);font-size:13px;line-height:1.5";
+  popup.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+      <div style="display:flex;gap:8px;align-items:center">
+        <b style="font-size:14px">${esc(ticker)}</b>
+        <span style="color:${sigColor};font-weight:700">${esc(action)}</span>
+        <span style="background:rgba(76,141,255,.2);color:#4c8dff;border-radius:3px;padding:1px 6px;font-size:12px">${score} pts</span>
+      </div>
+      <button onclick="document.getElementById('_sigPopup')?.remove()" style="background:none;border:none;color:#555;cursor:pointer;font-size:16px;line-height:1">✕</button>
+    </div>
+    <div style="color:#9fb3d8;font-size:11px;margin-bottom:10px">Режим: <b>${esc(modeLabel)}</b></div>
+    ${reasons.length ? `<div style="margin-bottom:10px">${reasons.map(r=>`<div style="font-size:12px;padding:2px 0;border-bottom:1px solid rgba(255,255,255,.05);color:#cdd9f0">${esc(r)}</div>`).join("")}</div>` : ""}
+    <div style="background:rgba(255,255,255,.04);border-radius:4px;padding:8px;font-size:11px;color:#9fb3d8"><b style="color:#eef4ff">Как считается:</b><br>${esc(scoreHelp)}</div>
+    ${skip ? `<div style="margin-top:8px;font-size:11px;color:#f0a500">⚠ ${esc(skip)}<br><span style="color:#555">${esc(filter)}</span></div>` : ""}`;
+  document.body.appendChild(popup);
+  _sigPopup = popup;
+  const rect = sigEl.getBoundingClientRect();
+  let left = Math.min(rect.left, window.innerWidth - 410);
+  let top  = rect.bottom + 6;
+  if (top + 280 > window.innerHeight) top = rect.top - 290;
+  popup.style.left = Math.max(4, left) + "px";
+  popup.style.top  = Math.max(4, top)  + "px";
+  const close = (e) => { if (_sigPopup && !_sigPopup.contains(e.target) && e.target !== sigEl) { _sigPopup.remove(); _sigPopup = null; document.removeEventListener("click", close); } };
+  setTimeout(() => document.addEventListener("click", close), 10);
+}
+
 async function _loadPosNews(figi) {
   const el = document.getElementById(`pos-news-${figi}`);
   if (!el) return;
@@ -2903,7 +2947,9 @@ async function refreshParallelStatus() {
                   data-sig-score="${score}"
                   data-sig-skip="${esc(i.signal_skip_reason||"")}"
                   data-sig-filter="${esc(i.signal_skip_filter||"")}"
-                  style="${rowBg(idx)}${blocked ? ';opacity:.7' : ''}">
+                  data-sig-mode="${esc(i.signal_mode||"")}"
+                  data-sig-reasons="${esc((i.signal_reasons||[]).join("||"))}"
+                  style="${rowBg(idx)}${blocked ? ';opacity:.7' : '"}">
         <td>${tickerCell}</td>
         <td>${esc(i.lots)} <span class="muted" style="font-size:10px">(${esc(i.lot_cost_ui || "")})</span></td>
         <td class="muted" style="white-space:nowrap">
@@ -2915,7 +2961,7 @@ async function refreshParallelStatus() {
         <td class="live-time muted" data-figi="${esc(i.figi)}" style="font-size:11px">—</td>
         <td class="live-vol muted" data-figi="${esc(i.figi)}" style="font-size:12px">—</td>
         <td>${lossCell}</td>
-        <td class="live-sig" data-figi="${esc(i.figi)}">—</td>
+        <td class="live-sig" data-figi="${esc(i.figi)}" style="cursor:pointer" title="Нажмите для расшифровки сигнала">—</td>
       </tr>`;
     }).join("");
 
@@ -2961,7 +3007,17 @@ async function refreshParallelStatus() {
     // ── Инструменты: тихий diff, потом обновляем live-ячейки ────────────────
     const instrTbody = document.getElementById('_psInstrBody');
     if (instrTbody) {
+      const hadRows = instrTbody.querySelector('tr[data-figi]') !== null;
       diffTbody(instrTbody, instrRows);
+      // Привязываем клик на .live-sig только для новых строк
+      if (!hadRows) {
+        instrTbody.addEventListener("click", (e) => {
+          const sigEl = e.target.closest(".live-sig");
+          if (!sigEl) return;
+          const tr = sigEl.closest("tr[data-figi]");
+          if (tr) _showSignalPopup(sigEl, tr);
+        });
+      }
 
       // Восстанавливаем цены из кэша (иначе будут "—" после diffTbody)
       if (Object.keys(_lastQuotesMap).length) {

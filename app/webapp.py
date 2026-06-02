@@ -1807,6 +1807,7 @@ def api_parallel_status():
                 "signal_time":     sig_info.get("time", ""),
                 "signal_skip_reason":  sig_info.get("skip_reason", ""),
                 "signal_skip_filter":  sig_info.get("skip_filter", ""),
+                "signal_reasons":  sig_info.get("reasons", []),
                 "unrealized_pnl":  upnl,
                 "in_position":     pos is not None,
                 # Дневной лимит потерь
