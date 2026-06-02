@@ -2156,9 +2156,8 @@ def _parallel_strategy_worker(strategy_id: int, strat_name: str, stop_ev: thread
                 for item in instr:
                     if stop_ev.is_set():
                         break
-                    # Проверка в середине сканирования: кто-то другой только что открыл
-                    if not positions and not _parallel_coord.is_free and not _parallel_coord.is_owner(strategy_id):
-                        break
+                    # process_instrument сам проверяет координатор через _coord.try_claim()
+                    # Убран break — все стратегии обновляют цены/сигналы даже когда другая в позиции
                     _rate.throttle_if_needed()  # пауза если близко к rate limit
                     _pset(strategy_id, "сканирование", item["ticker"])
                     try:
