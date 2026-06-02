@@ -2903,7 +2903,6 @@ async function refreshParallelStatus() {
                   data-sig-score="${score}"
                   data-sig-skip="${esc(i.signal_skip_reason||"")}"
                   data-sig-filter="${esc(i.signal_skip_filter||"")}"
-                  data-sig-time="${esc(i.signal_time||"")}"
                   style="${rowBg(idx)}${blocked ? ';opacity:.7' : ''}">
         <td>${tickerCell}</td>
         <td>${esc(i.lots)} <span class="muted" style="font-size:10px">(${esc(i.lot_cost_ui || "")})</span></td>
@@ -2979,31 +2978,29 @@ async function refreshParallelStatus() {
         const volEl = tr.querySelector('.live-vol');
         if (volEl) volEl.textContent = instr.volume_ui || "—";
 
-        // Сигнал — читаем из data-атрибутов, обновляем ячейку с flash по score
+        // Сигнал — обновляем только при реальном изменении action/score/skip
         const sigEl = tr.querySelector('.live-sig');
         if (!sigEl) return;
         const newAction = tr.dataset.sigAction || "—";
         const newScore  = parseInt(tr.dataset.sigScore  || "0") || 0;
         const newSkip   = tr.dataset.sigSkip   || "";
         const newFilter = tr.dataset.sigFilter  || "";
-        const newTime   = tr.dataset.sigTime    || "";
-        const sigC      = newAction === "BUY" ? "#2fa36b" : newAction === "SELL" ? "#ff7b7b" : "#9fb3d8";
-        const newHtml   = `<span style="color:${sigC};font-weight:700;font-size:12px">${esc(newAction)}</span>`
-          + (newScore ? ` <span class="muted" style="font-size:11px">${newScore > 0 ? "+" : ""}${newScore}</span>` : "")
-          + (newTime  ? ` <span class="muted" style="font-size:10px">${esc(newTime)}</span>` : "")
-          + (newSkip  ? `<div style="font-size:10px;color:#f0a500;margin-top:2px" title="Фильтр: ${esc(newFilter)}">⚠ ${esc(newSkip)}</div>` : "");
-        // Сравниваем только action и score (не time) для принятия решения о flash
-        const prevScore  = parseInt(sigEl.dataset.score  || "0") || 0;
+        const prevScore  = parseInt(sigEl.dataset.score  !== undefined ? sigEl.dataset.score  : "-999");
         const prevAction = sigEl.dataset.action || "";
-        const scoreChanged  = newScore !== prevScore;
-        const actionToBuySell = prevAction === "HOLD" && (newAction === "BUY" || newAction === "SELL");
-        sigEl.innerHTML    = newHtml;
-        sigEl.dataset.score  = newScore;
+        const firstRender = sigEl.dataset.score === undefined;
+        // Пропускаем если ничего не изменилось — НЕТ flash, НЕТ обновления DOM
+        if (!firstRender && prevScore === newScore && prevAction === newAction && sigEl.dataset.skip === newSkip) return;
+        const sigC = newAction === "BUY" ? "#2fa36b" : newAction === "SELL" ? "#ff7b7b" : "#9fb3d8";
+        sigEl.innerHTML = `<span style="color:${sigC};font-weight:700;font-size:12px">${esc(newAction)}</span>`
+          + (newScore ? ` <span class="muted" style="font-size:11px">${newScore > 0 ? "+" : ""}${newScore}</span>` : "")
+          + (newSkip  ? `<div style="font-size:10px;color:#f0a500;margin-top:2px" title="${esc(newFilter)}">⚠ ${esc(newSkip)}</div>` : "");
+        sigEl.dataset.score  = String(newScore);
         sigEl.dataset.action = newAction;
-        // Flash только при реальных изменениях
-        if (scoreChanged && newScore !== 0) {
+        sigEl.dataset.skip   = newSkip;
+        // Flash только при значимых изменениях (не при первом рендере)
+        if (!firstRender && newScore !== prevScore && newScore !== 0) {
           _flashCell(sigEl, newScore > prevScore ? 'up' : 'down');
-        } else if (actionToBuySell) {
+        } else if (!firstRender && prevAction !== newAction && (newAction === "BUY" || newAction === "SELL")) {
           _flashCell(sigEl, newAction === "BUY" ? 'up' : 'down');
         }
       });

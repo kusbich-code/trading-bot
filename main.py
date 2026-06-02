@@ -2172,8 +2172,15 @@ def _parallel_strategy_worker(strategy_id: int, strat_name: str, stop_ev: thread
                     except Exception as exc:
                         log.warning("Parallel [%s] %s: %s", strat_name, item.get("ticker", "?"), exc)
 
-            status = "в позиции" if positions else "ожидание сигнала"
-            ticker = list(positions.keys())[0] if positions else ""
+            if positions:
+                status = "в позиции"
+                ticker = list(positions.keys())[0]
+            elif not is_moex_session_open():
+                status = "торговля не ведётся"
+                ticker = ""
+            else:
+                status = "ожидание сигнала"
+                ticker = ""
             _pset(strategy_id, status, ticker)
 
         except Exception as exc:
