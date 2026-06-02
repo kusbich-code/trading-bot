@@ -2302,8 +2302,8 @@ function _histBuildPeriods() {
     items.push({key:`q_${yr}_${q+1}`, label:`Q${q+1}`, from, to, group:"quarters"});
   }
 
-  // Годы (2025, 2026, ...)
-  for (let y = 2025; y <= yr; y++) {
+  // Годы (2025 и далее + следующий год)
+  for (let y = 2025; y <= yr + 1; y++) {
     items.push({key:`y_${y}`, label: String(y),
       from: `${y}-01-01`, to: `${y+1}-01-01`, group:"years"});
   }
