@@ -488,6 +488,9 @@ async function renderMainShell() {
       </div>
     </section>
 
+    <!-- ── Детали позиций: графики + новости ── -->
+    <div id="positionDetailsBlock"></div>
+
     <!-- ── Сделки ── -->
     <section class="block">
       <div class="row between"><h2>Сделки</h2><div class="note">Сегодня</div></div>
@@ -578,6 +581,9 @@ async function renderMainData() {
   );
 
   refreshParallelStatus();
+
+  // ── Детали позиций: графики + новости ────────────────────────────────────
+  renderPositionDetails(data.positions || []);
 
   // ── Balance check + sandbox ───────────────────────────────────────────────
   try {
@@ -711,6 +717,105 @@ async function refreshQuotesOnly() {
     _upd(".live-pos-pnl",   pnlUi,   pnl >= 0 ? "#2fa36b" : "#ff7b7b", priceDir);
     _upd(".live-pos-value", valUi,   null, priceDir);
   });
+}
+
+// ── Position detail panels (chart + news per ticker) ─────────────────────────
+
+let _posDetailFigis = [];
+
+async function renderPositionDetails(positions) {
+  const block = document.getElementById("positionDetailsBlock");
+  if (!block) return;
+  if (!positions || !positions.length) { block.innerHTML = ""; _posDetailFigis = []; return; }
+
+  const figis = positions.map(p => p.figi).filter(Boolean);
+  // Пересобираем блок только если список позиций изменился
+  const key = figis.join(",");
+  if (key !== _posDetailFigis.join(",")) {
+    _posDetailFigis = figis;
+    block.innerHTML = positions.map(p => `
+      <section class="block" id="pos-detail-${esc(p.figi)}" style="margin-top:8px">
+        <div class="row between" style="margin-bottom:10px">
+          <div class="row" style="gap:8px">
+            <h2 style="margin:0">${esc(p.ticker)}</h2>
+            <span class="badge" style="background:${p.direction==='BUY'?'rgba(47,163,107,.2)':'rgba(191,77,90,.2)'};color:${p.direction==='BUY'?'#2fa36b':'#ff7b7b'}">
+              ${p.direction==='BUY'?'Лонг':'Шорт'}
+            </span>
+            <span class="muted" style="font-size:12px">Вход: ${esc(p.entry_price_ui)}</span>
+          </div>
+          <span class="muted" style="font-size:11px">График + новости</span>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 380px;gap:16px;align-items:start">
+          <div>
+            <div id="pos-chart-${esc(p.figi)}" style="height:200px;width:100%"></div>
+          </div>
+          <div id="pos-news-${esc(p.figi)}" style="max-height:200px;overflow-y:auto;font-size:12px">
+            <div class="muted" style="text-align:center;padding:20px">Загрузка новостей…</div>
+          </div>
+        </div>
+      </section>`).join("");
+  }
+
+  // Загружаем данные параллельно для каждой позиции
+  const figiList = figis.join(",");
+  const [candlesData] = await Promise.all([
+    apiGet(`/api/dashboard/multi-candles?figis=${figiList}&interval=5min&hours=4`).catch(() => ({})),
+  ]);
+
+  for (const p of positions) {
+    _renderPosChart(p.figi, p.ticker, candlesData[p.figi]?.candles || []);
+    _loadPosNews(p.figi);
+  }
+}
+
+function _renderPosChart(figi, ticker, candles) {
+  const el = document.getElementById(`pos-chart-${figi}`);
+  if (!el || !candles.length) { if (el) el.innerHTML = '<div class="muted" style="text-align:center;padding:30px;font-size:12px">Нет данных свечей</div>'; return; }
+  const times  = candles.map(c => c.time);
+  const opens  = candles.map(c => c.open);
+  const highs  = candles.map(c => c.high);
+  const lows   = candles.map(c => c.low);
+  const closes = candles.map(c => c.close);
+  const trace = {
+    type: "candlestick", x: times,
+    open: opens, high: highs, low: lows, close: closes,
+    increasing: { line: { color: "#2fa36b", width: 1 }, fillcolor: "rgba(47,163,107,.7)" },
+    decreasing: { line: { color: "#bf4d5a", width: 1 }, fillcolor: "rgba(191,77,90,.7)" },
+    showlegend: false,
+  };
+  const layout = {
+    paper_bgcolor: "transparent", plot_bgcolor: "transparent",
+    margin: { l: 45, r: 8, t: 4, b: 24 },
+    xaxis: { showgrid: false, color: "#555", type: "date", tickfont: { size: 10 }, rangeslider: { visible: false } },
+    yaxis: { showgrid: true, gridcolor: "rgba(255,255,255,.06)", color: "#9fb3d8", tickfont: { size: 10 } },
+    dragmode: false,
+  };
+  if (window.Plotly) {
+    Plotly.react(el, [trace], layout, { displayModeBar: false, responsive: true });
+  }
+}
+
+async function _loadPosNews(figi) {
+  const el = document.getElementById(`pos-news-${figi}`);
+  if (!el) return;
+  try {
+    const news = await apiGet(`/api/news/ticker?figi=${figi}&hours=4`);
+    if (!news || !news.length) {
+      el.innerHTML = '<div class="muted" style="text-align:center;padding:20px;font-size:12px">Новостей за 4 часа не найдено</div>';
+      return;
+    }
+    el.innerHTML = news.map(n => `
+      <div style="padding:5px 0;border-bottom:1px solid rgba(255,255,255,.05)">
+        <a href="${esc(n.link)}" target="_blank" rel="noopener"
+           style="color:#9fb3d8;text-decoration:none;font-size:12px;line-height:1.4;display:block"
+           onmouseover="this.style.color='#cdd9f0'" onmouseout="this.style.color='#9fb3d8'">
+          ${esc(n.title)}
+        </a>
+        <div style="font-size:10px;color:#555;margin-top:2px">${esc(n.date)}${n.source ? ' · ' + esc(n.source) : ''}</div>
+      </div>`).join("");
+  } catch(e) {
+    el.innerHTML = '<div class="muted" style="font-size:11px;padding:8px">Ошибка загрузки новостей</div>';
+  }
 }
 
 function _fmtSum(v) {

@@ -598,6 +598,71 @@ def api_news():
     return JSONResponse(_news_cache["data"])
 
 
+# ── Ticker news (Google News RSS, кэш 5 мин) ─────────────────────────────────
+
+_ticker_news_cache: dict = {}  # figi → {"ts": float, "data": list}
+_TICKER_NEWS_TTL = 300         # 5 минут
+
+@app.get("/api/news/ticker")
+def api_news_ticker(figi: str = "", hours: int = 4):
+    """Новости по тикеру из Google News RSS за последние N часов."""
+    from datetime import datetime, timezone, timedelta
+    import email.utils as _eutils
+
+    now = time.time()
+    cache = _ticker_news_cache.get(figi)
+    if cache and (now - cache["ts"]) < _TICKER_NEWS_TTL:
+        return JSONResponse(cache["data"])
+
+    # Ищем название компании + тикер из market_state
+    mmap = get_instrument_market_state_map()
+    info = mmap.get(figi, {})
+    ticker = info.get("ticker", "")
+
+    # Строим поисковой запрос: тикер + биржа для русских акций
+    search_q = urllib.request.quote(f"{ticker} акции MOEX" if ticker else figi)
+    url = (
+        f"https://news.google.com/rss/search"
+        f"?q={search_q}&hl=ru&gl=RU&ceid=RU:ru"
+    )
+
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    news = []
+    try:
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "Mozilla/5.0 (compatible; TradingBot/1.0)"
+        })
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            root = ET.fromstring(resp.read())
+        for item in root.findall(".//item"):
+            title   = (item.findtext("title")   or "").strip()
+            link    = (item.findtext("link")    or "").strip()
+            pub_raw = (item.findtext("pubDate") or "").strip()
+            source  = ""
+            src_el  = item.find("source")
+            if src_el is not None:
+                source = src_el.text or ""
+            if not title:
+                continue
+            # Парсим дату RFC 2822
+            pub_dt = None
+            if pub_raw:
+                try:
+                    pub_dt = datetime(*_eutils.parsedate(pub_raw)[:6], tzinfo=timezone.utc)
+                except Exception:
+                    pass
+            if pub_dt and pub_dt < cutoff:
+                continue
+            date_ui = pub_dt.strftime("%d.%m %H:%M") if pub_dt else pub_raw[:16]
+            news.append({"title": title, "link": link, "date": date_ui, "source": source})
+        news = news[:15]  # не более 15 новостей
+    except Exception as e:
+        logger.warning(f"Ticker news fetch {ticker}: {e}")
+
+    _ticker_news_cache[figi] = {"ts": now, "data": news}
+    return JSONResponse(news)
+
+
 # ── dashboard data endpoints ───────────────────────────────────────────────────
 
 @app.get("/api/dashboard/summary")
