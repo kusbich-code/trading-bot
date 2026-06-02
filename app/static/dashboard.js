@@ -804,6 +804,36 @@ async function renderSettingsTab() {
         </div>
       </form>
 
+      <!-- CREDENTIALS BLOCK -->
+      <div id="credentialsBlock" style="border-top:1px solid rgba(255,255,255,.08);margin-top:12px;padding-top:12px">
+        <div class="row between" style="margin-bottom:8px">
+          <div class="row" style="gap:8px">
+            <b>Токен API</b>
+            <span id="credModeLabel" class="badge" style="background:rgba(76,141,255,.2);color:#4c8dff"></span>
+          </div>
+          <button class="btn" style="padding:4px 10px;font-size:12px" onclick="toggleCredEdit()">Изменить</button>
+        </div>
+        <div id="credDisplay" style="font-size:13px;display:grid;grid-template-columns:120px 1fr;gap:6px 12px;align-items:center">
+          <span class="muted">Токен:</span><span id="credTokenMasked" style="font-family:monospace"></span>
+          <span class="muted">Account ID:</span><span id="credAccountId"></span>
+        </div>
+        <div id="credEdit" style="display:none;margin-top:10px">
+          <div class="form-grid" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px">
+            <label>Новый токен
+              <input class="field" id="credTokenInput" type="password" placeholder="Введите токен T-Invest API" autocomplete="new-password">
+            </label>
+            <label>Account ID
+              <input class="field" id="credAccountInput" type="text" placeholder="Идентификатор счёта">
+            </label>
+          </div>
+          <div class="row" style="gap:8px;margin-top:8px">
+            <button class="btn btn-primary" style="font-size:13px" onclick="saveCredentials()">Сохранить</button>
+            <button class="btn" style="font-size:13px" onclick="toggleCredEdit()">Отмена</button>
+            <span class="note" style="font-size:11px">Токен хранится на сервере в .env (не в git)</span>
+          </div>
+        </div>
+      </div>
+
       <!-- PARALLEL TOGGLE inside profile section -->
       <div style="display:flex;align-items:center;gap:14px;padding:12px 0 4px;border-top:1px solid rgba(255,255,255,.08);margin-top:4px;flex-wrap:wrap">
         <div>
@@ -978,6 +1008,9 @@ async function renderSettingsTab() {
 
   // Profile settings save
   document.getElementById("btnSaveProfileSettings")?.addEventListener("click", () => saveProfileSettings(prof.id));
+
+  // Load credentials
+  loadCredentials();
 
   // Strategy settings (non-parallel mode only)
   document.getElementById("btnSaveStrategySettings")?.addEventListener("click", () => saveStrategySettings(strat.id));
@@ -1306,6 +1339,51 @@ async function activateProfileAction(profileId) {
     await renderMainData();
   } catch (e) {
     showToast(`Ошибка: ${e.message}`, "error");
+  }
+}
+
+// ── Credentials UI ────────────────────────────────────────────────────────────
+
+let _credMode = "sandbox";
+
+async function loadCredentials() {
+  try {
+    const c = await apiGet("/api/credentials");
+    _credMode = c.is_sandbox ? "sandbox" : "prod";
+    const info = c.is_sandbox ? c.sandbox : c.prod;
+    const label = document.getElementById("credModeLabel");
+    if (label) label.textContent = c.is_sandbox ? "Sandbox" : "Боевой";
+    const masked = document.getElementById("credTokenMasked");
+    if (masked) masked.textContent = info.token_masked || (info.has_token ? "****" : "—не задан—");
+    const accEl = document.getElementById("credAccountId");
+    if (accEl) accEl.textContent = info.account_id || "—";
+    const inp = document.getElementById("credAccountInput");
+    if (inp) inp.value = info.account_id || "";
+  } catch(e) {}
+}
+
+function toggleCredEdit() {
+  const ed = document.getElementById("credEdit");
+  const di = document.getElementById("credDisplay");
+  if (!ed) return;
+  const showing = ed.style.display !== "none";
+  ed.style.display = showing ? "none" : "block";
+  if (di) di.style.display = showing ? "grid" : "none";
+  if (!showing) document.getElementById("credTokenInput")?.focus();
+}
+
+async function saveCredentials() {
+  const token     = document.getElementById("credTokenInput")?.value.trim() || "";
+  const accountId = document.getElementById("credAccountInput")?.value.trim() || "";
+  if (!token && !accountId) { showToast("Введите токен или Account ID", "error"); return; }
+  try {
+    await apiPostJson("/api/credentials", { mode: _credMode, token, account_id: accountId });
+    showToast("Данные сохранены в .env на сервере", "success");
+    document.getElementById("credTokenInput").value = "";
+    toggleCredEdit();
+    await loadCredentials();
+  } catch(e) {
+    showToast("Ошибка: " + e.message, "error");
   }
 }
 

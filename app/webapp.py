@@ -208,6 +208,63 @@ def fmt_pct_fraction(value: Any) -> str:
     return f"{safe_decimal(value) * Decimal('100'):.2f}"
 
 
+# ── Credentials helpers (.env R/W) ────────────────────────────────────────────
+
+def _env_path() -> str:
+    """Абсолютный путь к .env рядом с корнем проекта."""
+    return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
+
+
+def _read_env() -> dict:
+    """Читает .env как словарь key→value."""
+    result: dict = {}
+    path = _env_path()
+    if not os.path.exists(path):
+        return result
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, _, v = line.partition("=")
+            result[k.strip()] = v.strip()
+    return result
+
+
+def _write_env(updates: dict) -> None:
+    """Обновляет или добавляет ключи в .env, остальные строки сохраняет."""
+    path = _env_path()
+    lines: list = []
+    updated_keys: set = set()
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            lines = f.readlines()
+    new_lines: list = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and "=" in stripped:
+            k = stripped.split("=", 1)[0].strip()
+            if k in updates:
+                new_lines.append(f"{k}={updates[k]}\n")
+                updated_keys.add(k)
+                continue
+        new_lines.append(line)
+    # Добавляем новые ключи которых не было
+    for k, v in updates.items():
+        if k not in updated_keys:
+            new_lines.append(f"{k}={v}\n")
+    with open(path, "w", encoding="utf-8") as f:
+        f.writelines(new_lines)
+
+
+def _mask_token(token: str) -> str:
+    if not token:
+        return ""
+    if len(token) <= 8:
+        return "*" * len(token)
+    return token[:4] + "****" + token[-4:]
+
+
 def _fmt_duration(open_time_str: str, close_time_str: str) -> str:
     if not open_time_str or not close_time_str:
         return "—"
@@ -2631,3 +2688,64 @@ def api_debug_search(q: str = "SBER"):
             }
     except Exception as e:
         return {"ok": False, "error": str(e), "traceback": traceback.format_exc()}
+
+
+# ── Credentials API ───────────────────────────────────────────────────────────
+
+@app.get("/api/credentials")
+def api_credentials_get():
+    """Возвращает маскированные токены и account_id (sandbox + prod)."""
+    env = _read_env()
+    is_sandbox = str(get_all_settings().get("tinvestusesandbox", "true")).lower() == "true"
+    active_token = env.get("TINVEST_TOKEN", "")
+    active_id    = env.get("TINVEST_ACCOUNT_ID", "")
+    sb_token  = env.get("TINVEST_TOKEN_SANDBOX",  active_token if is_sandbox else "")
+    sb_id     = env.get("TINVEST_ACCOUNT_ID_SANDBOX", active_id if is_sandbox else "")
+    prod_token = env.get("TINVEST_TOKEN_PROD",  active_token if not is_sandbox else "")
+    prod_id    = env.get("TINVEST_ACCOUNT_ID_PROD", active_id if not is_sandbox else "")
+    return JSONResponse({
+        "is_sandbox": is_sandbox,
+        "sandbox": {
+            "token_masked": _mask_token(sb_token),
+            "account_id": sb_id,
+            "has_token": bool(sb_token),
+        },
+        "prod": {
+            "token_masked": _mask_token(prod_token),
+            "account_id": prod_id,
+            "has_token": bool(prod_token),
+        },
+    })
+
+
+@app.post("/api/credentials")
+async def api_credentials_save(request: Request):
+    """Сохраняет токен и account_id в .env (не попадает в git)."""
+    body = await request.json()
+    mode       = body.get("mode", "sandbox")   # "sandbox" | "prod"
+    token      = (body.get("token") or "").strip()
+    account_id = (body.get("account_id") or "").strip()
+    if not token and not account_id:
+        raise HTTPException(status_code=400, detail="token or account_id required")
+    is_sandbox = str(get_all_settings().get("tinvestusesandbox", "true")).lower() == "true"
+    updates: dict = {}
+    if mode == "sandbox":
+        if token:
+            updates["TINVEST_TOKEN_SANDBOX"] = token
+            if is_sandbox:
+                updates["TINVEST_TOKEN"] = token
+        if account_id:
+            updates["TINVEST_ACCOUNT_ID_SANDBOX"] = account_id
+            if is_sandbox:
+                updates["TINVEST_ACCOUNT_ID"] = account_id
+    else:
+        if token:
+            updates["TINVEST_TOKEN_PROD"] = token
+            if not is_sandbox:
+                updates["TINVEST_TOKEN"] = token
+        if account_id:
+            updates["TINVEST_ACCOUNT_ID_PROD"] = account_id
+            if not is_sandbox:
+                updates["TINVEST_ACCOUNT_ID"] = account_id
+    _write_env(updates)
+    return JSONResponse({"ok": True, "updated": list(updates.keys())})
