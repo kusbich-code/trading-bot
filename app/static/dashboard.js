@@ -2949,7 +2949,7 @@ async function refreshParallelStatus() {
                   data-sig-filter="${esc(i.signal_skip_filter||"")}"
                   data-sig-mode="${esc(i.signal_mode||"")}"
                   data-sig-reasons="${esc((i.signal_reasons||[]).join("||"))}"
-                  style="${rowBg(idx)}${blocked ? ';opacity:.7' : '"}">
+                  style="${rowBg(idx)}${blocked ? ';opacity:.7' : ''}">
         <td>${tickerCell}</td>
         <td>${esc(i.lots)} <span class="muted" style="font-size:10px">(${esc(i.lot_cost_ui || "")})</span></td>
         <td class="muted" style="white-space:nowrap">
