@@ -2285,17 +2285,16 @@ function _histBuildPeriods() {
   const months = ["Янв","Фев","Мар","Апр","Май","Июн","Июл","Авг","Сен","Окт","Ноя","Дек"];
   const items = [];
 
-  // Месяцы текущего года (до текущего включительно)
-  for (let m = 0; m <= mo; m++) {
+  // Все 12 месяцев текущего года
+  for (let m = 0; m <= 11; m++) {
     const from = `${yr}-${String(m+1).padStart(2,"0")}-01`;
     const toMo = new Date(yr, m+1, 1);
     const to   = `${toMo.getFullYear()}-${String(toMo.getMonth()+1).padStart(2,"0")}-01`;
     items.push({key:`m_${yr}_${m}`, label: months[m], from, to, group:"months"});
   }
 
-  // Кварталы текущего года (до текущего квартала включительно)
-  const curQ = Math.floor(mo / 3);
-  for (let q = 0; q <= curQ; q++) {
+  // Все 4 квартала текущего года
+  for (let q = 0; q <= 3; q++) {
     const qStart = q * 3;
     const from = `${yr}-${String(qStart+1).padStart(2,"0")}-01`;
     const qEnd = new Date(yr, qStart+3, 1);
