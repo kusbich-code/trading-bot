@@ -70,6 +70,7 @@ from app.db import (
     fix_ticker_by_figi,
     get_instrument_sl_tp,
     get_recent_trade,
+    get_ticker_daily_pnl,
 )
 from app.instruments import get_instrument_meta, round_to_price_step
 from app.telegram_notify import TelegramNotifier
@@ -1911,6 +1912,17 @@ def process_instrument(client, item,
             log_event("BALANCE_WARNING",
                       f"{ticker}: {_reason} — пропуск", ticker=ticker)
             _save_signal(skip_reason=_reason, skip_filter="balance")
+            return
+
+    # ── Проверка дневного лимита потерь по инструменту ───────────────────────
+    _max_loss_instr = float(item.get("max_daily_loss_rub", 0) or 0)
+    if _max_loss_instr > 0:
+        _today = _now().strftime("%Y-%m-%d")
+        _ticker_pnl = get_ticker_daily_pnl(ticker, _today)
+        if _ticker_pnl <= -_max_loss_instr:
+            _reason = f"Дневной лимит потерь по {ticker} исчерпан: {_ticker_pnl:.2f} ₽ (лимит -{_max_loss_instr:.0f} ₽)"
+            log_event("BALANCE_WARNING", f"{ticker}: {_reason}", ticker=ticker)
+            _save_signal(skip_reason=_reason, skip_filter="instrument_daily_loss")
             return
 
     # ── Фильтр давления стакана (только при наличии данных стрима) ───────────

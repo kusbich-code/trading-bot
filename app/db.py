@@ -782,6 +782,17 @@ def get_trades(limit=100, ticker=None, date_from=None, date_to=None):
         return [dict(row) for row in cur.fetchall()]
 
 
+def get_ticker_daily_pnl(ticker: str, date_str: str) -> float:
+    """Сумма PnL по тикеру за указанную дату (формат YYYY-MM-DD)."""
+    with db_cursor() as cur:
+        cur.execute(
+            "SELECT COALESCE(SUM(pnl), 0) FROM trades WHERE ticker=? AND time >= ? AND time < date(?, '+1 day')",
+            (ticker, date_str, date_str),
+        )
+        row = cur.fetchone()
+    return float(row[0]) if row else 0.0
+
+
 def get_recent_trade(figi: str, since: str) -> dict | None:
     """Возвращает последний трейд по figi позже since (для защиты от дублей)."""
     with db_cursor() as cur:
@@ -1653,7 +1664,8 @@ def add_strategy_instrument(strategy_id: int, item: dict):
 
 def update_strategy_instrument(strategy_id: int, figi: str, fields: dict):
     allowed = {"lots_override", "stop_loss_pct", "take_profit_pct", "max_spread_pct",
-               "min_volume", "allow_long", "allow_short", "priority", "enabled", "auto_lots"}
+               "min_volume", "allow_long", "allow_short", "priority", "enabled", "auto_lots",
+               "max_daily_loss_rub"}
     parts, params = [], []
     for key, value in fields.items():
         if key in allowed:

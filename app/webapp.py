@@ -2308,6 +2308,7 @@ def api_strategy_instruments_update(
     figi: str = Form(...),
     lots_override: str = Form("1"),
     auto_lots: str = Form("0"),
+    max_daily_loss_rub: str = Form("0"),
     stop_loss_pct: str = Form("0.25"),
     take_profit_pct: str = Form("0.50"),
     max_spread_pct: str = Form("0"),
@@ -2320,6 +2321,7 @@ def api_strategy_instruments_update(
     update_strategy_instrument(strategy_id, figi, {
         "lots_override": lots_override,
         "auto_lots": int(bool01(auto_lots)),
+        "max_daily_loss_rub": float(safe_decimal(max_daily_loss_rub)),
         "stop_loss_pct": str(safe_decimal(stop_loss_pct) / Decimal("100")),
         "take_profit_pct": str(safe_decimal(take_profit_pct) / Decimal("100")),
         "max_spread_pct": str(safe_decimal(max_spread_pct) / Decimal("100")),

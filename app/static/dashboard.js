@@ -1164,6 +1164,7 @@ function _renderInstrumentForms(instruments, stratId) {
       <label>SL %<input class="field" name="stop_loss_pct" value="${esc(i.stop_loss_pct_ui)}"></label>
       <label>TP %<input class="field" name="take_profit_pct" value="${esc(i.take_profit_pct_ui)}"></label>
       <label>Спред %<input class="field" name="max_spread_pct" value="${esc(i.max_spread_pct_ui)}"></label>
+      <label>Лимит убытка/день ₽<input class="field" name="max_daily_loss_rub" type="number" min="0" step="50" value="${esc(i.max_daily_loss_rub || 0)}" title="0 = без лимита"></label>
       <label>Мин. объём<input class="field" name="min_volume" value="${esc(i.min_volume || 0)}"></label>
       <label>Лонг
         <select class="field" name="allow_long">
