@@ -2827,19 +2827,20 @@ async function refreshParallelStatus() {
       </tr>`;
     }).join("");
 
-    // ── Инструменты: сортировка по unrealized_pnl (прибыльные сверху) ─────
-    const sorted = [...instruments].sort((a,b) => b.unrealized_pnl - a.unrealized_pnl);
+    // ── Инструменты: сортировка по score сигнала (выше score → выше в таблице) ─
+    const sorted = [...instruments].sort((a,b) => (b.signal_score || 0) - (a.signal_score || 0));
     const n      = sorted.length;
 
-    // Градиент: top → зелёный, bottom → красный (только если есть позиции)
-    const hasPos = sorted.some(i => i.in_position);
+    // Градиент по score: высокий score (сверху) → зелёный, нулевой (снизу) → нейтральный
+    const maxScore = Math.max(...sorted.map(i => i.signal_score || 0), 1);
     const rowBg  = (idx) => {
-      if (!hasPos || n < 2) return "";
-      const t = n === 1 ? 0.5 : idx / (n - 1);  // 0 = top (green), 1 = bottom (red)
-      const r = Math.round(47  + (191-47)  * t);
-      const g = Math.round(163 + (77-163)  * t);
-      const b = Math.round(107 + (90-107)  * t);
-      return `background:rgba(${r},${g},${b},.08)`;
+      const score = sorted[idx]?.signal_score || 0;
+      if (score <= 0 || n < 2) return "";
+      const t = 1 - score / maxScore;  // 0 = top score (green), 1 = lowest score
+      const r = Math.round(47  + (100-47)  * t);
+      const g = Math.round(163 + (120-163) * t);
+      const b = Math.round(107 + (80-107)  * t);
+      return `background:rgba(${r},${g},${b},.09)`;
     };
 
     const instrRows = sorted.map((i, idx) => {
@@ -2939,15 +2940,34 @@ async function refreshParallelStatus() {
       });
     }
 
-    // ── Сигнальная анимация строк при смене action ─────────────────────────
+    // ── Сигнальная анимация: строка при смене action, ячейка при изменении score ──
     instruments.forEach(i => {
       const prev = _prevSignals[i.figi];
-      const changed = prev && (prev.action !== i.signal_action || prev.time !== i.signal_time)
-                      && i.signal_action !== "HOLD";
-      _prevSignals[i.figi] = { action: i.signal_action, time: i.signal_time };
-      if (changed) {
-        const tr = instrTbody && instrTbody.querySelector(`tr[data-figi="${i.figi}"]`);
-        if (tr) { tr.classList.remove('sig-flash'); void tr.offsetWidth; tr.classList.add('sig-flash'); }
+      const newScore  = i.signal_score  || 0;
+      const newAction = i.signal_action || "—";
+      const newTime   = i.signal_time   || "";
+
+      const actionChanged = prev && prev.action !== newAction && newAction !== "HOLD" && newAction !== "—";
+      const scoreChanged  = prev && prev.score !== newScore && newScore !== 0;
+
+      _prevSignals[i.figi] = { action: newAction, time: newTime, score: newScore };
+
+      if (!prev || !instrTbody) return;
+      const tr = instrTbody.querySelector(`tr[data-figi="${i.figi}"]`);
+      if (!tr) return;
+
+      // Синяя волна на строку при смене BUY/SELL
+      if (actionChanged) {
+        tr.classList.remove('sig-flash'); void tr.offsetWidth; tr.classList.add('sig-flash');
+      }
+
+      // Флеш ячейки сигнала (последняя колонка) при изменении score
+      if (scoreChanged) {
+        const sigCell = tr.cells[tr.cells.length - 1];
+        if (sigCell) {
+          const dir = newScore > prev.score ? 'up' : 'down';
+          _flashCell(sigCell, dir);
+        }
       }
     });
 
