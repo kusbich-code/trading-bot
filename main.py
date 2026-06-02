@@ -69,6 +69,7 @@ from app.db import (
     save_instrument_uid,
     fix_ticker_by_figi,
     get_instrument_sl_tp,
+    get_recent_trade,
 )
 from app.instruments import get_instrument_meta, round_to_price_step
 from app.telegram_notify import TelegramNotifier
@@ -608,6 +609,17 @@ def _handle_manual_close(bp: dict, market_map: dict, client=None):
     entry_price = Decimal(str(bp["entry_price"]))
     qty_lots    = int(bp["qty"])
     opened_at   = bp.get("opened_at", "")
+
+    # Защита от дублей: если трейд уже записан за последние 10 минут — пропускаем
+    try:
+        _cutoff = (_now() - timedelta(seconds=600)).strftime("%Y-%m-%d %H:%M:%S")
+        _existing = get_recent_trade(figi, _cutoff)
+        if _existing:
+            log.info("_handle_manual_close %s: трейд уже записан %s, пропуск", ticker, _existing["time"])
+            close_position(figi, source="BOT")
+            return
+    except Exception:
+        pass
     # lot_size для расчёта денежных сумм
     try:
         from app.db import list_active_strategy_instruments as _lasi_mc

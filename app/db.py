@@ -782,6 +782,17 @@ def get_trades(limit=100, ticker=None, date_from=None, date_to=None):
         return [dict(row) for row in cur.fetchall()]
 
 
+def get_recent_trade(figi: str, since: str) -> dict | None:
+    """Возвращает последний трейд по figi позже since (для защиты от дублей)."""
+    with db_cursor() as cur:
+        cur.execute(
+            "SELECT id, time FROM trades WHERE figi=? AND time>=? ORDER BY id DESC LIMIT 1",
+            (figi, since),
+        )
+        row = cur.fetchone()
+    return dict(row) if row else None
+
+
 def get_logs(limit=200, ticker=None, event_type=None, date_from=None, date_to=None, level=None):
     query = "SELECT * FROM event_logs WHERE 1=1"
     params = []

@@ -584,7 +584,25 @@ def api_dashboard_main():
             _cur.execute("SELECT DISTINCT figi, lot FROM strategy_instruments WHERE figi IS NOT NULL AND lot > 0")
             for _r in _cur.fetchall():
                 _lot_map[_r[0]] = int(_r[1])
-            _cur.execute("SELECT figi, stop_loss_pct, take_profit_pct FROM strategy_instruments WHERE figi IS NOT NULL")
+            # SL/TP берём только из активных стратегий профиля (не из других профилей)
+            _active_strat_ids = []
+            if active_profile_id:
+                _cur.execute(
+                    "SELECT strategy_id FROM profile_parallel_strategies WHERE profile_id=?",
+                    (int(active_profile_id),)
+                )
+                _active_strat_ids = [r[0] for r in _cur.fetchall()]
+            if active_strategy_id:
+                _active_strat_ids.append(int(active_strategy_id))
+            if _active_strat_ids:
+                _placeholders = ",".join("?" * len(_active_strat_ids))
+                _cur.execute(
+                    f"SELECT figi, stop_loss_pct, take_profit_pct FROM strategy_instruments "
+                    f"WHERE figi IS NOT NULL AND strategy_id IN ({_placeholders})",
+                    _active_strat_ids
+                )
+            else:
+                _cur.execute("SELECT figi, stop_loss_pct, take_profit_pct FROM strategy_instruments WHERE figi IS NOT NULL")
             for _r in _cur.fetchall():
                 _sl_tp_map[_r[0]] = (float(_r[1] or 0), float(_r[2] or 0))
     except Exception:
