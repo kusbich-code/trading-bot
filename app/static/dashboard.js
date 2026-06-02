@@ -695,7 +695,8 @@ async function refreshQuotesOnly() {
     _flashCell(el, dir);
   });
   document.querySelectorAll(".live-time[data-figi]").forEach((el) => {
-    if (map[el.dataset.figi]) el.textContent = map[el.dataset.figi].price_time;
+    const q = map[el.dataset.figi];
+    if (q) el.textContent = q.price_time || "—";  // тихое обновление без flash
   });
 
   // ── Live positions: price / pct / pnl / value ─────────────────────────────
@@ -2866,6 +2867,8 @@ async function refreshParallelStatus() {
             ${blockCnt > 0 ? `<div class="muted" style="font-size:10px">Сработал ${blockCnt}× за 30 дн.</div>` : ""}
           </div>`;
       }
+      // СТАТИЧНЫЙ HTML: только то что меняется редко (лоты, SL/TP, лимит, сигнал)
+      // Цена и время — через live-price/live-time (refreshQuotesOnly обновит без перерисовки)
       return `<tr data-figi="${esc(i.figi)}" style="${rowBg(idx)}${blocked ? ';opacity:.7' : ''}">
         <td>${tickerCell}</td>
         <td>${esc(i.lots)} <span class="muted" style="font-size:10px">(${esc(i.lot_cost_ui || "")})</span></td>
@@ -2874,14 +2877,13 @@ async function refreshParallelStatus() {
           <span style="color:#888;margin:0 2px">/</span>
           <span style="color:#2fa36b;font-size:11px">▲${esc(i.tp_pct)}</span>
         </td>
-        <td class="live-price" data-figi="${esc(i.figi)}">${esc(i.last_price_ui)}</td>
-        <td class="live-time muted" data-figi="${esc(i.figi)}" style="font-size:11px">${esc(i.price_time)}</td>
-        <td class="muted" style="font-size:12px">${esc(i.volume_ui)}</td>
+        <td class="live-price" data-figi="${esc(i.figi)}" style="font-size:13px;font-weight:600">—</td>
+        <td class="live-time muted" data-figi="${esc(i.figi)}" style="font-size:11px">—</td>
+        <td class="live-vol muted" data-figi="${esc(i.figi)}" style="font-size:12px">—</td>
         <td>${lossCell}</td>
         <td>
           <span style="color:${sigColor};font-weight:700;font-size:12px">${sigLabel}</span>
           ${score ? `<span class="muted" style="font-size:11px;margin-left:4px">${score > 0 ? "+" : ""}${score}</span>` : ""}
-          ${i.signal_time ? `<span class="muted" style="font-size:10px;margin-left:4px">${esc(i.signal_time)}</span>` : ""}
           ${i.signal_skip_reason ? `<div style="font-size:10px;color:#f0a500;margin-top:2px" title="Фильтр: ${esc(i.signal_skip_filter)}">⚠ ${esc(i.signal_skip_reason)}</div>` : ""}
         </td>
       </tr>`;
@@ -2914,31 +2916,16 @@ async function refreshParallelStatus() {
     // ── Стратегии (diff) ──────────────────────────────────────────────────────
     diffTbody(document.getElementById('_psStratBody'), stratRows);
 
-    // ── Инструменты: smart row diff с мигающими ячейками ─────────────────────
+    // ── Инструменты: тихий diff (без flash — только изменение данных)
     const instrTbody = document.getElementById('_psInstrBody');
     if (instrTbody) {
-      // Сохраняем старые данные до перезаписи
-      const prevHtml = {};
-      instrTbody.querySelectorAll('tr[data-figi]').forEach(tr => {
-        prevHtml[tr.dataset.figi] = Array.from(tr.cells).map(c => c.innerHTML);
-      });
-
       diffTbody(instrTbody, instrRows);
-
-      // Мигание ячеек изменившихся строк
+      // Обновляем live-vol из данных API (volume меняется, но без flash)
       instrTbody.querySelectorAll('tr[data-figi]').forEach(tr => {
-        const figi = tr.dataset.figi;
-        const old = prevHtml[figi];
-        if (!old) return; // новая строка — не мигаем
-        Array.from(tr.cells).forEach((cell, c) => {
-          if (old[c] === cell.innerHTML) return;
-          const oldNum = _numVal(old[c]?.replace(/<[^>]*>/g,''));
-          const newNum = _numVal(cell.textContent);
-          const dir = (oldNum !== null && newNum !== null)
-            ? (newNum > oldNum ? 'up' : newNum < oldNum ? 'down' : 'neutral')
-            : 'neutral';
-          _flashCell(cell, dir);
-        });
+        const instr = instruments.find(x => x.figi === tr.dataset.figi);
+        if (!instr) return;
+        const volEl = tr.querySelector('.live-vol');
+        if (volEl) volEl.textContent = instr.volume_ui || "—";
       });
     }
 
