@@ -2992,12 +2992,19 @@ async function refreshParallelStatus() {
           + (newScore ? ` <span class="muted" style="font-size:11px">${newScore > 0 ? "+" : ""}${newScore}</span>` : "")
           + (newTime  ? ` <span class="muted" style="font-size:10px">${esc(newTime)}</span>` : "")
           + (newSkip  ? `<div style="font-size:10px;color:#f0a500;margin-top:2px" title="Фильтр: ${esc(newFilter)}">⚠ ${esc(newSkip)}</div>` : "");
-        if (sigEl.innerHTML !== newHtml) {
-          const oldScore = _numVal(sigEl.querySelector('span.muted')?.textContent);
-          const dir = (oldScore !== null && newScore !== oldScore)
-            ? (newScore > oldScore ? 'up' : 'down') : 'neutral';
-          sigEl.innerHTML = newHtml;
-          _flashCell(sigEl, dir);
+        // Сравниваем только action и score (не time) для принятия решения о flash
+        const prevScore  = parseInt(sigEl.dataset.score  || "0") || 0;
+        const prevAction = sigEl.dataset.action || "";
+        const scoreChanged  = newScore !== prevScore;
+        const actionToBuySell = prevAction === "HOLD" && (newAction === "BUY" || newAction === "SELL");
+        sigEl.innerHTML    = newHtml;
+        sigEl.dataset.score  = newScore;
+        sigEl.dataset.action = newAction;
+        // Flash только при реальных изменениях
+        if (scoreChanged && newScore !== 0) {
+          _flashCell(sigEl, newScore > prevScore ? 'up' : 'down');
+        } else if (actionToBuySell) {
+          _flashCell(sigEl, newAction === "BUY" ? 'up' : 'down');
         }
       });
     }
