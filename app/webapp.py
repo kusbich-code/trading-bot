@@ -1649,7 +1649,23 @@ def api_parallel_status():
         }
         for st in stats.values():
             st["pnl_ui"] = fmt_money(st["pnl"])
-        result.append({"strategy_id": sid, "name": name, **info, "stats": stats})
+        # Количество срабатываний дневного лимита по инструментам стратегии за 30 дней
+        _loss_stops_month = 0
+        try:
+            from app.db import db_cursor as _dbc4
+            with _dbc4() as _c4:
+                _c4.execute(
+                    "SELECT COUNT(*) FROM event_logs e "
+                    "JOIN strategy_instruments si ON si.ticker=e.ticker "
+                    "WHERE e.event_type='BALANCE_WARNING' AND e.message LIKE '%Дневной лимит%' "
+                    "AND si.strategy_id=? AND e.event_time>=?",
+                    (sid, _month_str)
+                )
+                _loss_stops_month = int((_c4.fetchone() or [0])[0])
+        except Exception:
+            pass
+        result.append({"strategy_id": sid, "name": name, **info, "stats": stats,
+                        "loss_stops_month": _loss_stops_month})
 
     # Unified instruments table across all strategies
     all_instrs = []

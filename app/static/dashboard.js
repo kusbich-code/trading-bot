@@ -2743,6 +2743,11 @@ async function refreshParallelStatus() {
         <td>${fmtStat(s.day,"pnl")}</td><td>${fmtStat(s.week,"pnl")}</td><td>${fmtStat(s.month,"pnl")}</td>
         <td class="muted">${fmtStat(s.month,"wr")}</td>
         <td class="muted">${fmtStat(s.month,"cnt")}</td>
+        <td class="muted" style="font-size:12px">${
+          (t.loss_stops_month > 0)
+            ? `<span style="color:#ff7b7b;font-weight:600">${t.loss_stops_month}</span>`
+            : `<span class="muted">0</span>`
+        }</td>
         <td class="muted" style="font-size:11px">${esc(t.updated_at||"")}</td>
       </tr>`;
     }).join("");
@@ -2822,7 +2827,7 @@ async function refreshParallelStatus() {
           <table><thead><tr>
             <th>Стратегия</th><th>Статус</th>
             <th>PnL день</th><th>PnL нед.</th><th>PnL мес.</th>
-            <th>Win% мес.</th><th>Сделок мес.</th><th>Обновлено</th>
+            <th>Win% мес.</th><th>Сделок мес.</th><th>Стопов мес.</th><th>Обновлено</th>
           </tr></thead><tbody id="_psStratBody"></tbody></table>
         </div>
         <div style="display:flex;align-items:center;gap:8px;margin:6px 0 4px">
