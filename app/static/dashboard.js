@@ -965,8 +965,17 @@ function _showSignalPopup(sigEl, tr) {
   if (top + 280 > window.innerHeight) top = rect.top - 290;
   popup.style.left = Math.max(4, left) + "px";
   popup.style.top  = Math.max(4, top)  + "px";
-  const close = (e) => { if (_sigPopup && !_sigPopup.contains(e.target) && e.target !== sigEl) { _sigPopup.remove(); _sigPopup = null; document.removeEventListener("click", close); } };
-  setTimeout(() => document.addEventListener("click", close), 10);
+
+  // Один глобальный обработчик закрытия — переиспользуем чтобы не накапливались
+  if (window._sigCloseHandler) document.removeEventListener("click", window._sigCloseHandler);
+  window._sigCloseHandler = (e) => {
+    if (_sigPopup && !_sigPopup.contains(e.target) && !e.target.closest(".live-sig")) {
+      _sigPopup.remove(); _sigPopup = null;
+      document.removeEventListener("click", window._sigCloseHandler);
+      window._sigCloseHandler = null;
+    }
+  };
+  setTimeout(() => document.addEventListener("click", window._sigCloseHandler), 50);
 }
 
 async function _loadPosNews(figi) {
@@ -2862,6 +2871,10 @@ let _psLastFigis       = "";  // список figi для определения
       `.cell-updated-down{animation:cellUpdDown .6s ease-out forwards}`,
       `.cell-updated-neutral{animation:cellUpdNeutral .5s ease-out forwards}`,
       `.cell-updated{animation:cellUpdUp .6s ease-out forwards}`,
+      // Фиксированная высота строк таблицы инструментов — нет прыжков
+      `#_psInstrBody tr{height:36px}`,
+      `#_psInstrBody td{white-space:nowrap;overflow:hidden;max-width:200px;text-overflow:ellipsis;vertical-align:middle}`,
+      `#_psInstrBody .live-sig{white-space:nowrap;cursor:pointer}`,
       // Мигающая точка «live» — пульс
       `@keyframes liveDot{0%,100%{opacity:1}50%{opacity:.25}}`,
       `.live-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#2fa36b;animation:liveDot 1.4s ease-in-out infinite;vertical-align:middle;margin-right:5px}`,
@@ -3104,9 +3117,10 @@ async function refreshParallelStatus() {
         // Пропускаем если ничего не изменилось — НЕТ flash, НЕТ обновления DOM
         if (!firstRender && prevScore === newScore && prevAction === newAction && sigEl.dataset.skip === newSkip) return;
         const sigC = newAction === "BUY" ? "#2fa36b" : newAction === "SELL" ? "#ff7b7b" : "#9fb3d8";
+        // Всё в одну строку — никаких div, высота строки не меняется
         sigEl.innerHTML = `<span style="color:${sigC};font-weight:700;font-size:12px">${esc(newAction)}</span>`
           + (newScore ? ` <span class="muted" style="font-size:11px">${newScore > 0 ? "+" : ""}${newScore}</span>` : "")
-          + (newSkip  ? `<div style="font-size:10px;color:#f0a500;margin-top:2px" title="${esc(newFilter)}">⚠ ${esc(newSkip)}</div>` : "");
+          + (newSkip  ? ` <span style="color:#f0a500;font-size:11px" title="${esc(newSkip)}">⚠</span>` : "");
         sigEl.dataset.score  = String(newScore);
         sigEl.dataset.action = newAction;
         sigEl.dataset.skip   = newSkip;
