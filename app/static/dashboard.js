@@ -6,6 +6,7 @@ const REFRESH_TRADES_MS    = 8000;   // история сделок (лёгка�
 
 let instrumentSearchData = [];
 let refreshTimersStarted = false;
+let _lastQuotesMap = {};   // последние котировки — используем после любого diffTbody
 
 // Viewed profile in settings tab (may differ from active profile)
 let viewedProfileId = null;
@@ -675,29 +676,34 @@ async function renderMainData() {
 }
 
 
+function _applyQuotesToLiveCells(map) {
+  // Обновляет live-price/live-time элементы из котировок; вызывается из обоих таймеров
+  document.querySelectorAll(".live-price[data-figi]").forEach((el) => {
+    const q = map[el.dataset.figi];
+    if (!q || !q.last_price_ui) return;
+    const prev = el.textContent.trim();
+    const next = q.last_price_ui;
+    if (prev === next) return;
+    const prevNum = _numVal(prev);
+    const nextNum = _numVal(next);
+    el.textContent = next;
+    if (prevNum !== null && nextNum !== null && prev !== "—") {
+      _flashCell(el, nextNum > prevNum ? 'up' : nextNum < prevNum ? 'down' : 'neutral');
+    }
+  });
+  document.querySelectorAll(".live-time[data-figi]").forEach((el) => {
+    const q = map[el.dataset.figi];
+    if (q) el.textContent = q.price_time || "—";
+  });
+}
+
 async function refreshQuotesOnly() {
   if (getTabFromHash() !== "главное") return;
   const quotes = await apiGet("/api/dashboard/quotes");
   const map = {};
   for (const q of quotes) map[q.figi] = q;
-  document.querySelectorAll(".live-price[data-figi]").forEach((el) => {
-    const q = map[el.dataset.figi];
-    if (!q) return;
-    const prev = el.textContent.trim();
-    const next = q.last_price_ui;
-    if (prev === next) return;  // без изменений — нет флеша
-    const prevNum = _numVal(prev);
-    const nextNum = _numVal(next);
-    el.textContent = next;
-    const dir = (prevNum !== null && nextNum !== null)
-      ? (nextNum > prevNum ? 'up' : nextNum < prevNum ? 'down' : 'neutral')
-      : 'neutral';
-    _flashCell(el, dir);
-  });
-  document.querySelectorAll(".live-time[data-figi]").forEach((el) => {
-    const q = map[el.dataset.figi];
-    if (q) el.textContent = q.price_time || "—";  // тихое обновление без flash
-  });
+  _lastQuotesMap = map;   // сохраняем для использования в refreshParallelStatus
+  _applyQuotesToLiveCells(map);
 
   // ── Live positions: price / pct / pnl / value ─────────────────────────────
   document.querySelectorAll("#mainPositionsBody tr[data-figi]").forEach(row => {
@@ -2916,11 +2922,15 @@ async function refreshParallelStatus() {
     // ── Стратегии (diff) ──────────────────────────────────────────────────────
     diffTbody(document.getElementById('_psStratBody'), stratRows);
 
-    // ── Инструменты: тихий diff (без flash — только изменение данных)
+    // ── Инструменты: тихий diff, потом сразу восстанавливаем цены из кэша
     const instrTbody = document.getElementById('_psInstrBody');
     if (instrTbody) {
       diffTbody(instrTbody, instrRows);
-      // Обновляем live-vol из данных API (volume меняется, но без flash)
+      // Восстанавливаем live-price/live-time из последних котировок (иначе будут "—")
+      if (Object.keys(_lastQuotesMap).length) {
+        _applyQuotesToLiveCells(_lastQuotesMap);
+      }
+      // Объём — обновляем из текущих данных API (без flash)
       instrTbody.querySelectorAll('tr[data-figi]').forEach(tr => {
         const instr = instruments.find(x => x.figi === tr.dataset.figi);
         if (!instr) return;
