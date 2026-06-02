@@ -872,6 +872,63 @@ function _renderPosChart(figi, candles) {
 
 let _sigPopup = null;
 
+function _renderApiFilterExplain(skip, filter, sigAction) {
+  if (!skip) return "";
+  // Парсим значения из skip_reason: "API-фильтр: RSI=35.0 | MACD=-0.47/Сигн=-0.01 | BB=1087..1095"
+  const rsiMatch  = skip.match(/RSI=([\d.]+)/);
+  const macdMatch = skip.match(/MACD=([-\d.]+)\/Сигн=([-\d.]+)/);
+  const bbMatch   = skip.match(/BB=([\d.]+)\.\.([\d.]+)/);
+  const rsi    = rsiMatch  ? parseFloat(rsiMatch[1])  : null;
+  const macd   = macdMatch ? parseFloat(macdMatch[1]) : null;
+  const macdSg = macdMatch ? parseFloat(macdMatch[2]) : null;
+  const bbLow  = bbMatch   ? parseFloat(bbMatch[1])   : null;
+  const bbHigh = bbMatch   ? parseFloat(bbMatch[2])   : null;
+
+  const rows = [];
+
+  // RSI
+  if (rsi !== null) {
+    let rsiZone = rsi > 70 ? "🔴 перекупленность (>70)" : rsi < 30 ? "🔴 перепроданность (<30)" : rsi > 50 ? "🟡 бычья зона (50–70)" : "🟡 медвежья зона (30–50)";
+    let rsiWhy  = "";
+    if (sigAction === "BUY"  && rsi > 70) rsiWhy = "→ BUY заблокирован: при RSI>70 актив перекуплен, риск разворота";
+    if (sigAction === "SELL" && rsi < 30) rsiWhy = "→ SELL заблокирован: при RSI<30 актив перепродан, риск отскока";
+    rows.push(`<div style="padding:4px 0;border-bottom:1px solid rgba(255,255,255,.05)">
+      <b style="color:#eef4ff">RSI = ${rsi}</b> — ${rsiZone}
+      ${rsiWhy ? `<div style="color:#f0a500;font-size:10px;margin-top:2px">${rsiWhy}</div>` : ""}
+    </div>`);
+  }
+
+  // MACD
+  if (macd !== null && macdSg !== null) {
+    const cross = macd > macdSg ? "🔴 бычье пересечение (MACD>Сигн)" : "🔴 медвежье пересечение (MACD<Сигн)";
+    let macdWhy = "";
+    if (sigAction === "BUY"  && macd < macdSg) macdWhy = "→ BUY заблокирован: нет бычьего импульса (MACD ниже сигнальной)";
+    if (sigAction === "SELL" && macd > macdSg) macdWhy = "→ SELL заблокирован: нет медвежьего импульса (MACD выше сигнальной)";
+    rows.push(`<div style="padding:4px 0;border-bottom:1px solid rgba(255,255,255,.05)">
+      <b style="color:#eef4ff">MACD = ${macd.toFixed(4)}</b>, Сигнал = ${macdSg.toFixed(4)} — ${cross}
+      ${macdWhy ? `<div style="color:#f0a500;font-size:10px;margin-top:2px">${macdWhy}</div>` : ""}
+    </div>`);
+  }
+
+  // BB
+  if (bbLow !== null && bbHigh !== null) {
+    rows.push(`<div style="padding:4px 0">
+      <b style="color:#eef4ff">Bollinger Bands</b>: нижняя = ${bbLow}, верхняя = ${bbHigh}
+      <div style="color:#9fb3d8;font-size:10px;margin-top:2px">Для возврата к средней нужно, чтобы цена была у полосы (BUY у нижней, SELL у верхней)</div>
+    </div>`);
+  }
+
+  if (!rows.length) {
+    // Нет распознанных значений — показываем raw текст
+    return `<div style="margin-top:8px;padding:8px;background:rgba(240,165,0,.08);border-radius:4px;font-size:11px;color:#f0a500">⚠ ${esc(skip)}</div>`;
+  }
+
+  return `<div style="margin-top:10px">
+    <div style="color:#9fb3d8;font-size:11px;margin-bottom:4px;font-weight:600">API ФИЛЬТР (T-Bank индикаторы)</div>
+    <div style="font-size:12px;color:#cdd9f0">${rows.join("")}</div>
+  </div>`;
+}
+
 function _showSignalPopup(sigEl, tr) {
   if (_sigPopup) { _sigPopup.remove(); _sigPopup = null; }
   const action  = tr.dataset.sigAction  || "—";
@@ -899,7 +956,7 @@ function _showSignalPopup(sigEl, tr) {
     <div style="color:#9fb3d8;font-size:11px;margin-bottom:10px">Режим: <b>${esc(modeLabel)}</b></div>
     ${reasons.length ? `<div style="margin-bottom:10px">${reasons.map(r=>`<div style="font-size:12px;padding:2px 0;border-bottom:1px solid rgba(255,255,255,.05);color:#cdd9f0">${esc(r)}</div>`).join("")}</div>` : ""}
     <div style="background:rgba(255,255,255,.04);border-radius:4px;padding:8px;font-size:11px;color:#9fb3d8"><b style="color:#eef4ff">Как считается:</b><br>${esc(scoreHelp)}</div>
-    ${skip ? `<div style="margin-top:8px;font-size:11px;color:#f0a500">⚠ ${esc(skip)}<br><span style="color:#555">${esc(filter)}</span></div>` : ""}`;
+    ${skip ? _renderApiFilterExplain(skip, filter, action) : ""}`;
   document.body.appendChild(popup);
   _sigPopup = popup;
   const rect = sigEl.getBoundingClientRect();

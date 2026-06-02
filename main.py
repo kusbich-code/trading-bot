@@ -1704,7 +1704,8 @@ def process_instrument(client, item,
         log.info("API-confirm %s %s→%s | %s | %s | %s",
                  ticker, sig_before, sig, rsi_str, macd_str, bb_str)
         if sig == "HOLD" and sig_before != "HOLD":
-            _save_signal(skip_reason=f"API-фильтр: {rsi_str} | {macd_str}", skip_filter="api_confirm")
+            _save_signal(skip_reason=f"API-фильтр: {rsi_str} | {macd_str} | {bb_str}",
+                         skip_filter="api_confirm")
 
     if ticker in positions:
         pos = positions[ticker]
