@@ -2892,9 +2892,14 @@ async function refreshParallelStatus() {
             ${blockCnt > 0 ? `<div class="muted" style="font-size:10px">Сработал ${blockCnt}× за 30 дн.</div>` : ""}
           </div>`;
       }
-      // СТАТИЧНЫЙ HTML: только то что меняется редко (лоты, SL/TP, лимит, сигнал)
-      // Цена и время — через live-price/live-time (refreshQuotesOnly обновит без перерисовки)
-      return `<tr data-figi="${esc(i.figi)}" style="${rowBg(idx)}${blocked ? ';opacity:.7' : ''}">
+      // Данные сигнала в data-атрибутах — обновляются отдельно без diffTbody
+      return `<tr data-figi="${esc(i.figi)}"
+                  data-sig-action="${esc(action)}"
+                  data-sig-score="${score}"
+                  data-sig-skip="${esc(i.signal_skip_reason||"")}"
+                  data-sig-filter="${esc(i.signal_skip_filter||"")}"
+                  data-sig-time="${esc(i.signal_time||"")}"
+                  style="${rowBg(idx)}${blocked ? ';opacity:.7' : ''}">
         <td>${tickerCell}</td>
         <td>${esc(i.lots)} <span class="muted" style="font-size:10px">(${esc(i.lot_cost_ui || "")})</span></td>
         <td class="muted" style="white-space:nowrap">
@@ -2906,11 +2911,7 @@ async function refreshParallelStatus() {
         <td class="live-time muted" data-figi="${esc(i.figi)}" style="font-size:11px">—</td>
         <td class="live-vol muted" data-figi="${esc(i.figi)}" style="font-size:12px">—</td>
         <td>${lossCell}</td>
-        <td>
-          <span style="color:${sigColor};font-weight:700;font-size:12px">${sigLabel}</span>
-          ${score ? `<span class="muted" style="font-size:11px;margin-left:4px">${score > 0 ? "+" : ""}${score}</span>` : ""}
-          ${i.signal_skip_reason ? `<div style="font-size:10px;color:#f0a500;margin-top:2px" title="Фильтр: ${esc(i.signal_skip_filter)}">⚠ ${esc(i.signal_skip_reason)}</div>` : ""}
-        </td>
+        <td class="live-sig" data-figi="${esc(i.figi)}">—</td>
       </tr>`;
     }).join("");
 
@@ -2953,51 +2954,58 @@ async function refreshParallelStatus() {
     // ── Стратегии (diff) ──────────────────────────────────────────────────────
     diffTbody(document.getElementById('_psStratBody'), stratRows);
 
-    // ── Инструменты: тихий diff, потом сразу восстанавливаем цены из кэша
+    // ── Инструменты: тихий diff, потом обновляем live-ячейки ────────────────
     const instrTbody = document.getElementById('_psInstrBody');
     if (instrTbody) {
       diffTbody(instrTbody, instrRows);
-      // Восстанавливаем live-price/live-time из последних котировок (иначе будут "—")
+
+      // Восстанавливаем цены из кэша (иначе будут "—" после diffTbody)
       if (Object.keys(_lastQuotesMap).length) {
         _applyQuotesToLiveCells(_lastQuotesMap);
       }
-      // Объём — обновляем из текущих данных API (без flash)
+
+      // Обновляем сигнал и объём из data-атрибутов строки
       instrTbody.querySelectorAll('tr[data-figi]').forEach(tr => {
-        const instr = instruments.find(x => x.figi === tr.dataset.figi);
+        const figi     = tr.dataset.figi;
+        const instr    = instruments.find(x => x.figi === figi);
         if (!instr) return;
+
+        // Объём (без flash)
         const volEl = tr.querySelector('.live-vol');
         if (volEl) volEl.textContent = instr.volume_ui || "—";
+
+        // Сигнал — читаем из data-атрибутов, обновляем ячейку с flash по score
+        const sigEl = tr.querySelector('.live-sig');
+        if (!sigEl) return;
+        const newAction = tr.dataset.sigAction || "—";
+        const newScore  = parseInt(tr.dataset.sigScore  || "0") || 0;
+        const newSkip   = tr.dataset.sigSkip   || "";
+        const newFilter = tr.dataset.sigFilter  || "";
+        const newTime   = tr.dataset.sigTime    || "";
+        const sigC      = newAction === "BUY" ? "#2fa36b" : newAction === "SELL" ? "#ff7b7b" : "#9fb3d8";
+        const newHtml   = `<span style="color:${sigC};font-weight:700;font-size:12px">${esc(newAction)}</span>`
+          + (newScore ? ` <span class="muted" style="font-size:11px">${newScore > 0 ? "+" : ""}${newScore}</span>` : "")
+          + (newTime  ? ` <span class="muted" style="font-size:10px">${esc(newTime)}</span>` : "")
+          + (newSkip  ? `<div style="font-size:10px;color:#f0a500;margin-top:2px" title="Фильтр: ${esc(newFilter)}">⚠ ${esc(newSkip)}</div>` : "");
+        if (sigEl.innerHTML !== newHtml) {
+          const oldScore = _numVal(sigEl.querySelector('span.muted')?.textContent);
+          const dir = (oldScore !== null && newScore !== oldScore)
+            ? (newScore > oldScore ? 'up' : 'down') : 'neutral';
+          sigEl.innerHTML = newHtml;
+          _flashCell(sigEl, dir);
+        }
       });
     }
 
-    // ── Сигнальная анимация: строка при смене action, ячейка при изменении score ──
+    // ── Синяя волна строки при смене action BUY/SELL ────────────────────────
     instruments.forEach(i => {
       const prev = _prevSignals[i.figi];
-      const newScore  = i.signal_score  || 0;
       const newAction = i.signal_action || "—";
-      const newTime   = i.signal_time   || "";
-
       const actionChanged = prev && prev.action !== newAction && newAction !== "HOLD" && newAction !== "—";
-      const scoreChanged  = prev && prev.score !== newScore && newScore !== 0;
-
-      _prevSignals[i.figi] = { action: newAction, time: newTime, score: newScore };
-
-      if (!prev || !instrTbody) return;
-      const tr = instrTbody.querySelector(`tr[data-figi="${i.figi}"]`);
-      if (!tr) return;
-
-      // Синяя волна на строку при смене BUY/SELL
-      if (actionChanged) {
-        tr.classList.remove('sig-flash'); void tr.offsetWidth; tr.classList.add('sig-flash');
-      }
-
-      // Флеш ячейки сигнала (последняя колонка) при изменении score
-      if (scoreChanged) {
-        const sigCell = tr.cells[tr.cells.length - 1];
-        if (sigCell) {
-          const dir = newScore > prev.score ? 'up' : 'down';
-          _flashCell(sigCell, dir);
-        }
+      _prevSignals[i.figi] = { action: newAction };
+      if (actionChanged && instrTbody) {
+        const tr = instrTbody.querySelector(`tr[data-figi="${i.figi}"]`);
+        if (tr) { tr.classList.remove('sig-flash'); void tr.offsetWidth; tr.classList.add('sig-flash'); }
       }
     });
 
