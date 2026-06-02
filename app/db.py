@@ -1123,12 +1123,20 @@ def clear_history(clear_trades: bool = True, clear_logs: bool = False) -> dict:
     return result
 
 
-def get_history_stats(days: int | None = None) -> dict:
+def get_history_stats(days: int | None = None,
+                      date_from: str | None = None,
+                      date_to: str | None = None) -> dict:
     """Агрегированная статистика по сделкам для вкладки История."""
     from datetime import datetime as _dt, timedelta as _td
     params: list = []
     where = ""
-    if days:
+    if date_from and date_to:
+        where = " AND time >= ? AND time < ?"
+        params = [date_from, date_to]
+    elif date_from:
+        where = " AND time >= ?"
+        params = [date_from]
+    elif days:
         date_from = (_dt.now() - _td(days=days)).strftime("%Y-%m-%d")
         where = " AND time >= ?"
         params = [date_from]

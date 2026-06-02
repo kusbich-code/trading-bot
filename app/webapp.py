@@ -1316,9 +1316,16 @@ def api_dashboard_settings(profile_id: Optional[int] = None):
 
 
 @app.get("/api/history/stats")
-def api_history_stats(days: int = 30):
+def api_history_stats(days: int = 0, date_from: str = "", date_to: str = ""):
     """Агрегированная статистика по сделкам: кривая капитала, тикеры, причины."""
-    stats = get_history_stats(days=days if days > 0 else None)
+    if date_from and date_to:
+        stats = get_history_stats(date_from=date_from, date_to=date_to)
+    elif date_from:
+        stats = get_history_stats(date_from=date_from)
+    elif days > 0:
+        stats = get_history_stats(days=days)
+    else:
+        stats = get_history_stats()
     s = stats["summary"]
     s["total_pnl_ui"]       = fmt_money(s.get("total_pnl", 0))
     s["avg_pnl_ui"]         = fmt_money(s.get("avg_pnl", 0))
@@ -1331,10 +1338,9 @@ def api_history_stats(days: int = 30):
 
 
 @app.get("/api/dashboard/history")
-def api_dashboard_history(days: int = 0):
+def api_dashboard_history(days: int = 0, date_from: str = "", date_to: str = ""):
     from datetime import datetime as _dt, timedelta as _td
-    date_from = None
-    if days > 0:
+    if not date_from and days > 0:
         date_from = (_dt.now() - _td(days=days)).strftime("%Y-%m-%d")
 
     def norm(x):
@@ -1355,10 +1361,10 @@ def api_dashboard_history(days: int = 0):
             "time": t.get("time", "") or "",
             "open_time": t.get("open_time", "") or "",
             "duration_ui": _fmt_duration(t.get("open_time", "") or "", t.get("time", "") or ""),
-        } for t in get_trades(limit=500, date_from=date_from)],
-        "system_logs": [norm(x) for x in get_system_logs(limit=200, date_from=date_from)],
-        "error_logs":  [norm(x) for x in get_error_logs(limit=200,  date_from=date_from)],
-        "common_logs": [norm(x) for x in get_logs(limit=500,        date_from=date_from)],
+        } for t in get_trades(limit=500, date_from=date_from or None, date_to=date_to or None)],
+        "system_logs": [norm(x) for x in get_system_logs(limit=200, date_from=date_from or None)],
+        "error_logs":  [norm(x) for x in get_error_logs(limit=200,  date_from=date_from or None)],
+        "common_logs": [norm(x) for x in get_logs(limit=500,        date_from=date_from or None)],
     })
 
 

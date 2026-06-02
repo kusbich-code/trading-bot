@@ -2245,7 +2245,10 @@ async function closeAllPositionsConfirm() {
 
 // ── History tab ───────────────────────────────────────────────────────────────
 
-let _histPeriod    = 30;   // дней (0 = всё время)
+let _histPeriod    = 30;          // legacy, не используется
+let _histDateFrom  = "";          // YYYY-MM-DD
+let _histDateTo    = "";          // YYYY-MM-DD (не включительно)
+let _histPeriodKey = "month_cur"; // ключ активного периода
 let _histActiveTab = "trades";
 let _histData      = {};
 let _histBrokerItems  = [];
@@ -2254,6 +2257,16 @@ let _histBrokerCursor = "";
 async function renderHistoryTab() {
   const host = document.getElementById("view-history");
   if (!host) return;
+
+  // Инициализируем текущий месяц при первом открытии
+  if (!_histDateFrom) {
+    const now = new Date();
+    const yr = now.getFullYear(), mo = now.getMonth();
+    _histDateFrom = `${yr}-${String(mo+1).padStart(2,"0")}-01`;
+    const nxt = new Date(yr, mo+1, 1);
+    _histDateTo   = `${nxt.getFullYear()}-${String(nxt.getMonth()+1).padStart(2,"0")}-01`;
+    _histPeriodKey = `m_${yr}_${mo}`;
+  }
 
   host.innerHTML = _histShell();
 
@@ -2265,19 +2278,68 @@ async function renderHistoryTab() {
   }
 }
 
+function _histBuildPeriods() {
+  const now  = new Date();
+  const yr   = now.getFullYear();
+  const mo   = now.getMonth(); // 0-based
+  const months = ["Янв","Фев","Мар","Апр","Май","Июн","Июл","Авг","Сен","Окт","Ноя","Дек"];
+  const items = [];
+
+  // Месяцы текущего года (до текущего включительно)
+  for (let m = 0; m <= mo; m++) {
+    const from = `${yr}-${String(m+1).padStart(2,"0")}-01`;
+    const toMo = new Date(yr, m+1, 1);
+    const to   = `${toMo.getFullYear()}-${String(toMo.getMonth()+1).padStart(2,"0")}-01`;
+    items.push({key:`m_${yr}_${m}`, label: months[m], from, to, group:"months"});
+  }
+
+  // Кварталы текущего года (до текущего квартала включительно)
+  const curQ = Math.floor(mo / 3);
+  for (let q = 0; q <= curQ; q++) {
+    const qStart = q * 3;
+    const from = `${yr}-${String(qStart+1).padStart(2,"0")}-01`;
+    const qEnd = new Date(yr, qStart+3, 1);
+    const to   = `${qEnd.getFullYear()}-${String(qEnd.getMonth()+1).padStart(2,"0")}-01`;
+    items.push({key:`q_${yr}_${q+1}`, label:`Q${q+1}`, from, to, group:"quarters"});
+  }
+
+  // Годы (2025, 2026, ...)
+  for (let y = 2025; y <= yr; y++) {
+    items.push({key:`y_${y}`, label: String(y),
+      from: `${y}-01-01`, to: `${y+1}-01-01`, group:"years"});
+  }
+
+  // Всё время
+  items.push({key:"all", label:"Всё", from:"", to:"", group:"all"});
+  return items;
+}
+
+function _histPeriodBtns() {
+  const all = _histBuildPeriods();
+  const groups = [
+    {id:"months",   label:"Месяц", items: all.filter(p=>p.group==="months")},
+    {id:"quarters", label:"Квартал", items: all.filter(p=>p.group==="quarters")},
+    {id:"years",    label:"Год",   items: all.filter(p=>p.group==="years")},
+    {id:"all",      label:"",      items: all.filter(p=>p.group==="all")},
+  ];
+  return groups.map(g => `
+    <div class="row" style="gap:4px;align-items:center">
+      ${g.label ? `<span class="muted" style="font-size:11px;min-width:52px">${g.label}:</span>` : ""}
+      ${g.items.map(p => `<button class="btn${_histPeriodKey===p.key?" btn-primary":""}" style="padding:3px 9px;font-size:12px"
+              onclick="histSetPeriodRange('${p.key}','${p.from}','${p.to}')">${p.label}</button>`).join("")}
+    </div>`).join("");
+}
+
 function _histShell() {
-  const periods = [{d:7,l:"7 дней"},{d:30,l:"30 дней"},{d:90,l:"90 дней"},{d:0,l:"Всё время"}];
   const tabs = [
     ["trades","Сделки"],["broker","Операции брокера"],
     ["journal","Журнал"],["errors","Ошибки"],["system","Система"],
   ];
   return `
     <div class="block" style="padding:10px 16px;margin-bottom:12px">
-      <div class="row between">
-        <div class="row" style="gap:6px">
-          ${periods.map(p => `
-            <button class="btn${_histPeriod===p.d?" btn-primary":""}" id="histPBtn${p.d}"
-                    onclick="histSetPeriod(${p.d})">${p.l}</button>`).join("")}
+      <div class="row between" style="align-items:flex-start;gap:10px;flex-wrap:wrap">
+        <div style="display:flex;flex-direction:column;gap:5px" id="histPeriodBtns">
+          ${_histPeriodBtns()}
         </div>
         <div class="row" style="gap:8px">
           <span class="note" id="histStatus">Загрузка…</span>
@@ -2338,11 +2400,20 @@ async function histClearTrades() {
 }
 
 function histSetPeriod(days) {
-  _histPeriod = days;
-  document.querySelectorAll("[id^='histPBtn']").forEach(b => {
-    const d = parseInt(b.id.replace("histPBtn",""));
-    b.classList.toggle("btn-primary", d === days);
-  });
+  // Legacy: конвертируем days в диапазон
+  if (days === 0) { histSetPeriodRange("all", "", ""); return; }
+  const to = new Date(); to.setDate(to.getDate() + 1);
+  const from = new Date(); from.setDate(from.getDate() - days);
+  histSetPeriodRange(`days_${days}`, from.toISOString().slice(0,10), to.toISOString().slice(0,10));
+}
+
+function histSetPeriodRange(key, from, to) {
+  _histPeriodKey  = key;
+  _histDateFrom   = from;
+  _histDateTo     = to;
+  // Перерисовываем кнопки
+  const btnsEl = document.getElementById("histPeriodBtns");
+  if (btnsEl) btnsEl.innerHTML = _histPeriodBtns();
   _histLoadStats();
   _histLoadTradesAndLogs();
   if (_histActiveTab === "broker") _histLoadBroker(true);
@@ -2351,12 +2422,13 @@ function histSetPeriod(days) {
 async function _histLoadStats() {
   try {
     document.getElementById("histStatus").textContent = "Загрузка…";
-    const st = await apiGet(`/api/history/stats?days=${_histPeriod}`);
+    const qs = _histDateFrom ? `date_from=${_histDateFrom}&date_to=${_histDateTo}` : "";
+    const st = await apiGet(`/api/history/stats?${qs}`);
     _histRenderSummary(st.summary || {});
     _histRenderEquity(st.equity_curve || []);
     _histRenderTickerChart(st.by_ticker || []);
     _histRenderReasonChart(st.by_reason || {});
-    const label = _histPeriod > 0 ? `${_histPeriod} дней` : "всё время";
+    const label = _histDateFrom ? `${_histDateFrom} — ${_histDateTo || "…"}` : "всё время";
     document.getElementById("histStatus").textContent = `Период: ${label}`;
   } catch (e) {
     const el = document.getElementById("histStatus");
@@ -2486,7 +2558,8 @@ function _histRenderReasonChart(byReason) {
 
 async function _histLoadTradesAndLogs() {
   try {
-    const data = await apiGet(`/api/dashboard/history?days=${_histPeriod}`);
+    const qs2 = _histDateFrom ? `date_from=${_histDateFrom}&date_to=${_histDateTo}` : "";
+    const data = await apiGet(`/api/dashboard/history?${qs2}`);
     _histData = data;
     _histRefreshActiveTab();
   } catch (e) {
