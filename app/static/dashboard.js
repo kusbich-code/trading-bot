@@ -2804,8 +2804,26 @@ async function refreshParallelStatus() {
       if (f === "cnt") return `${st.trades}`;
     };
 
-    // ── Таблица стратегий ─────────────────────────────────────────────────
-    const stratRows = threads.map(t => {
+    // ── Метки дат для заголовков ──────────────────────────────────────────
+    const _now = new Date();
+    const _pad = n => String(n).padStart(2, "0");
+    const _fmt = d => `${_pad(d.getDate())}.${_pad(d.getMonth()+1)}`;
+    const _dayLabel   = _fmt(_now);                                   // 02.06
+    const _wdIdx = _now.getDay() === 0 ? 6 : _now.getDay() - 1;     // 0=пн
+    const _wkSt = new Date(_now); _wkSt.setDate(_now.getDate() - _wdIdx);
+    const _wkEn = new Date(_wkSt); _wkEn.setDate(_wkSt.getDate() + 6);
+    const _weekLabel  = `${_fmt(_wkSt)}–${_fmt(_wkEn)}`;             // 26.05–01.06
+    const _months = ["Январь","Февраль","Март","Апрель","Май","Июнь",
+                     "Июль","Август","Сентябрь","Октябрь","Ноябрь","Декабрь"];
+    const _monthLabel = _months[_now.getMonth()];                     // Июнь
+
+    // ── Таблица стратегий: сортировка по дневному PnL (убывание) ─────────
+    const sortedThreads = [...threads].sort((a,b) => {
+      const pa = (a.stats?.day?.pnl) || 0;
+      const pb = (b.stats?.day?.pnl) || 0;
+      return pb - pa;
+    });
+    const stratRows = sortedThreads.map(t => {
       const col  = statusColor[t.status] || "#eef4ff";
       const tick = t.ticker ? ` · ${esc(t.ticker)}` : "";
       const s    = t.stats || {};
@@ -2903,8 +2921,8 @@ async function refreshParallelStatus() {
         <div class="table-wrap" style="margin-bottom:12px">
           <table><thead><tr>
             <th>Стратегия</th><th>Статус</th>
-            <th>PnL день</th><th>PnL нед.</th><th>PnL мес.</th>
-            <th>Win% мес.</th><th>Сделок мес.</th><th>Стопов мес.</th><th>Обновлено</th>
+            <th id="_psThDay">PnL день</th><th id="_psThWeek">PnL нед.</th><th id="_psThMonth">PnL мес.</th>
+            <th id="_psThWrMonth">Win% мес.</th><th id="_psThCntMonth">Сделок мес.</th><th>Стопов мес.</th><th>Обновлено</th>
           </tr></thead><tbody id="_psStratBody"></tbody></table>
         </div>
         <div style="display:flex;align-items:center;gap:8px;margin:6px 0 4px">
@@ -2919,6 +2937,18 @@ async function refreshParallelStatus() {
         </div>
         <div id="_psCoordNote"></div>`;
     }
+
+    // ── Заголовки с датами (обновляются каждый refresh) ──────────────────────
+    const _thDay = document.getElementById('_psThDay');
+    const _thWk  = document.getElementById('_psThWeek');
+    const _thMo  = document.getElementById('_psThMonth');
+    const _thWr  = document.getElementById('_psThWrMonth');
+    const _thCnt = document.getElementById('_psThCntMonth');
+    if (_thDay)  _thDay.innerHTML  = `PnL день<br><span class="muted" style="font-size:10px;font-weight:400">${_dayLabel}</span>`;
+    if (_thWk)   _thWk.innerHTML   = `PnL нед.<br><span class="muted" style="font-size:10px;font-weight:400">${_weekLabel}</span>`;
+    if (_thMo)   _thMo.innerHTML   = `PnL мес.<br><span class="muted" style="font-size:10px;font-weight:400">${_monthLabel}</span>`;
+    if (_thWr)   _thWr.innerHTML   = `Win%<br><span class="muted" style="font-size:10px;font-weight:400">${_monthLabel}</span>`;
+    if (_thCnt)  _thCnt.innerHTML  = `Сделок<br><span class="muted" style="font-size:10px;font-weight:400">${_monthLabel}</span>`;
 
     // ── Стратегии (diff) ──────────────────────────────────────────────────────
     diffTbody(document.getElementById('_psStratBody'), stratRows);
