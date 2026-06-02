@@ -2227,6 +2227,7 @@ def _parallel_instruments(strategy_id: int) -> list:
             "min_price_increment": Decimal(str(item.get("min_price_increment", "0.01"))),
             "lots_override":     int(item.get("lots_override", 1)),
             "auto_lots":         int(item.get("auto_lots", 0) or 0),
+            "max_daily_loss_rub": float(item.get("max_daily_loss_rub", 0) or 0),
             "stop_loss_pct":     Decimal(str(item.get("stop_loss_pct", "0.0025"))),
             "take_profit_pct":   Decimal(str(item.get("take_profit_pct", "0.005"))),
             "max_spread_pct":    Decimal(str(item.get("max_spread_pct", "0"))),

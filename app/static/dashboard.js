@@ -721,7 +721,9 @@ async function refreshQuotesOnly() {
 
 // ── Position detail panels (chart + news per ticker) ─────────────────────────
 
-let _posDetailFigis = [];
+let _posDetailFigis  = [];
+let _posChartInterval = "5min";
+let _posChartHours    = 4;
 
 async function renderPositionDetails(positions) {
   const block = document.getElementById("positionDetailsBlock");
@@ -729,69 +731,111 @@ async function renderPositionDetails(positions) {
   if (!positions || !positions.length) { block.innerHTML = ""; _posDetailFigis = []; return; }
 
   const figis = positions.map(p => p.figi).filter(Boolean);
-  // Пересобираем блок только если список позиций изменился
   const key = figis.join(",");
+
   if (key !== _posDetailFigis.join(",")) {
     _posDetailFigis = figis;
-    block.innerHTML = positions.map(p => `
-      <section class="block" id="pos-detail-${esc(p.figi)}" style="margin-top:8px">
-        <div class="row between" style="margin-bottom:10px">
-          <div class="row" style="gap:8px">
-            <h2 style="margin:0">${esc(p.ticker)}</h2>
-            <span class="badge" style="background:${p.direction==='BUY'?'rgba(47,163,107,.2)':'rgba(191,77,90,.2)'};color:${p.direction==='BUY'?'#2fa36b':'#ff7b7b'}">
-              ${p.direction==='BUY'?'Лонг':'Шорт'}
-            </span>
-            <span class="muted" style="font-size:12px">Вход: ${esc(p.entry_price_ui)}</span>
-          </div>
-          <span class="muted" style="font-size:11px">График + новости</span>
+    block.innerHTML = `
+      <div class="row" style="gap:8px;margin:8px 0 4px;flex-wrap:wrap">
+        <span class="muted" style="font-size:12px">Позиции — настройки графика:</span>
+        <select id="posChartInterval" class="field" style="width:90px;padding:3px 6px;font-size:12px"
+                onchange="_posChartInterval=this.value;_refreshPosCharts()">
+          <option value="1min">1 мин</option>
+          <option value="5min" selected>5 мин</option>
+          <option value="15min">15 мин</option>
+          <option value="1hour">1 час</option>
+        </select>
+        <select id="posChartHours" class="field" style="width:80px;padding:3px 6px;font-size:12px"
+                onchange="_posChartHours=parseInt(this.value);_refreshPosCharts()">
+          <option value="1">1 ч</option>
+          <option value="2">2 ч</option>
+          <option value="4" selected>4 ч</option>
+          <option value="8">8 ч</option>
+          <option value="24">24 ч</option>
+        </select>
+      </div>
+      ${positions.map(p => `
+      <section class="block" id="pos-detail-${esc(p.figi)}" style="margin-top:6px;padding:12px 16px">
+        <div class="row" style="gap:8px;margin-bottom:8px">
+          <h2 style="margin:0">${esc(p.ticker)}</h2>
+          <span class="badge" style="background:${p.direction==='BUY'?'rgba(47,163,107,.2)':'rgba(191,77,90,.2)'};color:${p.direction==='BUY'?'#2fa36b':'#ff7b7b'}">
+            ${p.direction==='BUY'?'Лонг':'Шорт'}
+          </span>
+          <span class="muted" style="font-size:12px">Вход: ${esc(p.entry_price_ui)}</span>
         </div>
-        <div style="display:grid;grid-template-columns:1fr 380px;gap:16px;align-items:start">
-          <div>
-            <div id="pos-chart-${esc(p.figi)}" style="height:200px;width:100%"></div>
-          </div>
-          <div id="pos-news-${esc(p.figi)}" style="max-height:200px;overflow-y:auto;font-size:12px">
-            <div class="muted" style="text-align:center;padding:20px">Загрузка новостей…</div>
+        <div style="display:grid;grid-template-columns:1fr 360px;gap:14px;align-items:start">
+          <div id="pos-chart-${esc(p.figi)}" style="height:220px;width:100%;min-width:0"></div>
+          <div id="pos-news-${esc(p.figi)}" style="max-height:220px;overflow-y:auto">
+            <div class="muted" style="text-align:center;padding:20px;font-size:12px">Загрузка новостей…</div>
           </div>
         </div>
-      </section>`).join("");
+      </section>`).join("")}`;
   }
 
-  // Загружаем данные параллельно для каждой позиции
-  const figiList = figis.join(",");
-  const [candlesData] = await Promise.all([
-    apiGet(`/api/dashboard/multi-candles?figis=${figiList}&interval=5min&hours=4`).catch(() => ({})),
-  ]);
+  await _refreshPosCharts();
+}
 
-  for (const p of positions) {
-    _renderPosChart(p.figi, p.ticker, candlesData[p.figi]?.candles || []);
-    _loadPosNews(p.figi);
+async function _refreshPosCharts() {
+  if (!_posDetailFigis.length) return;
+  const figis = _posDetailFigis;
+  const figiList = figis.join(",");
+  try {
+    const candlesData = await apiGet(
+      `/api/dashboard/multi-candles?figis=${figiList}&interval=${_posChartInterval}&hours=${_posChartHours}`
+    );
+    for (const figi of figis) {
+      _renderPosChart(figi, candlesData[figi]?.candles || []);
+    }
+  } catch(e) {}
+  // Новости загружаем только если раньше не загружали (один раз при появлении)
+  for (const figi of figis) {
+    const el = document.getElementById(`pos-news-${figi}`);
+    if (el && el.querySelector(".muted")) _loadPosNews(figi);
   }
 }
 
-function _renderPosChart(figi, ticker, candles) {
+function _renderPosChart(figi, candles) {
   const el = document.getElementById(`pos-chart-${figi}`);
-  if (!el || !candles.length) { if (el) el.innerHTML = '<div class="muted" style="text-align:center;padding:30px;font-size:12px">Нет данных свечей</div>'; return; }
+  if (!el) return;
+  if (!candles || !candles.length) {
+    el.innerHTML = '<div class="muted" style="text-align:center;padding:40px;font-size:12px">Нет данных свечей</div>';
+    return;
+  }
   const times  = candles.map(c => c.time);
-  const opens  = candles.map(c => c.open);
-  const highs  = candles.map(c => c.high);
-  const lows   = candles.map(c => c.low);
-  const closes = candles.map(c => c.close);
+  const opens  = candles.map(c => parseFloat(c.open));
+  const highs  = candles.map(c => parseFloat(c.high));
+  const lows   = candles.map(c => parseFloat(c.low));
+  const closes = candles.map(c => parseFloat(c.close));
   const trace = {
     type: "candlestick", x: times,
     open: opens, high: highs, low: lows, close: closes,
-    increasing: { line: { color: "#2fa36b", width: 1 }, fillcolor: "rgba(47,163,107,.7)" },
-    decreasing: { line: { color: "#bf4d5a", width: 1 }, fillcolor: "rgba(191,77,90,.7)" },
+    increasing: { line: { color: "#2fa36b", width: 1 }, fillcolor: "rgba(47,163,107,.8)" },
+    decreasing: { line: { color: "#bf4d5a", width: 1 }, fillcolor: "rgba(191,77,90,.8)" },
     showlegend: false,
+    xhoverformat: "%d.%m %H:%M",
   };
   const layout = {
     paper_bgcolor: "transparent", plot_bgcolor: "transparent",
-    margin: { l: 45, r: 8, t: 4, b: 24 },
-    xaxis: { showgrid: false, color: "#555", type: "date", tickfont: { size: 10 }, rangeslider: { visible: false } },
-    yaxis: { showgrid: true, gridcolor: "rgba(255,255,255,.06)", color: "#9fb3d8", tickfont: { size: 10 } },
-    dragmode: false,
+    margin: { l: 50, r: 8, t: 6, b: 28 },
+    xaxis: {
+      showgrid: false, color: "#666", type: "date",
+      tickfont: { size: 10, color: "#9fb3d8" },
+      rangeslider: { visible: false },
+    },
+    yaxis: {
+      showgrid: true, gridcolor: "rgba(255,255,255,.07)",
+      color: "#9fb3d8", tickfont: { size: 10 },
+      side: "right",
+    },
+    dragmode: "pan",
+    hovermode: "x unified",
   };
   if (window.Plotly) {
-    Plotly.react(el, [trace], layout, { displayModeBar: false, responsive: true });
+    Plotly.react(el, [trace], layout, {
+      displayModeBar: true,
+      modeBarButtonsToRemove: ["select2d","lasso2d","autoScale2d","toImage"],
+      responsive: true,
+    });
   }
 }
 

@@ -605,7 +605,7 @@ _TICKER_NEWS_TTL = 300         # 5 минут
 
 @app.get("/api/news/ticker")
 def api_news_ticker(figi: str = "", hours: int = 4):
-    """Новости по тикеру из Google News RSS за последние N часов."""
+    """Новости по тикеру из нескольких российских RSS-источников."""
     from datetime import datetime, timezone, timedelta
     import email.utils as _eutils
 
@@ -614,59 +614,100 @@ def api_news_ticker(figi: str = "", hours: int = 4):
     if cache and (now - cache["ts"]) < _TICKER_NEWS_TTL:
         return JSONResponse(cache["data"])
 
-    # Ищем название компании + тикер из market_state
+    # Тикер и название компании
     mmap = get_instrument_market_state_map()
-    info = mmap.get(figi, {})
-    ticker = info.get("ticker", "")
-
-    # Получаем русское название компании из strategy_instruments
-    _company_name = ticker
+    ticker = mmap.get(figi, {}).get("ticker", "") or figi[:8]
+    company_name = ""
     try:
         from app.db import db_cursor as _dbc3
         with _dbc3() as _c3:
             _c3.execute("SELECT name FROM strategy_instruments WHERE figi=? AND name!='' LIMIT 1", (figi,))
             _row = _c3.fetchone()
             if _row and _row[0]:
-                _company_name = _row[0].split()[0]  # первое слово названия
+                company_name = _row[0]
     except Exception:
         pass
 
-    # Яндекс.Новости RSS поиск — within=2 (сутки), фильтруем по времени сами
-    search_q = urllib.request.quote(f"{_company_name} акции")
-    url = f"https://news.yandex.ru/export.rss?text={search_q}&within=2&rss=1"
+    # Ключевые слова для фильтрации (тикер + первые слова названия)
+    keywords = [ticker.upper()]
+    if company_name:
+        for w in company_name.split()[:2]:
+            if len(w) > 3:
+                keywords.append(w.lower())
 
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
-    news = []
-    try:
-        req = urllib.request.Request(url, headers={
-            "User-Agent": "Mozilla/5.0 (compatible; TradingBot/1.0)"
-        })
-        with urllib.request.urlopen(req, timeout=8) as resp:
-            root = ET.fromstring(resp.read())
-        for item in root.findall(".//item"):
-            title   = (item.findtext("title")   or "").strip()
-            link    = (item.findtext("link")    or "").strip()
-            pub_raw = (item.findtext("pubDate") or "").strip()
-            source  = ""
-            src_el  = item.find("source")
-            if src_el is not None:
-                source = src_el.text or ""
-            if not title:
-                continue
-            # Парсим дату RFC 2822
-            pub_dt = None
-            if pub_raw:
-                try:
-                    pub_dt = datetime(*_eutils.parsedate(pub_raw)[:6], tzinfo=timezone.utc)
-                except Exception:
-                    pass
-            if pub_dt and pub_dt < cutoff:
-                continue
-            date_ui = pub_dt.strftime("%d.%m %H:%M") if pub_dt else pub_raw[:16]
-            news.append({"title": title, "link": link, "date": date_ui, "source": source})
-        news = news[:15]  # не более 15 новостей
-    except Exception as e:
-        logger.warning(f"Ticker news fetch {ticker}: {e}")
+    # Российские финансовые RSS-источники (проверены на сервере)
+    RSS_SOURCES = [
+        ("Интерфакс",   "https://www.interfax.ru/rss.asp"),
+        ("РБК",         "https://rssexport.rbc.ru/rbcnews/news/30/full.rss"),
+        ("Finam",       "https://www.finam.ru/analysis/conews/rsspoint/"),
+        ("Коммерсантъ", "https://www.kommersant.ru/RSS/section-economics.xml"),
+    ]
+
+    # Начало текущей торговой сессии MOEX (10:00 МСК = 07:00 UTC)
+    from datetime import date as _date
+    _msk = timezone(timedelta(hours=3))
+    _now_msk = datetime.now(_msk)
+    session_start = _now_msk.replace(hour=10, minute=0, second=0, microsecond=0)
+    if _now_msk.hour < 10:
+        session_start = session_start.replace(day=_now_msk.day - 1)
+
+    # Граница по времени: сначала пробуем N часов, иначе с начала сессии
+    cutoff_hours = datetime.now(timezone.utc) - timedelta(hours=hours)
+    cutoff_session = session_start.astimezone(timezone.utc)
+
+    def _parse_date(pub_raw):
+        if not pub_raw:
+            return None
+        try:
+            parsed = _eutils.parsedate(pub_raw)
+            if parsed:
+                return datetime(*parsed[:6], tzinfo=timezone.utc)
+        except Exception:
+            pass
+        return None
+
+    all_news = []
+    for source_name, rss_url in RSS_SOURCES:
+        try:
+            req = urllib.request.Request(rss_url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=6) as resp:
+                root = ET.fromstring(resp.read())
+            for item in root.findall(".//item"):
+                title   = (item.findtext("title")   or "").strip()
+                link    = (item.findtext("link")    or "").strip()
+                pub_raw = (item.findtext("pubDate") or "").strip()
+                desc    = (item.findtext("description") or "").strip()
+                if not title:
+                    continue
+                text_check = (title + " " + desc).lower()
+                if not any(kw.lower() in text_check for kw in keywords):
+                    continue
+                pub_dt = _parse_date(pub_raw)
+                # Показываем новости за N часов; если мало — за сессию
+                if pub_dt and pub_dt < cutoff_session:
+                    continue
+                date_ui = pub_dt.astimezone(_msk).strftime("%d.%m %H:%M") if pub_dt else pub_raw[:16]
+                all_news.append({
+                    "title": title,
+                    "link":  link,
+                    "date":  date_ui,
+                    "source": source_name,
+                    "_ts": pub_dt.timestamp() if pub_dt else 0,
+                })
+        except Exception as e:
+            logger.debug(f"News {source_name}: {e}")
+
+    # Сортируем по времени, убираем дубли по заголовку
+    seen_titles: set = set()
+    news: list = []
+    for n in sorted(all_news, key=lambda x: x["_ts"], reverse=True):
+        t = n["title"][:60]
+        if t not in seen_titles:
+            seen_titles.add(t)
+            news.append({"title": n["title"], "link": n["link"],
+                         "date": n["date"], "source": n["source"]})
+        if len(news) >= 15:
+            break
 
     _ticker_news_cache[figi] = {"ts": now, "data": news}
     return JSONResponse(news)
@@ -1629,8 +1670,12 @@ def api_parallel_status():
     pid = int(active_profile_id)
     parallel_strats = list_profile_parallel_strategies(pid)
     market_map = get_instrument_market_state_map()
-    # Только BOT позиции — PORTFOLIO может содержать стейл данные или неверные тикеры из Sandbox
     open_pos = {p["figi"]: p for p in get_open_positions(source="BOT")}
+
+    # Даты нужны и для статистики стратегий, и для инструментов
+    from datetime import datetime as _dt2, timedelta as _td2
+    _today_str = _dt2.now().strftime("%Y-%m-%d")
+    _month_str = (_dt2.now() - _td2(days=30)).strftime("%Y-%m-%d")
 
     # Thread statuses + stats
     result = []
@@ -1678,9 +1723,6 @@ def api_parallel_status():
         pass
 
     # Дневной PnL по тикерам и счётчик блокировок за месяц (из event_logs)
-    from datetime import datetime as _dt2, timedelta as _td2
-    _today_str  = _dt2.now().strftime("%Y-%m-%d")
-    _month_str  = (_dt2.now() - _td2(days=30)).strftime("%Y-%m-%d")
     _daily_pnl_cache: dict = {}  # ticker → float
     _block_count_cache: dict = {}  # ticker → int
 
