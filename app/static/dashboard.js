@@ -2948,6 +2948,24 @@ async function refreshParallelStatus() {
       const pb = (b.stats?.day?.pnl) || 0;
       return pb - pa;
     });
+    // Считаем итоги по всем стратегиям
+    let totDay = 0, totWeek = 0, totMonth = 0, totCnt = 0, totWins = 0, totStops = 0;
+    sortedThreads.forEach(t => {
+      const s = t.stats || {};
+      totDay   += (s.day?.pnl)   || 0;
+      totWeek  += (s.week?.pnl)  || 0;
+      totMonth += (s.month?.pnl) || 0;
+      totCnt   += (s.month?.trades) || 0;
+      totWins  += Math.round(((s.month?.win_rate||0) / 100) * (s.month?.trades||0));
+      totStops += (t.loss_stops_month) || 0;
+    });
+    const totWR = totCnt > 0 ? Math.round(totWins / totCnt * 100 * 10) / 10 : 0;
+    const fmtTot = (v) => {
+      if (v === 0) return `<span class="muted">—</span>`;
+      const c = v >= 0 ? "#2fa36b" : "#ff7b7b";
+      return `<span style="color:${c};font-weight:700">${v >= 0 ? "+" : ""}${v.toFixed(2)}</span>`;
+    };
+
     const stratRows = sortedThreads.map(t => {
       const col  = statusColor[t.status] || "#eef4ff";
       const tick = t.ticker ? ` · ${esc(t.ticker)}` : "";
@@ -2968,7 +2986,16 @@ async function refreshParallelStatus() {
         }</td>
         <td class="muted" style="font-size:11px">${esc(t.updated_at||"")}</td>
       </tr>`;
-    }).join("");
+    }).join("") + `<tr style="border-top:2px solid rgba(255,255,255,.15);background:rgba(255,255,255,.03)">
+      <td colspan="2" style="font-weight:700;font-size:13px;padding:6px 8px">ИТОГО</td>
+      <td>${fmtTot(totDay)}</td>
+      <td>${fmtTot(totWeek)}</td>
+      <td>${fmtTot(totMonth)}</td>
+      <td class="muted">${totCnt > 0 ? totWR + "%" : "—"}</td>
+      <td class="muted">${totCnt || "—"}</td>
+      <td class="muted" style="font-size:12px">${totStops > 0 ? `<span style="color:#ff7b7b;font-weight:600">${totStops}</span>` : "0"}</td>
+      <td></td>
+    </tr>`;
 
     // ── Инструменты: сортировка по score сигнала (выше score → выше в таблице) ─
     const sorted = [...instruments].sort((a,b) => (b.signal_score || 0) - (a.signal_score || 0));
