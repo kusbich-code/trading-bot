@@ -2175,6 +2175,9 @@ def _parallel_strategy_worker(strategy_id: int, strat_name: str, stop_ev: thread
             if positions:
                 status = "в позиции"
                 ticker = list(positions.keys())[0]
+            elif not _parallel_coord.is_free and not _parallel_coord.is_owner(strategy_id):
+                status = "другая стратегия в позиции"
+                ticker = ""
             elif not is_moex_session_open():
                 status = "торговля не ведётся"
                 ticker = ""
