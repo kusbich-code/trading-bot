@@ -1087,10 +1087,11 @@ def get_trade_stats_today(date_prefix: str | None = None):
         return dict(row) if row else {"trades_count": 0, "total_pnl": 0, "total_commission": 0}
 
 
-def get_strategy_trade_stats(strategy_id: int, days: int) -> dict:
-    """PnL/win-rate по сделкам стратегии за N дней (по тикерам из strategy_instruments)."""
+def get_strategy_trade_stats(strategy_id: int, days: int, date_from: str | None = None) -> dict:
+    """PnL/win-rate по сделкам стратегии за период (date_from) или N скользящих дней."""
     from datetime import datetime as _dt, timedelta as _td
-    date_from = (_dt.now() - _td(days=days)).strftime("%Y-%m-%d")
+    if date_from is None:
+        date_from = (_dt.now() - _td(days=days)).strftime("%Y-%m-%d")
     with db_cursor() as cur:
         cur.execute("""
         SELECT COUNT(*) as trades,

@@ -1672,10 +1672,16 @@ def api_parallel_status():
     market_map = get_instrument_market_state_map()
     open_pos = {p["figi"]: p for p in get_open_positions(source="BOT")}
 
-    # Даты нужны и для статистики стратегий, и для инструментов
+    # Календарные периоды для статистики
     from datetime import datetime as _dt2, timedelta as _td2
-    _today_str = _dt2.now().strftime("%Y-%m-%d")
-    _month_str = (_dt2.now() - _td2(days=30)).strftime("%Y-%m-%d")
+    _now2 = _dt2.now()
+    _today_str  = _now2.strftime("%Y-%m-%d")
+    # Начало текущей недели (понедельник)
+    _week_str   = (_now2 - _td2(days=_now2.weekday())).strftime("%Y-%m-%d")
+    # Начало текущего месяца
+    _month_str  = _now2.strftime("%Y-%m-01")
+    # 30 дней назад — для счётчика блокировок
+    _month30_str = (_now2 - _td2(days=30)).strftime("%Y-%m-%d")
 
     # Thread statuses + stats
     result = []
@@ -1688,9 +1694,9 @@ def api_parallel_status():
         except Exception:
             info = {"status": "не запущен", "ticker": "", "updated_at": ""}
         stats = {
-            "day":   get_strategy_trade_stats(sid, 1),
-            "week":  get_strategy_trade_stats(sid, 7),
-            "month": get_strategy_trade_stats(sid, 30),
+            "day":   get_strategy_trade_stats(sid, 1,  date_from=_today_str),
+            "week":  get_strategy_trade_stats(sid, 7,  date_from=_week_str),
+            "month": get_strategy_trade_stats(sid, 30, date_from=_month_str),
         }
         for st in stats.values():
             st["pnl_ui"] = fmt_money(st["pnl"])
@@ -1704,7 +1710,7 @@ def api_parallel_status():
                     "JOIN strategy_instruments si ON si.ticker=e.ticker "
                     "WHERE e.event_type='BALANCE_WARNING' AND e.message LIKE '%Дневной лимит%' "
                     "AND si.strategy_id=? AND e.event_time>=?",
-                    (sid, _month_str)
+                    (sid, _month30_str)
                 )
                 _loss_stops_month = int((_c4.fetchone() or [0])[0])
         except Exception:
@@ -1740,7 +1746,7 @@ def api_parallel_status():
             _cur2.execute(
                 "SELECT ticker, COUNT(*) FROM event_logs WHERE event_type='BALANCE_WARNING' "
                 "AND message LIKE '%Дневной лимит%' AND event_time>=? GROUP BY ticker",
-                (_month_str,)
+                (_month30_str,)
             )
             for _r in _cur2.fetchall():
                 _block_count_cache[_r[0]] = int(_r[1])

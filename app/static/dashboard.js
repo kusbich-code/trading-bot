@@ -146,9 +146,14 @@ function diffTbodyFlash(tbody, rows) {
       const oldH = oldCells[c].innerHTML;
       const newH = newCells[c].innerHTML;
       if (oldH !== newH) {
+        const oldNum = _numVal(oldCells[c].textContent);
         oldCells[c].innerHTML = newH;
         if (!flashCols || flashCols.includes(c)) {
-          _flashCell(oldCells[c]);
+          const newNum = _numVal(newCells[c].textContent);
+          const dir = (oldNum !== null && newNum !== null)
+            ? (newNum > oldNum ? 'up' : newNum < oldNum ? 'down' : 'neutral')
+            : 'neutral';
+          _flashCell(oldCells[c], dir);
           changed = true;
         }
       }
@@ -167,11 +172,19 @@ function diffTbodyFlash(tbody, rows) {
 }
 
 function _flashCell(cell, dir) {
-  cell.classList.remove('cell-updated', 'cell-updated-up', 'cell-updated-down');
+  cell.classList.remove('cell-updated', 'cell-updated-up', 'cell-updated-down', 'cell-updated-neutral');
   void cell.offsetWidth;
-  if (dir === 'up')        cell.classList.add('cell-updated-up');
-  else if (dir === 'down') cell.classList.add('cell-updated-down');
-  else                     cell.classList.add('cell-updated');
+  if (dir === 'up')          cell.classList.add('cell-updated-up');
+  else if (dir === 'down')   cell.classList.add('cell-updated-down');
+  else if (dir === 'neutral') cell.classList.add('cell-updated-neutral');
+  else                       cell.classList.add('cell-updated-neutral');
+}
+
+function _numVal(text) {
+  if (!text) return null;
+  const s = String(text).replace(/[^\d.,\-+]/g, '').replace(',', '.');
+  const v = parseFloat(s);
+  return isNaN(v) ? null : v;
 }
 
 function ensureViewsExist() {
@@ -242,11 +255,14 @@ async function renderSummaryCards() {
   } else {
     // Повторный рендер: мигаем изменившимися значениями
     Array.from(host.querySelectorAll('.val')).forEach((el, i) => {
-      if (oldVals[i] !== undefined && oldVals[i] !== el.textContent.trim()) {
-        el.classList.remove('cell-updated');
-        void el.offsetWidth;
-        el.classList.add('cell-updated');
-      }
+      const oldTxt = oldVals[i];
+      const newTxt = el.textContent.trim();
+      if (oldTxt === undefined || oldTxt === newTxt) return;
+      const oldNum = _numVal(oldTxt), newNum = _numVal(newTxt);
+      const dir = (oldNum !== null && newNum !== null)
+        ? (newNum > oldNum ? 'up' : newNum < oldNum ? 'down' : 'neutral')
+        : 'neutral';
+      _flashCell(el, dir);
     });
   }
 }
@@ -529,7 +545,7 @@ async function renderMainData() {
         <td>${dirBadge}</td>
         <td>${esc(p.qty)}</td>
         <td class="muted">${esc(p.entry_price_ui)}</td>
-        <td class="live-pos-price"><b>${esc(p.current_price_ui)}</b></td>
+        <td class="live-pos-price"><b>—</b></td>
         <td class="live-pos-pct" style="color:${pctColor};font-weight:600">${esc(pct)}</td>
         <td class="live-pos-pnl" style="font-weight:700;color:${pnlColor}">${esc(p.unrealized_pnl_ui)}</td>
         <td class="live-pos-value" style="color:#9fb3d8;font-size:12px">${esc(p.position_value_ui||"—")}</td>
@@ -667,14 +683,16 @@ async function refreshQuotesOnly() {
   document.querySelectorAll(".live-price[data-figi]").forEach((el) => {
     const q = map[el.dataset.figi];
     if (!q) return;
-    const prev = el.textContent;
+    const prev = el.textContent.trim();
     const next = q.last_price_ui;
-    if (prev !== next) {
-      const prevVal = parseFloat(prev.replace(/[^\d.-]/g, "")) || 0;
-      const nextVal = parseFloat(next.replace(/[^\d.-]/g, "")) || 0;
-      el.textContent = next;
-      _flashCell(el, nextVal > prevVal ? 'up' : nextVal < prevVal ? 'down' : undefined);
-    }
+    if (prev === next) return;  // без изменений — нет флеша
+    const prevNum = _numVal(prev);
+    const nextNum = _numVal(next);
+    el.textContent = next;
+    const dir = (prevNum !== null && nextNum !== null)
+      ? (nextNum > prevNum ? 'up' : nextNum < prevNum ? 'down' : 'neutral')
+      : 'neutral';
+    _flashCell(el, dir);
   });
   document.querySelectorAll(".live-time[data-figi]").forEach((el) => {
     if (map[el.dataset.figi]) el.textContent = map[el.dataset.figi].price_time;
@@ -695,12 +713,19 @@ async function refreshQuotesOnly() {
     const pct   = (price - avg) / avg * 100;
     const value = price * qty;
 
-    const _upd = (sel, text, color, dir) => {
+    // Обновляем ячейку только если текст изменился; направление флеша по числовому значению
+    const _upd = (sel, newText, color) => {
       const el = row.querySelector(sel);
       if (!el) return;
-      if (el.textContent.trim() === text && (!color || el.style.color === color)) return;
-      el.textContent = text;
-      if (color) el.style.color = color;
+      const oldText = el.textContent.trim();
+      if (color) el.style.color = color;   // цвет обновляем без флеша
+      if (oldText === newText) return;      // текст не изменился — нет флеша
+      const oldNum = _numVal(oldText);
+      const newNum = _numVal(newText);
+      el.textContent = newText;
+      const dir = (oldNum !== null && newNum !== null)
+        ? (newNum > oldNum ? 'up' : newNum < oldNum ? 'down' : 'neutral')
+        : 'neutral';
       _flashCell(el, dir);
     };
 
@@ -709,13 +734,10 @@ async function refreshQuotesOnly() {
     const pnlUi   = pnl.toFixed(2);
     const valUi   = _fmtSum(value);
 
-    const prevPriceVal = parseFloat(row.querySelector(".live-pos-price")?.textContent || "0") || 0;
-    const priceDir = price > prevPriceVal ? 'up' : price < prevPriceVal ? 'down' : undefined;
-
-    _upd(".live-pos-price", priceUi, null, priceDir);
-    _upd(".live-pos-pct",   pctUi,   pct >= 0 ? "#2fa36b" : "#ff7b7b", priceDir);
-    _upd(".live-pos-pnl",   pnlUi,   pnl >= 0 ? "#2fa36b" : "#ff7b7b", priceDir);
-    _upd(".live-pos-value", valUi,   null, priceDir);
+    _upd(".live-pos-price", priceUi, null);
+    _upd(".live-pos-pct",   pctUi,   pct >= 0 ? "#2fa36b" : "#ff7b7b");
+    _upd(".live-pos-pnl",   pnlUi,   pnl >= 0 ? "#2fa36b" : "#ff7b7b");
+    _upd(".live-pos-value", valUi,   null);
   });
 }
 
@@ -2727,9 +2749,11 @@ let _psLastFigis       = "";  // список figi для определения
       // Ячейка при изменении значения — зелёный акцент
       `@keyframes cellUpdUp{0%{background:rgba(47,163,107,.45)}100%{background:transparent}}`,
       `@keyframes cellUpdDown{0%{background:rgba(191,77,90,.45)}100%{background:transparent}}`,
-      `.cell-updated-up{animation:cellUpdUp .7s ease-out forwards}`,
-      `.cell-updated-down{animation:cellUpdDown .7s ease-out forwards}`,
-      `.cell-updated{animation:cellUpdUp .7s ease-out forwards}`,
+      `@keyframes cellUpdNeutral{0%{background:rgba(255,255,255,.18)}100%{background:transparent}}`,
+      `.cell-updated-up{animation:cellUpdUp .6s ease-out forwards}`,
+      `.cell-updated-down{animation:cellUpdDown .6s ease-out forwards}`,
+      `.cell-updated-neutral{animation:cellUpdNeutral .5s ease-out forwards}`,
+      `.cell-updated{animation:cellUpdUp .6s ease-out forwards}`,
       // Мигающая точка «live» — пульс
       `@keyframes liveDot{0%,100%{opacity:1}50%{opacity:.25}}`,
       `.live-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#2fa36b;animation:liveDot 1.4s ease-in-out infinite;vertical-align:middle;margin-right:5px}`,
@@ -2850,8 +2874,8 @@ async function refreshParallelStatus() {
           <span style="color:#888;margin:0 2px">/</span>
           <span style="color:#2fa36b;font-size:11px">▲${esc(i.tp_pct)}</span>
         </td>
-        <td>${esc(i.last_price_ui)}</td>
-        <td class="muted" style="font-size:11px">${esc(i.price_time)}</td>
+        <td class="live-price" data-figi="${esc(i.figi)}">${esc(i.last_price_ui)}</td>
+        <td class="live-time muted" data-figi="${esc(i.figi)}" style="font-size:11px">${esc(i.price_time)}</td>
         <td class="muted" style="font-size:12px">${esc(i.volume_ui)}</td>
         <td>${lossCell}</td>
         <td>
@@ -2907,7 +2931,13 @@ async function refreshParallelStatus() {
         const old = prevHtml[figi];
         if (!old) return; // новая строка — не мигаем
         Array.from(tr.cells).forEach((cell, c) => {
-          if (old[c] !== cell.innerHTML) _flashCell(cell);
+          if (old[c] === cell.innerHTML) return;
+          const oldNum = _numVal(old[c]?.replace(/<[^>]*>/g,''));
+          const newNum = _numVal(cell.textContent);
+          const dir = (oldNum !== null && newNum !== null)
+            ? (newNum > oldNum ? 'up' : newNum < oldNum ? 'down' : 'neutral')
+            : 'neutral';
+          _flashCell(cell, dir);
         });
       });
     }
