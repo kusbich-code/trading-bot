@@ -2132,11 +2132,10 @@ def _parallel_strategy_worker(strategy_id: int, strat_name: str, stop_ev: thread
                         del positions[tk]
                         _parallel_coord.release(strategy_id)
 
-            # Если нет открытых позиций и координатор занят → ждём
+            # Если нет открытых позиций и координатор занят — обновляем сигналы/цены,
+            # но не открываем позиции (process_instrument сам проверяет _coord.try_claim)
             if not positions and not _parallel_coord.is_free and not _parallel_coord.is_owner(strategy_id):
                 _pset(strategy_id, "ожидание — другая стратегия в позиции")
-                stop_ev.wait(timeout=interval)
-                continue
 
             if get_setting("bot_enabled", "1") != "1":
                 _pset(strategy_id, "бот выключен")

@@ -2877,20 +2877,25 @@ async function refreshParallelStatus() {
       const dailyPnl = i.daily_pnl || 0;
       const blocked  = i.is_loss_blocked;
       const blockCnt = i.loss_block_count_month || 0;
-      let lossCell = '<span class="muted" style="font-size:11px">—</span>';
+      const pnlColor = dailyPnl >= 0 ? "#2fa36b" : "#ff7b7b";
+      const pnlFmt   = dailyPnl !== 0 ? (dailyPnl >= 0 ? "+" : "") + dailyPnl.toFixed(0) + " ₽" : "";
+      let lossCell;
       if (maxLoss > 0) {
-        const pnlColor = dailyPnl >= 0 ? "#2fa36b" : "#ff7b7b";
         const limitFmt = maxLoss.toLocaleString("ru-RU");
-        const pnlFmt   = (dailyPnl >= 0 ? "+" : "") + dailyPnl.toFixed(0);
         lossCell = `
-          <div style="font-size:11px;line-height:1.4">
+          <div style="font-size:11px;line-height:1.5">
             ${blocked
               ? `<span style="background:rgba(191,77,90,.2);color:#ff7b7b;border:1px solid #bf4d5a;border-radius:3px;padding:1px 5px;font-size:10px;font-weight:700">⛔ СТОП</span>`
-              : `<span style="color:#555;font-size:10px">Лимит: −${limitFmt} ₽</span>`
+              : `<span class="muted" style="font-size:10px">Лимит: −${limitFmt} ₽</span>`
             }
-            <div><span style="color:${pnlColor}">${pnlFmt} ₽</span> сегодня</div>
-            ${blockCnt > 0 ? `<div class="muted" style="font-size:10px">Сработал ${blockCnt}× за 30 дн.</div>` : ""}
+            ${pnlFmt ? `<div><span style="color:${pnlColor}">${pnlFmt}</span> сегодня</div>` : ""}
+            ${blockCnt > 0 ? `<div class="muted" style="font-size:10px">Стопов: ${blockCnt}×</div>` : ""}
           </div>`;
+      } else if (pnlFmt) {
+        // Нет лимита, но есть дневной PnL — показываем только его
+        lossCell = `<span style="color:${pnlColor};font-size:11px">${pnlFmt}</span><span class="muted" style="font-size:10px"> сег.</span>`;
+      } else {
+        lossCell = '<span class="muted" style="font-size:11px">—</span>';
       }
       // Данные сигнала в data-атрибутах — обновляются отдельно без diffTbody
       return `<tr data-figi="${esc(i.figi)}"
