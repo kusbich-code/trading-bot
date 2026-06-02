@@ -11,7 +11,7 @@ let _lastQuotesMap = {};   // последние котировки — испо
 // Viewed profile in settings tab (may differ from active profile)
 let viewedProfileId = null;
 
-const ALLOWED_TABS = new Set(["главное", "портфель", "настройки", "история", "график", "бэктест", "аналитик"]);
+const ALLOWED_TABS = new Set(["главное", "портфель", "настройки", "история", "бэктест", "аналитик"]);
 
 function esc(v) {
   return String(v ?? "");
@@ -189,7 +189,7 @@ function _numVal(text) {
 }
 
 function ensureViewsExist() {
-  const required = ["главное", "портфель", "настройки", "история", "график", "бэктест", "аналитик"];
+  const required = ["главное", "портфель", "настройки", "история", "бэктест", "аналитик"];
   const root = document.querySelector(".app") || document.body;
   required.forEach((tab) => {
     if (!document.querySelector(`[data-view="${tab}"]`)) {
@@ -2753,71 +2753,10 @@ function attachTableFilters() {
 
 // ── Chart tab ─────────────────────────────────────────────────────────────────
 
-async function renderChartTab() {
-  const host = document.getElementById("view-chart");
-  if (!host) return;
+// renderChartTab removed — chart tab deleted
 
-  const currentFigi = document.getElementById("chartFigiSelect")?.value || "";
-  const currentInterval = document.getElementById("chartIntervalSelect")?.value || "1min";
-  const data = await apiGet(`/api/dashboard/chart?figi=${encodeURIComponent(currentFigi)}&interval=${encodeURIComponent(currentInterval)}`);
-
-  host.innerHTML = `
-    <section class="help-card">
-      <h2>Справка: График</h2>
-      <ul>
-        <li><b>Свечной график (OHLCV):</b> данные из T-Bank API за последние 8 часов. Выбери инструмент из списка (все инструменты из каталога market data) и интервал: 1 мин / 5 мин / 15 мин / 1 час. Зелёные свечи — рост, красные — падение. «Обновить» — перезагружает данные.</li>
-        <li><b>Инструменты в списке:</b> все бумаги из таблицы instrument_market_state (наполняется ботом при работе и при добавлении инструментов в стратегию).</li>
-        <li><b>Score сигнала:</b> вычисляется strategy_engine на основе технических индикаторов (MA, RSI, Bollinger, объём). Используется только для отображения — реальная торговля идёт через logic в main.py (поддержка/сопротивление или MA-кроссовер в зависимости от tradingmode). Action: BUY / SELL / HOLD. Score выше 0 — бычий, ниже 0 — медвежий.</li>
-        <li><b>Причины сигнала:</b> список факторов за и против входа по каждому индикатору — удобно для ручного анализа перед добавлением инструмента в стратегию.</li>
-      </ul>
-    </section>
-    <section class="block">
-      <div class="row between">
-        <h2>Свечной график</h2>
-        <div class="row">
-          <select class="field" id="chartFigiSelect"></select>
-          <select class="field" id="chartIntervalSelect">
-            <option value="1min">1 минута</option>
-            <option value="5min">5 минут</option>
-            <option value="15min">15 минут</option>
-            <option value="hour">1 час</option>
-          </select>
-          <button class="btn" id="btnReloadChart">Обновить</button>
-        </div>
-      </div>
-      <div id="chartBox" class="chart-box"></div>
-      <div id="signalScoreBox" class="score-box"></div>
-    </section>
-  `;
-
-  const figiSelect = document.getElementById("chartFigiSelect");
-  figiSelect.innerHTML = (data.available_instruments || []).map(x =>
-    `<option value="${x.figi}">${x.ticker} — ${x.name}</option>`
-  ).join("");
-  if (data.selected_figi) figiSelect.value = data.selected_figi;
-
-  const intervalSelect = document.getElementById("chartIntervalSelect");
-  if (data.interval) intervalSelect.value = data.interval;
-
-  renderCandlesAndScore(data);
-
-  document.getElementById("btnReloadChart")?.addEventListener("click", async () => {
-    const figi = document.getElementById("chartFigiSelect")?.value || "";
-    const interval = document.getElementById("chartIntervalSelect")?.value || "1min";
-    const newData = await apiGet(`/api/dashboard/chart?figi=${encodeURIComponent(figi)}&interval=${encodeURIComponent(interval)}`);
-    if (figiSelect && newData.available_instruments) {
-      figiSelect.innerHTML = newData.available_instruments.map(x =>
-        `<option value="${x.figi}">${x.ticker} — ${x.name}</option>`
-      ).join("");
-      figiSelect.value = newData.selected_figi || figi;
-    }
-    renderCandlesAndScore(newData);
-  });
-}
-
-function renderCandlesAndScore(data) {
-  const candles = data.candles || [];
-  const signal = data.signal || { action: "HOLD", score: 0, reasons: ["Нет данных"] };
+function renderCandlesAndScore_unused(data) {
+  // kept as dead code stub to avoid reference errors if called somewhere
   const scoreBox = document.getElementById("signalScoreBox");
   if (scoreBox) {
     scoreBox.innerHTML = `
@@ -4449,8 +4388,6 @@ async function applyRoute() {
       await renderSettingsTab();
     } else if (tab === "история") {
       await renderHistoryTab();
-    } else if (tab === "график") {
-      await renderChartTab();
     } else if (tab === "бэктест") {
       await renderBacktestTab();
     } else if (tab === "аналитик") {
