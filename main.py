@@ -92,6 +92,10 @@ logging.basicConfig(
         logging.StreamHandler()
     ]
 )
+# T-Bank Invest SDK логирует каждый gRPC-вызов на уровне INFO — подавляем
+logging.getLogger("t_tech").setLevel(logging.WARNING)
+logging.getLogger("t_tech.invest").setLevel(logging.WARNING)
+
 log = logging.getLogger("trading-bot")
 
 _MSK = timezone(timedelta(hours=3))
