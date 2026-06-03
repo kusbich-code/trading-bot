@@ -3774,7 +3774,7 @@ async function renderLearningTab() {
       ? fmtModel(univModel)
       : `<div class="muted" style="padding:16px;text-align:center">Нет данных — нужно 30+ сделок суммарно по всем инструментам</div>`;
 
-    const instrRows = instrModels.slice(0,10).map(m => {
+    const instrModelRows = instrModels.slice(0,10).map(m => {
       const ready = m.status === "active";
       return `<tr>
         <td><b>${esc(m.ticker)}</b></td>
@@ -3845,7 +3845,7 @@ async function renderLearningTab() {
             <thead><tr>
               <th>Тикер</th><th>Статус</th><th>Обучено</th><th>Precision</th><th>Accuracy</th><th>Обновлена</th>
             </tr></thead>
-            <tbody>${instrRows}</tbody>
+            <tbody>${instrModelRows}</tbody>
           </table>
         </div>
       </section>` : ""}
