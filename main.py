@@ -240,6 +240,7 @@ state = BotState()
 # _orders_stream_worker() помещает объект OrderTrades при получении исполнения.
 _pending_orders: Dict[str, _queue.Queue] = {}
 _bot_client_cls = None  # устанавливается в main() до запуска потока стрима
+_30034_count: Dict[str, int] = {}  # figi → число последовательных 30034 за сессию
 
 
 def _orders_stream_worker():
@@ -621,10 +622,15 @@ def _handle_manual_close(bp: dict, market_map: dict, client=None):
             return
     except Exception:
         pass
-    # lot_size для расчёта денежных сумм
+    # lot_size для расчёта денежных сумм — ищем по figi во ВСЕХ стратегиях
     try:
-        from app.db import list_active_strategy_instruments as _lasi_mc
-        _lot_sz_mc = next((int(i.get("lot", 1)) for i in _lasi_mc() if i["figi"] == figi), 1)
+        from app.db import db_cursor as _dbc_mc
+        with _dbc_mc() as _c_mc:
+            _c_mc.execute(
+                "SELECT lot FROM strategy_instruments WHERE figi=? AND lot>0 LIMIT 1", (figi,)
+            )
+            _row_mc = _c_mc.fetchone()
+            _lot_sz_mc = int(_row_mc[0]) if _row_mc else 1
     except Exception:
         _lot_sz_mc = int(state.instrument_meta.get(ticker, {}).get("lot", 1))
     qty = qty_lots * _lot_sz_mc  # акции для денежных расчётов
@@ -1049,7 +1055,7 @@ def load_enabled_instruments(client):
 
 
 def maybe_reset_daily():
-    today = str(date.today())
+    today = _now().strftime("%Y-%m-%d")  # MSK, не UTC сервера
     if state.current_trade_date != today:
         state.daily_pnl = Decimal("0")
         state.trades_today = 0
@@ -1132,9 +1138,9 @@ def place_order_checked(client, ticker: str, figi: str, lots: int, raw_price: De
                     _ep = weighted / Decimal(str(total_filled_shares))
                     if _accept_fill_price(_ep):
                         avg_price = _ep
-                    # OrdersStream trade.quantity → акции; нормализуем в лоты
+                    # OrdersStream trade.quantity → акции; нормализуем в лоты (округляем вниз)
                     _lot_sz = int(meta.get("lot", 1))
-                    if _lot_sz > 1 and total_filled_shares % _lot_sz == 0:
+                    if _lot_sz > 1 and total_filled_shares > 0:
                         lots_executed = total_filled_shares // _lot_sz
                     else:
                         lots_executed = total_filled_shares
@@ -1154,7 +1160,8 @@ def place_order_checked(client, ticker: str, figi: str, lots: int, raw_price: De
                     if lots_executed_raw is not None:
                         _le = int(lots_executed_raw)
                         _lot_sz2 = int(meta.get("lot", 1))
-                        if _lot_sz2 > 1 and _le > 0 and _le % _lot_sz2 == 0:
+                        # Polling: lots_executed может быть в акциях — нормализуем в лоты
+                        if _lot_sz2 > 1 and _le > 0:
                             lots_executed = _le // _lot_sz2
                         else:
                             lots_executed = _le
@@ -1209,6 +1216,7 @@ def place_order_checked(client, ticker: str, figi: str, lots: int, raw_price: De
                 ticker=ticker, level="WARNING")
             return None
 
+        _30034_count.pop(figi, None)  # успех — сбрасываем счётчик ошибок
         return {
             "response_order_id": response_order_id,
             "request_order_id": request_order_id,
@@ -1221,12 +1229,21 @@ def place_order_checked(client, ticker: str, figi: str, lots: int, raw_price: De
     except Exception as e:
         msg = str(e)
         if "30034" in msg:
-            # Инструмент недоступен (биржа закрыта / вечерняя сессия не для этого инструмента)
-            # Устанавливаем cooldown 5 мин чтобы не спамить запросами
-            log_event("ORDER_MARKET_CLOSED",
-                      f"{ticker}: PostOrder 30034 — торги недоступны, пауза 5 мин",
-                      ticker=ticker, level="WARNING")
-            state.order_cooldowns[figi] = _now() - timedelta(seconds=BotState.ORDER_COOLDOWN_SEC - 300)
+            # Инструмент недоступен (биржа закрыта / sandbox ограничение)
+            _30034_count[figi] = _30034_count.get(figi, 0) + 1
+            if _30034_count[figi] >= 3:
+                # После 3 попыток — пауза 1 час, сбрасываем счётчик
+                pause_sec = 3600
+                _30034_count[figi] = 0
+                log_event("ORDER_MARKET_CLOSED",
+                          f"{ticker}: PostOrder 30034 × 3 подряд — пауза 1 час",
+                          ticker=ticker, level="WARNING")
+            else:
+                pause_sec = 300  # 5 мин обычная пауза
+                log_event("ORDER_MARKET_CLOSED",
+                          f"{ticker}: PostOrder 30034 — торги недоступны, пауза 5 мин",
+                          ticker=ticker, level="WARNING")
+            state.order_cooldowns[figi] = _now() - timedelta(seconds=BotState.ORDER_COOLDOWN_SEC - pause_sec)
             return None
         if "figi" in msg.lower():
             log_event("INVALID_FIGI", msg, ticker=ticker, level="WARNING")
@@ -2450,7 +2467,9 @@ def main():
 
                 for item in watchlist:
                     _rate.throttle_if_needed()
-                    process_instrument(client, item)
+                    # В параллельном режиме передаём координатор чтобы не дублировать ордера
+                    _main_coord = _parallel_coord if _parallel_threads else None
+                    process_instrument(client, item, _coord=_main_coord)
 
                 sync_portfolio_positions(client)
 
