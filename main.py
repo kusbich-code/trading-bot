@@ -1864,12 +1864,29 @@ def process_instrument(client, item,
             add_trade(trade)
             close_position(figi, source="BOT")
             log_event("ORDER_CLOSE", f"{ticker} pnl={float(pnl):.2f} reason={close_reason}", ticker=ticker)
-            # ML: записываем исход и запускаем мягкое обновление
+            # ML Phase 1: запись исхода
             try:
                 from app.ml.experience import record_exit as _ml_exit
                 from app.ml.orchestrator import on_trade_closed as _ml_otc
                 _ml_exit(figi, float(pnl))
                 _ml_otc(figi, float(pnl))
+            except Exception:
+                pass
+            # ML Phase 2: разметка признаков + переобучение
+            try:
+                from app.ml.feature_builder import label_features as _lf
+                from app.ml.model_trainer import should_retrain as _sr, train_model as _tm
+                from app.ml.model_predictor import invalidate_cache as _ic
+                _feat_id = pos.get("ml_feature_id", 0)
+                if _feat_id:
+                    _quality = float(pnl) / max(0.001, abs(float(entry_price) * exec_qty_shares))
+                    _lf(_feat_id, float(pnl), _quality)
+                if _sr(figi, _strategy_id or 0):
+                    import threading
+                    threading.Thread(target=lambda: (
+                        _tm(figi, ticker, _strategy_id or 0),
+                        _ic(figi, _strategy_id or 0)
+                    ), daemon=True).start()
             except Exception:
                 pass
             del positions[ticker]
@@ -2039,7 +2056,7 @@ def process_instrument(client, item,
             "source": "BOT",
         })
 
-        # ML: записываем контекст открытия BUY
+        # ML Phase 1: запись контекста
         try:
             from app.ml.experience import record_entry as _ml_entry
             _ml_sid = _strategy_id or 0
@@ -2047,6 +2064,20 @@ def process_instrument(client, item,
                        for k in ("rsi", "macd", "macd_signal", "bb_upper", "bb_lower")}
             _ml_entry(figi, ticker, _ml_sid, tradingmode, score, _ml_ind,
                       float(stop_loss_pct), float(take_profit_pct))
+        except Exception:
+            pass
+        # ML Phase 2: сохранение признаков для обучения модели
+        try:
+            from app.ml.feature_builder import build_features as _bf2, store_features as _sf2
+            _ml_ind2 = {"rsi": state.instrument_meta.get(ticker, {}).get("rsi") or 50,
+                        "macd": state.instrument_meta.get(ticker, {}).get("macd") or 0,
+                        "macd_signal": state.instrument_meta.get(ticker, {}).get("macd_signal") or 0,
+                        "bb_upper": state.instrument_meta.get(ticker, {}).get("bb_upper") or 0,
+                        "bb_lower": state.instrument_meta.get(ticker, {}).get("bb_lower") or 0}
+            _ob2 = {"bid_vol": bid_vol, "ask_vol": ask_vol}
+            _feat2 = _bf2(figi, ticker, candles_dict, score, "BUY", _ml_ind2, _ob2)
+            _feat_id = _sf2(figi, ticker, _strategy_id or 0, _feat2, 0)
+            positions[ticker]["ml_feature_id"] = _feat_id
         except Exception:
             pass
 

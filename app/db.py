@@ -342,7 +342,88 @@ def init_db():
         )
         """)
 
-        # ── ML обучающаяся модель ──────────────────────────────────────────────
+        # ── ML Phase 2: полноценная торговая модель ───────────────────────────
+
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS ml_features (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            figi TEXT NOT NULL,
+            ticker TEXT NOT NULL,
+            strategy_id INTEGER DEFAULT 0,
+            timestamp TEXT NOT NULL,
+            trade_id INTEGER DEFAULT 0,
+            -- 5-мин признаки
+            z_score REAL DEFAULT 0,
+            sma_gap_pct REAL DEFAULT 0,
+            momentum_5 REAL DEFAULT 0,
+            breakout_dist REAL DEFAULT 0,
+            vol_ratio REAL DEFAULT 0,
+            atr_pct REAL DEFAULT 0,
+            -- 1ч контекст
+            z_score_1h REAL DEFAULT 0,
+            trend_1h REAL DEFAULT 0,
+            volatility_1h REAL DEFAULT 0,
+            -- 4ч макро
+            trend_4h REAL DEFAULT 0,
+            momentum_4h REAL DEFAULT 0,
+            -- стакан
+            bid_pressure REAL DEFAULT 0.5,
+            spread_pct REAL DEFAULT 0,
+            book_depth_ratio REAL DEFAULT 1,
+            -- T-Bank API
+            rsi REAL DEFAULT 50,
+            macd_diff REAL DEFAULT 0,
+            bb_position REAL DEFAULT 0.5,
+            -- сигнал
+            signal_dir REAL DEFAULT 0,
+            signal_score REAL DEFAULT 0,
+            -- время
+            hour_sin REAL DEFAULT 0,
+            hour_cos REAL DEFAULT 1,
+            is_morning REAL DEFAULT 0,
+            is_close REAL DEFAULT 0,
+            day_of_week REAL DEFAULT 0,
+            position_minutes REAL DEFAULT 0,
+            -- результат (заполняется при закрытии)
+            pnl REAL,
+            quality_score REAL,
+            label INTEGER  -- 1=прибыльная, 0=убыточная
+        )
+        """)
+
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS ml_models (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            figi TEXT NOT NULL,
+            ticker TEXT NOT NULL,
+            strategy_id INTEGER DEFAULT 0,
+            trained_at TEXT NOT NULL,
+            model_data BLOB,
+            feature_importance TEXT DEFAULT '{}',
+            accuracy REAL DEFAULT 0,
+            precision_ REAL DEFAULT 0,
+            recall REAL DEFAULT 0,
+            n_training_samples INTEGER DEFAULT 0,
+            status TEXT DEFAULT 'active'
+        )
+        """)
+
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS ml_decisions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            figi TEXT NOT NULL,
+            ticker TEXT NOT NULL,
+            decision_type TEXT NOT NULL,
+            features_snapshot TEXT DEFAULT '{}',
+            model_confidence REAL DEFAULT 0,
+            threshold REAL DEFAULT 0,
+            executed INTEGER DEFAULT 0,
+            reason TEXT DEFAULT ''
+        )
+        """)
+
+        # ── ML обучающаяся модель (Phase 1, уже есть) ─────────────────────────
 
         cur.execute("""
         CREATE TABLE IF NOT EXISTS ml_trade_context (
