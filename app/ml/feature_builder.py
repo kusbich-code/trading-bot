@@ -147,6 +147,53 @@ def build_features(
     day_of_week = float(now_msk.weekday())  # 0=пн, 4=пт
 
     # ── Итоговый вектор ───────────────────────────────────────────────────────
+    # ── VWAP отклонение ──────────────────────────────────────────────────────
+    vwap_dev = 0.0
+    if c5 and last_close:
+        try:
+            _vwap_vol = sum(float(c.get("volume", 0) or 0) for c in c5[-20:])
+            if _vwap_vol > 0:
+                _vwap_sum = sum(
+                    float(c.get("close", 0)) * float(c.get("volume", 0) or 0)
+                    for c in c5[-20:] if c.get("close")
+                )
+                vwap = _vwap_sum / _vwap_vol
+                vwap_dev = (last_close - vwap) / vwap * 100 if vwap > 0 else 0.0
+        except Exception:
+            pass
+
+    # ── Сессионная фаза ───────────────────────────────────────────────────────
+    h = now_msk.hour
+    session_phase = (0 if h < 10 else
+                     1 if h == 10 else
+                     2 if 11 <= h <= 12 else
+                     3 if 13 <= h <= 14 else
+                     4 if 15 <= h <= 16 else
+                     5 if h >= 17 else 4)
+
+    # ── Cross-instrument корреляция ───────────────────────────────────────────
+    sector_corr = 0.0
+    if len(closes_5m) >= 6:
+        returns_5m = [(closes_5m[i] - closes_5m[i-1]) / closes_5m[i-1]
+                      for i in range(1, len(closes_5m))]
+        # Обновляем кеш если это маркерный инструмент
+        if figi in _SECTOR_MARKERS:
+            update_sector_returns(figi, returns_5m)
+        sector_corr = compute_sector_correlation(figi, returns_5m)
+
+    # ── Рыночный режим (упрощённый, без отдельного модуля) ────────────────────
+    regime = 0.0
+    if len(closes_5m) >= 20:
+        _adx_moves = [abs(closes_5m[i] - closes_5m[i-1]) / closes_5m[i-1] * 100
+                      for i in range(1, min(15, len(closes_5m)))]
+        _avg_move = sum(_adx_moves) / len(_adx_moves) if _adx_moves else 0
+        _trend_str = abs(sma_gap_pct)
+        if _avg_move > 0.3 and _trend_str > 0.2:
+            regime = 1.0 if sma_gap_pct > 0 else 2.0   # trending up/down
+        elif _avg_move > 0.5:
+            regime = 3.0   # volatile
+        # else 0 = ranging
+
     features = {
         # 5-мин сигнал
         "z_score":        round(z_score, 4),
@@ -181,6 +228,12 @@ def build_features(
         "day_of_week":    day_of_week,
         # Позиция
         "position_minutes": position_minutes,
+        # Новые признаки
+        "vwap_dev":      round(vwap_dev, 4),
+        "session_phase": float(session_phase),
+        "regime":        regime,
+        "sector_corr":   round(sector_corr, 4),
+        "ticker_hash":   get_ticker_code(ticker),
     }
     return features
 
@@ -194,7 +247,22 @@ FEATURE_NAMES = [
     "signal_dir", "signal_score",
     "hour_sin", "hour_cos", "is_morning", "is_close", "day_of_week",
     "position_minutes",
+    # Новые признаки
+    "vwap_dev",        # отклонение от VWAP в %
+    "session_phase",   # 0=pre, 1=open, 2=morning, 3=lunch, 4=afternoon, 5=close
+    "regime",          # 0=ranging, 1=trending_up, 2=trending_down, 3=volatile
+    "sector_corr",     # корреляция с SBER/GAZP
+    "ticker_hash",     # числовой код тикера (для универсальной модели)
 ]
+
+# Словарь тикер → числовой код
+_TICKER_CODES: dict = {}
+
+def get_ticker_code(ticker: str) -> float:
+    """Стабильный числовой код тикера для универсальной модели."""
+    if ticker not in _TICKER_CODES:
+        _TICKER_CODES[ticker] = float(abs(hash(ticker)) % 1000) / 1000
+    return _TICKER_CODES[ticker]
 
 
 def features_to_vector(features: Dict[str, float]) -> list:
@@ -226,8 +294,19 @@ def store_features(figi: str, ticker: str, strategy_id: int,
 
 
 def label_features(feature_id: int, pnl: float, quality_score: float) -> None:
-    """Добавляет результат сделки к ранее сохранённым признакам."""
+    """
+    Размечает результат сделки. Градуированные метки:
+      pnl >> 0  → label=2  (отличная сделка, выше среднего TP)
+      pnl > 0   → label=1  (хорошая)
+      pnl < 0 (небольшой) → label=-1 (плохая)
+      pnl << 0  → label=-2 (очень плохая, хуже -1%)
+    Но для бинарной классификации sklearn используем 0/1, поэтому
+    сохраняем оба формата.
+    """
+    # Бинарный label для sklearn
     label = 1 if pnl > 0 else 0
+    # Градуированный quality_score для future regression model
+    # quality_score уже передаётся снаружи (pnl / invested)
     try:
         from app.db import db_cursor
         with db_cursor() as cur:
@@ -236,3 +315,43 @@ def label_features(feature_id: int, pnl: float, quality_score: float) -> None:
             """, (pnl, quality_score, label, feature_id))
     except Exception as e:
         log.warning("label_features %d: %s", feature_id, e)
+
+
+# ── Cross-instrument корреляция ────────────────────────────────────────────────
+_sector_returns_cache: dict = {}  # figi → (ts, returns_list)
+_SECTOR_MARKERS = ["BBG004730N88", "BBG004730RP0"]  # SBER, GAZP как рыночные маркеры
+
+
+def update_sector_returns(figi: str, returns: list) -> None:
+    """Обновляет кеш доходностей для рыночных маркеров."""
+    import time
+    _sector_returns_cache[figi] = (time.monotonic(), returns[-20:])
+
+
+def compute_sector_correlation(figi: str, own_returns: list) -> float:
+    """Корреляция инструмента с рыночными маркерами (SBER, GAZP)."""
+    if len(own_returns) < 5:
+        return 0.0
+    corr_sum = 0.0
+    count = 0
+    for marker_figi in _SECTOR_MARKERS:
+        if marker_figi == figi:
+            continue
+        cached = _sector_returns_cache.get(marker_figi)
+        if not cached:
+            continue
+        marker_ret = cached[1]
+        n = min(len(own_returns), len(marker_ret))
+        if n < 5:
+            continue
+        a = own_returns[-n:]
+        b = marker_ret[-n:]
+        mean_a = sum(a) / n
+        mean_b = sum(b) / n
+        cov = sum((a[i] - mean_a) * (b[i] - mean_b) for i in range(n)) / n
+        std_a = (sum((x - mean_a)**2 for x in a) / n)**0.5
+        std_b = (sum((x - mean_b)**2 for x in b) / n)**0.5
+        if std_a > 0 and std_b > 0:
+            corr_sum += cov / (std_a * std_b)
+            count += 1
+    return round(corr_sum / count, 4) if count > 0 else 0.0

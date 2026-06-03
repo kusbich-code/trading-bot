@@ -384,6 +384,12 @@ def init_db():
             is_close REAL DEFAULT 0,
             day_of_week REAL DEFAULT 0,
             position_minutes REAL DEFAULT 0,
+            -- новые признаки v5.0.7
+            vwap_dev REAL DEFAULT 0,
+            session_phase REAL DEFAULT 0,
+            regime REAL DEFAULT 0,
+            sector_corr REAL DEFAULT 0,
+            ticker_hash REAL DEFAULT 0,
             -- результат (заполняется при закрытии)
             pnl REAL,
             quality_score REAL,

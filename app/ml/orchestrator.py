@@ -42,6 +42,22 @@ def run_daily_rebalance() -> None:
                 _deep_update(figi, ticker, strategy_id, current_params)
             except Exception as e:
                 log.warning("[ML] deep_update %s: %s", ticker, e)
+        # Переобучаем универсальную модель
+        try:
+            from app.ml.model_trainer import train_universal_model as _tum
+            from app.ml.model_predictor import invalidate_cache as _ic_u
+            u_metrics = _tum()
+            if u_metrics:
+                _ic_u("UNIVERSAL", 0)
+                log.info("[ML] Universal model retrained: acc=%.3f prec=%.3f n=%d",
+                         u_metrics.get("accuracy", 0), u_metrics.get("precision", 0),
+                         u_metrics.get("n_train", 0))
+        except Exception as e:
+            log.warning("[ML] universal retrain: %s", e)
+
+        # Drift detection: проверяем деградацию моделей
+        _check_concept_drift()
+
         log.info("[ML] Ежедневный ребаланс завершён (%d инструментов)", len(instruments))
 
         # Фаза 5: ранжирование инструментов по ML-оценке
@@ -341,6 +357,38 @@ def _get_strategy_id(figi: str) -> Optional[int]:
             return row[0] if row else None
     except Exception:
         return None
+
+
+def _check_concept_drift() -> None:
+    """
+    Drift detection: если rolling accuracy (последние 20 сделок) < 48% →
+    принудительное переобучение + Telegram предупреждение.
+    """
+    try:
+        from app.db import db_cursor
+        with db_cursor() as cur:
+            cur.execute("""
+                SELECT label FROM ml_features
+                WHERE label IS NOT NULL
+                ORDER BY id DESC LIMIT 20
+            """)
+            labels = [row[0] for row in cur.fetchall()]
+        if len(labels) < 10:
+            return
+        rolling_acc = sum(labels) / len(labels)
+        if rolling_acc < 0.48:
+            log.warning("[ML drift] Rolling accuracy=%.1f%% < 48%% — переобучаем", rolling_acc * 100)
+            try:
+                from main import notify
+                notify(f"⚠️ ML: точность упала до {rolling_acc:.0%} (последние {len(labels)} сделок)\n"
+                       f"Запускаю переобучение всех моделей…")
+            except Exception:
+                pass
+            # Сбрасываем кеш моделей чтобы форсировать переобучение
+            from app.ml.model_predictor import _model_cache
+            _model_cache.clear()
+    except Exception as e:
+        log.debug("drift check: %s", e)
 
 
 def _get_last_rebalance() -> str:

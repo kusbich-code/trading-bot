@@ -61,23 +61,100 @@ def invalidate_cache(figi: str, strategy_id: int) -> None:
     _model_cache.pop(f"{figi}_{strategy_id}", None)
 
 
+def _get_universal_model():
+    """Загружает универсальную модель (обученную на всех инструментах)."""
+    key = "UNIVERSAL_0"
+    if key not in _model_cache:
+        try:
+            from app.db import db_cursor
+            with db_cursor() as cur:
+                cur.execute("""SELECT model_data FROM ml_models
+                               WHERE figi='UNIVERSAL' AND status='active'
+                               ORDER BY id DESC LIMIT 1""")
+                row = cur.fetchone()
+            if row and row[0]:
+                _model_cache[key] = (pickle.loads(row[0]), {"universal": True})
+            else:
+                return None, {}
+        except Exception:
+            return None, {}
+    return _model_cache.get(key, (None, {}))
+
+
 def predict_probability(figi: str, strategy_id: int, features: Dict) -> Optional[float]:
-    """Возвращает P(прибыльная сделка) или None если модели нет."""
-    model, meta = _get_model(figi, strategy_id)
-    if not model:
-        return None
-    try:
-        from app.ml.feature_builder import features_to_vector
-        X = [features_to_vector(features)]
-        proba = model.predict_proba(X)[0][1]
-        return round(float(proba), 4)
-    except Exception as e:
-        log.warning("predict_probability %s: %s", figi, e)
-        return None
+    """
+    Возвращает P(прибыльная сделка).
+    Приоритет: per-instrument модель → универсальная модель → None.
+    """
+    from app.ml.feature_builder import features_to_vector
+    X = [features_to_vector(features)]
+
+    # 1. Per-instrument модель (наиболее точная когда есть достаточно данных)
+    model, _ = _get_model(figi, strategy_id)
+    if model:
+        try:
+            return round(float(model.predict_proba(X)[0][1]), 4)
+        except Exception as e:
+            log.debug("predict per-instrument %s: %s", figi, e)
+
+    # 2. Универсальная модель (fallback — работает с первых 30 сделок суммарно)
+    u_model, _ = _get_universal_model()
+    if u_model:
+        try:
+            return round(float(u_model.predict_proba(X)[0][1]), 4)
+        except Exception as e:
+            log.debug("predict universal %s: %s", figi, e)
+
+    return None
+
+
+def compute_lot_scale(confidence: float) -> float:
+    """
+    Масштаб позиции на основе уверенности модели.
+    P=0.90 → 1.00 (100%), P=0.70 → 0.65, P=0.60 → 0.35
+    Ниже ENTRY_THRESHOLD → не входим вообще.
+    """
+    if confidence >= 0.90:
+        return 1.00
+    elif confidence >= 0.80:
+        return 0.80
+    elif confidence >= 0.70:
+        return 0.65
+    elif confidence >= 0.65:
+        return 0.50
+    elif confidence >= ENTRY_THRESHOLD:
+        return 0.35
+    return 0.0
+
+
+def meta_strategy_check(features: Dict, signal_score: int,
+                        signal_action: str, min_score: int) -> Tuple[bool, str]:
+    """
+    Meta-стратегия '2 из 3':
+    1. strategy_engine: score >= порог
+    2. ML: P >= ENTRY_THRESHOLD
+    3. 1h-тренд подтверждает направление
+    Минимум 2 из 3 условий → входим.
+    """
+    cond1 = signal_score >= max(min_score, 20)
+    trend_1h = features.get("trend_1h", 0)
+    cond3 = (signal_action == "BUY" and trend_1h >= 0) or \
+            (signal_action == "SELL" and trend_1h <= 0) or \
+            (trend_1h == 0)
+
+    score_meta = sum([cond1, cond3])  # ML добавляется снаружи
+    reasons = []
+    if not cond1:
+        reasons.append(f"score={signal_score}<{max(min_score,20)}")
+    if not cond3:
+        reasons.append(f"1h-тренд против сигнала ({trend_1h:+.0f})")
+
+    return score_meta, ", ".join(reasons) if reasons else "ok"
 
 
 def should_enter(figi: str, ticker: str, strategy_id: int, features: Dict,
-                 signal_action: str) -> Tuple[bool, Optional[float], str]:
+                 signal_action: str, signal_score: int = 0,
+                 min_score: int = 0) -> Tuple[bool, Optional[float], str]:
     """
     Фильтр входа.
     Soft mode (не обучена): логирует но не блокирует.
@@ -87,25 +164,32 @@ def should_enter(figi: str, ticker: str, strategy_id: int, features: Dict,
     if p is None:
         return True, None, "ML: накапливаем данные"
 
-    active = is_active(figi, strategy_id)
+    active = is_active(figi, strategy_id) or _get_universal_model()[0] is not None
     allow = (p >= ENTRY_THRESHOLD)
 
-    if active and not allow:
-        reason = _format_entry_reason(features, p, "🚫")
-        _send_ml_decision_tg(ticker, signal_action, "вход заблокирован", p, reason)
-        log_decision(figi, ticker, "entry_blocked", p, ENTRY_THRESHOLD, False,
-                     f"P={p:.3f} < {ENTRY_THRESHOLD}", features)
-        return False, p, f"ML блок: P={p:.2f} < {ENTRY_THRESHOLD}"
-    elif active and allow:
+    # Meta-стратегия: проверяем score + 1h-тренд
+    meta_score, meta_reason = meta_strategy_check(features, signal_score, signal_action, min_score)
+    cond_ml = 1 if allow else 0
+    total_conditions = meta_score + cond_ml
+    # Требуем минимум 2 из 3 условий
+    meta_allow = (total_conditions >= 2)
+
+    if active and not meta_allow:
+        block_reason = f"Meta 2/3: {meta_score}/3 условий (ML={cond_ml}) — {meta_reason}"
+        reason_tg = _format_entry_reason(features, p, "🚫")
+        _send_ml_decision_tg(ticker, signal_action, "вход заблокирован", p,
+                             reason_tg + f"\n  Meta: {meta_score}/3 условий")
+        log_decision(figi, ticker, "entry_blocked", p, ENTRY_THRESHOLD, False, block_reason, features)
+        return False, p, block_reason
+    elif active:
         log_decision(figi, ticker, "entry_allowed", p, ENTRY_THRESHOLD, True,
-                     f"P={p:.3f} >= {ENTRY_THRESHOLD}", features)
-        return True, p, f"ML разрешил: P={p:.2f}"
+                     f"Meta {meta_score}/3 P={p:.3f}", features)
+        return True, p, f"ML: P={p:.2f} meta={meta_score}/3"
     else:
-        # Soft mode — не блокируем, только логируем
-        decision = "entry_soft_block" if not allow else "entry_soft_allow"
+        decision = "entry_soft_block" if not meta_allow else "entry_soft_allow"
         log_decision(figi, ticker, decision, p, ENTRY_THRESHOLD, True,
-                     f"soft mode P={p:.3f}", features)
-        return True, p, f"ML soft: P={p:.2f} (учимся)"
+                     f"soft meta={meta_score}/3 P={p:.3f}", features)
+        return True, p, f"ML soft: P={p:.2f} meta={meta_score}/3"
 
 
 def should_exit_early(figi: str, ticker: str, strategy_id: int, features: Dict,

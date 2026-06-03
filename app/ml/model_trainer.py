@@ -17,6 +17,122 @@ RETRAIN_EVERY  = 10   # переобучаем каждые N новых сде�
 TEST_RATIO     = 0.2  # 20% на тест (последние по времени)
 
 
+def get_all_labeled_features() -> Tuple[list, list]:
+    """Загружает ВСЕ размеченные признаки со всех инструментов (для универсальной модели)."""
+    from app.db import db_cursor
+    from app.ml.feature_builder import FEATURE_NAMES
+    try:
+        with db_cursor() as cur:
+            col_list = ", ".join(FEATURE_NAMES)
+            cur.execute(f"""
+                SELECT {col_list}, label FROM ml_features
+                WHERE label IS NOT NULL
+                ORDER BY timestamp ASC
+            """)
+            rows = cur.fetchall()
+        X = [[row[i] or 0.0 for i in range(len(FEATURE_NAMES))] for row in rows]
+        y = [int(row[-1]) for row in rows]
+        return X, y
+    except Exception as e:
+        log.warning("get_all_labeled_features: %s", e)
+        return [], []
+
+
+def train_universal_model() -> Optional[Dict]:
+    """
+    Универсальная модель на ВСЕХ инструментах.
+    Работает при 30+ сделках суммарно (вместо 30 на каждый инструмент).
+    """
+    try:
+        from sklearn.ensemble import GradientBoostingClassifier
+        from sklearn.calibration import CalibratedClassifierCV
+        from sklearn.model_selection import TimeSeriesSplit
+        from sklearn.metrics import precision_score, recall_score, accuracy_score
+    except ImportError:
+        return None
+
+    X, y = get_all_labeled_features()
+    if len(X) < MIN_SAMPLES:
+        log.info("Universal model: недостаточно данных (%d < %d)", len(X), MIN_SAMPLES)
+        return None
+
+    split_idx = int(len(X) * (1 - TEST_RATIO))
+    X_train, X_test = X[:split_idx], X[split_idx:]
+    y_train, y_test = y[:split_idx], y[split_idx:]
+
+    if len(set(y_train)) < 2:
+        return None
+
+    base_model = GradientBoostingClassifier(
+        n_estimators=150, learning_rate=0.08, max_depth=3,
+        min_samples_leaf=5, subsample=0.8, random_state=42,
+    )
+    # Platt scaling — калибрует вероятности чтобы P=0.65 реально было 65%
+    model = CalibratedClassifierCV(base_model, method='sigmoid', cv=3)
+    model.fit(X_train, y_train)
+
+    metrics = {"n_train": len(X_train), "n_test": len(X_test), "universal": True}
+    if X_test:
+        y_pred = model.predict(X_test)
+        metrics["accuracy"]  = round(accuracy_score(y_test, y_pred), 3)
+        metrics["precision"] = round(precision_score(y_test, y_pred, zero_division=0), 3)
+        metrics["recall"]    = round(recall_score(y_test, y_pred, zero_division=0), 3)
+
+    from app.ml.feature_builder import FEATURE_NAMES
+    try:
+        importance = dict(zip(FEATURE_NAMES, base_model.estimators_[0][0].feature_importances_))
+    except Exception:
+        importance = {}
+    top5 = sorted(importance.items(), key=lambda x: x[1], reverse=True)[:5]
+    metrics["top_features"] = [(k, round(v, 3)) for k, v in top5]
+
+    # Сохраняем как "universal" модель (figi=UNIVERSAL, strategy_id=0)
+    model_bytes = pickle.dumps(model)
+    now = datetime.now(tz=_MSK).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        from app.db import db_cursor
+        with db_cursor() as cur:
+            cur.execute("""
+                INSERT INTO ml_models(figi, ticker, strategy_id, trained_at,
+                    model_data, feature_importance, accuracy, precision_,
+                    recall, n_training_samples, status)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?)
+            """, (
+                "UNIVERSAL", "ALL", 0, now, model_bytes,
+                json.dumps(importance),
+                metrics.get("accuracy", 0), metrics.get("precision", 0),
+                metrics.get("recall", 0), len(X_train), "active"
+            ))
+    except Exception as e:
+        log.warning("save universal model: %s", e)
+        return None
+
+    prec = metrics.get("precision", 0)
+    is_ready = prec >= 0.55 and len(X_train) >= MIN_SAMPLES
+    if is_ready:
+        _notify_universal_ready(len(X_train), prec, metrics)
+
+    log.info("[ML universal] обучена на %d сделках: accuracy=%.3f precision=%.3f",
+             len(X_train), metrics.get("accuracy", 0), prec)
+    return metrics
+
+
+def _notify_universal_ready(n: int, prec: float, metrics: dict) -> None:
+    try:
+        from main import notify
+        top = metrics.get("top_features", [])
+        top_str = "\n".join(f"  {i+1}. {name}: {val:.3f}" for i, (name, val) in enumerate(top[:3]))
+        notify(
+            f"🧠 *Универсальная ML-модель готова*\n"
+            f"Обучена на {n} сделках (все инструменты)\n"
+            f"Precision: {prec:.0%} | Accuracy: {metrics.get('accuracy', 0):.0%}\n"
+            f"\nТоп-признаки:\n{top_str}\n"
+            f"\n✅ *Начинаю влиять на ВСЕ инструменты*"
+        )
+    except Exception:
+        pass
+
+
 def get_training_data(figi: str, strategy_id: int) -> Tuple[list, list]:
     """Загружает размеченные признаки из ml_features."""
     from app.db import db_cursor

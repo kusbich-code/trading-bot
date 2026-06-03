@@ -2001,8 +2001,10 @@ def process_instrument(client, item,
                 figi, ticker, candles_dict, score, sig, _ml_ind_e, _ob_e,
                 _tf_e.get("1hour", []), _tf_e.get("4hour", [])
             )
+            _min_score = int(_cfg("min_signal_score", "0"))
             _allow, _ml_conf, _ml_reason = _ml_enter(
-                figi, ticker, _strategy_id or 0, _ml_features_for_entry, sig
+                figi, ticker, _strategy_id or 0, _ml_features_for_entry, sig,
+                signal_score=score, min_score=_min_score
             )
             if not _allow:
                 _save_signal(skip_reason=_ml_reason, skip_filter="ml_entry_block")
@@ -2026,6 +2028,7 @@ def process_instrument(client, item,
             pass
 
     # ── Авто-расчёт лотов от суммы ИТОГО портфеля ────────────────────────────
+    _ml_lot_scale = 1.0  # масштаб от ML-уверенности
     if int(item.get("auto_lots", 0) or 0) and sig in ("BUY", "SELL"):
         _lot_size_v = int(item.get("lot", 1))
         _comm_v     = Decimal(_cfg("estimated_commission_pct", "0.0004"))
@@ -2033,9 +2036,20 @@ def process_instrument(client, item,
         if _cost_1lot > 0:
             _total  = Decimal(str(state.session_total_assets or state.session_balance_current))
             _auto   = max(1, int(_total / _cost_1lot))
+            # ML confidence-based scaling: высокая уверенность → больше позиция
+            if _ml_features_for_entry:
+                try:
+                    from app.ml.model_predictor import compute_lot_scale as _cls
+                    _ml_p_for_scale = _ml_conf if '_ml_conf' in dir() and _ml_conf else 0.5
+                    _ml_lot_scale = _cls(float(_ml_p_for_scale or 0.5))
+                    if _ml_lot_scale < 1.0:
+                        _auto = max(1, int(_auto * _ml_lot_scale))
+                except Exception:
+                    pass
             if _auto != lot:
                 log_event("AUTO_LOTS",
-                          f"{ticker}: итого {float(_total):.0f}₽ / {float(_cost_1lot):.0f}₽/лот = {_auto} лотов",
+                          f"{ticker}: итого {float(_total):.0f}₽ / {float(_cost_1lot):.0f}₽/лот = {_auto} лотов"
+                          f" (ML scale={_ml_lot_scale:.2f})",
                           ticker=ticker)
             lot = _auto
 
