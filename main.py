@@ -1867,14 +1867,24 @@ def process_instrument(client, item,
                 _coord.release(_strategy_id)
 
             _pnl_sign = "+" if float(pnl) >= 0 else ""
+            # Рассчитываем % движения цены для наглядности
+            _price_move_pct = (float(exit_price) - float(entry_price)) / float(entry_price) * 100
+            _price_move_sign = "+" if _price_move_pct >= 0 else ""
+            # Пометка трейлинг-стопа
+            _trailing_note = ""
+            if close_reason == "STOP_LOSS" and trailing_stop_enabled:
+                _ts_val = pos.get("trailing_stop", 0)
+                if _ts_val and abs(float(exit_price) - float(_ts_val)) < 0.05 * float(entry_price):
+                    _trailing_note = f" (трейлинг @ {float(_ts_val):.4f} ₽)"
             notify(
                 f"{'✅' if float(pnl) >= 0 else '🔴'} Закрытие позиции\n"
                 f"{ticker} | {direction}\n"
-                f"Вход: {float(entry_price):.4f} ₽ → Выход: {float(exit_price):.4f} ₽\n"
+                f"Вход: {float(entry_price):.4f} ₽ → Выход: {float(exit_price):.4f} ₽ "
+                f"({_price_move_sign}{_price_move_pct:.3f}%)\n"
                 f"Лотов: {exec_qty_lots} × {_lot_sz_c} шт = {exec_qty_shares} акций\n"
                 f"Сумма: {float(gross_amount):,.0f} ₽\n"
                 f"PnL: {_pnl_sign}{float(pnl):.2f} ₽\n"
-                f"Причина: {close_reason}"
+                f"Причина: {close_reason}{_trailing_note}"
             )
         return
 
@@ -2034,13 +2044,14 @@ def process_instrument(client, item,
         _tp_price = Decimal(str(_ep)) * (1 + take_profit_pct)
         _lot_sz_n = int(item.get("lot", 1))
         _amt_n = _qty_filled * _lot_sz_n * _ep
+        _trailing_ui = " | 🔄 Трейлинг-стоп вкл" if trailing_stop_enabled else ""
         notify(
             f"🟢 Открытие позиции\n"
             f"{ticker} | BUY\n"
             f"Цена: {_ep:.4f} ₽\n"
             f"Лотов: {_qty_filled} × {_lot_sz_n} шт = {_qty_filled * _lot_sz_n} акций\n"
             f"Сумма: {_amt_n:,.0f} ₽\n"
-            f"SL: {sl_ui} ({float(_sl_price):.4f} ₽) | TP: {tp_ui} ({float(_tp_price):.4f} ₽)\n"
+            f"SL: {sl_ui} ({float(_sl_price):.4f} ₽) | TP: {tp_ui} ({float(_tp_price):.4f} ₽){_trailing_ui}\n"
             f"{'✅ Стопы на бирже' if _stop_ids.get('sl_id') else '⚠️ Стопы не размещены'}"
         )
 
@@ -2104,13 +2115,14 @@ def process_instrument(client, item,
         _tp_price = Decimal(str(_ep)) * (1 - take_profit_pct)
         _lot_sz_n = int(item.get("lot", 1))
         _amt_n = _qty_filled * _lot_sz_n * _ep
+        _trailing_ui = " | 🔄 Трейлинг-стоп вкл" if trailing_stop_enabled else ""
         notify(
             f"🔴 Открытие позиции\n"
             f"{ticker} | SELL\n"
             f"Цена: {_ep:.4f} ₽\n"
             f"Лотов: {_qty_filled} × {_lot_sz_n} шт = {_qty_filled * _lot_sz_n} акций\n"
             f"Сумма: {_amt_n:,.0f} ₽\n"
-            f"SL: {sl_ui} ({float(_sl_price):.4f} ₽) | TP: {tp_ui} ({float(_tp_price):.4f} ₽)\n"
+            f"SL: {sl_ui} ({float(_sl_price):.4f} ₽) | TP: {tp_ui} ({float(_tp_price):.4f} ₽){_trailing_ui}\n"
             f"{'✅ Стопы на бирже' if _stop_ids.get('sl_id') else '⚠️ Стопы не размещены'}"
         )
 
