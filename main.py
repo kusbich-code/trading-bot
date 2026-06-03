@@ -1808,6 +1808,18 @@ def process_instrument(client, item,
                 close_reason = "TAKE_PROFIT"
 
         if close_signal:
+            # Защита от гонки с sync_portfolio_positions:
+            # если позиция уже закрыта в БД — очищаем память и выходим
+            try:
+                _open_figis = {p["figi"] for p in get_open_positions(source="BOT")}
+                if figi not in _open_figis:
+                    log.info("%s: позиция уже закрыта в БД (гонка с sync), очищаем", ticker)
+                    del positions[ticker]
+                    if _coord is not None:
+                        _coord.release(_strategy_id)
+                    return
+            except Exception:
+                pass
             close_dir = OrderDirection.ORDER_DIRECTION_SELL if direction == "BUY" else OrderDirection.ORDER_DIRECTION_BUY
             # Отменяем ВСЕ ордера по figi перед закрытием (нативные стопы + лимитники)
             _cancel_all_orders_for_figi(client, figi, ticker)
