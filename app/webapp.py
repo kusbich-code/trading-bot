@@ -497,7 +497,6 @@ def dashboard_page():
     <section id="view-portfolio" data-view="портфель" class="hidden"></section>
     <section id="view-settings" data-view="настройки" class="hidden"></section>
     <section id="view-history" data-view="история" class="hidden"></section>
-    <section id="view-chart" data-view="график" class="hidden"></section>
     <section id="view-backtest" data-view="бэктест" class="hidden"></section>
     <section id="view-analyst" data-view="аналитик" class="hidden"></section>
   </div>
