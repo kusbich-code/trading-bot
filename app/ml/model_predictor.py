@@ -3,6 +3,7 @@
 Отправляет аналитику в Telegram при каждом решении.
 """
 import logging
+import pickle
 from typing import Dict, Optional, Tuple
 
 log = logging.getLogger("ml.predictor")

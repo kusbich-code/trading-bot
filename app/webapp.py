@@ -2947,7 +2947,7 @@ def api_ml_summary():
         with _dbc_ml() as _c:
             _c.execute("""
                 SELECT figi, ticker, trained_at, accuracy, precision_, recall,
-                       n_training_samples, status
+                       n_training_samples, status, feature_importance
                 FROM ml_models ORDER BY id DESC LIMIT 50
             """)
             _cols = [d[0] for d in _c.description]

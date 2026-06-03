@@ -3722,30 +3722,51 @@ async function renderLearningTab() {
 
     const fmtModel = (m) => {
       const ready = m.status === "active";
+      let topFeatures = [];
+      try {
+        const imp = typeof m.feature_importance === "string"
+          ? JSON.parse(m.feature_importance) : (m.feature_importance || {});
+        topFeatures = Object.entries(imp)
+          .sort((a, b) => b[1] - a[1]).slice(0, 5)
+          .map(([name, val]) => ({ name, val: Number(val) }));
+      } catch(e) {}
+      const topHtml = topFeatures.length
+        ? `<div style="margin-top:12px">
+            <div class="label" style="font-size:11px;margin-bottom:4px">Топ-признаки</div>
+            <div style="display:flex;flex-wrap:wrap;gap:6px">
+              ${topFeatures.map(f => `
+                <div style="font-size:11px;background:rgba(255,255,255,.06);padding:3px 8px;border-radius:10px">
+                  ${esc(f.name)} <span style="color:#9fb3d8">${(f.val*100).toFixed(1)}%</span>
+                </div>`).join("")}
+            </div>
+          </div>` : "";
       return `
-        <div style="display:flex;gap:24px;flex-wrap:wrap;align-items:center;padding:10px 0">
-          <div>
-            <div class="label" style="font-size:11px">Статус</div>
-            <div>${ready
-              ? '<span style="color:#2fa36b;font-weight:700">✅ Активна — влияет на сделки</span>'
-              : '<span style="color:#f0c04a">⏳ Учится — мягкий режим</span>'}</div>
+        <div style="padding:10px 0">
+          <div style="display:flex;gap:24px;flex-wrap:wrap;align-items:center">
+            <div>
+              <div class="label" style="font-size:11px">Статус</div>
+              <div>${ready
+                ? '<span style="color:#2fa36b;font-weight:700">✅ Активна — влияет на сделки</span>'
+                : '<span style="color:#f0c04a">⏳ Учится — мягкий режим (precision &lt; 55%)</span>'}</div>
+            </div>
+            <div>
+              <div class="label" style="font-size:11px">Обучено на</div>
+              <div style="font-size:14px;font-weight:600">${m.n_training_samples || 0} сделок</div>
+            </div>
+            <div>
+              <div class="label" style="font-size:11px">Precision</div>
+              <div style="font-size:14px;font-weight:600;color:${m.precision_>=0.55?'#2fa36b':'#f0c04a'}">${m.precision_ ? (m.precision_*100).toFixed(1)+"%" : "—"}</div>
+            </div>
+            <div>
+              <div class="label" style="font-size:11px">Accuracy</div>
+              <div style="font-size:14px;font-weight:600">${m.accuracy ? (m.accuracy*100).toFixed(1)+"%" : "—"}</div>
+            </div>
+            <div>
+              <div class="label" style="font-size:11px">Обновлена</div>
+              <div class="muted" style="font-size:12px">${esc((m.trained_at||"").slice(0,16))}</div>
+            </div>
           </div>
-          <div>
-            <div class="label" style="font-size:11px">Обучено на</div>
-            <div style="font-size:14px;font-weight:600">${m.n_training_samples || 0} сделок</div>
-          </div>
-          <div>
-            <div class="label" style="font-size:11px">Precision</div>
-            <div style="font-size:14px;font-weight:600">${m.precision_ ? (m.precision_*100).toFixed(1)+"%" : "—"}</div>
-          </div>
-          <div>
-            <div class="label" style="font-size:11px">Accuracy</div>
-            <div style="font-size:14px;font-weight:600">${m.accuracy ? (m.accuracy*100).toFixed(1)+"%" : "—"}</div>
-          </div>
-          <div>
-            <div class="label" style="font-size:11px">Обновлена</div>
-            <div class="muted" style="font-size:12px">${esc((m.trained_at||"").slice(0,16))}</div>
-          </div>
+          ${topHtml}
         </div>`;
     };
 

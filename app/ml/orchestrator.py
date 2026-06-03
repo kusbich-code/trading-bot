@@ -74,8 +74,11 @@ def _rank_instruments_daily(instruments: list) -> None:
     from app.ml.model_predictor import rank_instruments as _rank, RANK_MIN_THRESHOLD
     if not instruments:
         return
-    # Берём strategy_id первого инструмента (для упрощения — у каждого свой)
-    ranked = _rank([i for i, _, _ in instruments if isinstance(i, dict)], 0)
+    instr_dicts = [
+        {"figi": figi, "ticker": ticker, "strategy_id": sid}
+        for figi, ticker, sid, _ in instruments
+    ]
+    ranked = _rank(instr_dicts, 0)
     disabled_count = 0
     from app.db import db_cursor
     for instr, score, should_disable in ranked:

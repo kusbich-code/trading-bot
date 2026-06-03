@@ -87,6 +87,9 @@ def train_universal_model() -> Optional[Dict]:
     metrics["top_features"] = [(k, round(v, 3)) for k, v in top5]
 
     # Сохраняем как "universal" модель (figi=UNIVERSAL, strategy_id=0)
+    prec = metrics.get("precision", 0)
+    is_ready = prec >= 0.55 and len(X_train) >= MIN_SAMPLES
+    univ_status = "active" if is_ready else "learning"
     model_bytes = pickle.dumps(model)
     now = datetime.now(tz=_MSK).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
     try:
@@ -100,20 +103,18 @@ def train_universal_model() -> Optional[Dict]:
             """, (
                 "UNIVERSAL", "ALL", 0, now, model_bytes,
                 json.dumps(importance),
-                metrics.get("accuracy", 0), metrics.get("precision", 0),
-                metrics.get("recall", 0), len(X_train), "active"
+                metrics.get("accuracy", 0), prec,
+                metrics.get("recall", 0), len(X_train), univ_status
             ))
     except Exception as e:
         log.warning("save universal model: %s", e)
         return None
 
-    prec = metrics.get("precision", 0)
-    is_ready = prec >= 0.55 and len(X_train) >= MIN_SAMPLES
     if is_ready:
         _notify_universal_ready(len(X_train), prec, metrics)
 
-    log.info("[ML universal] обучена на %d сделках: accuracy=%.3f precision=%.3f",
-             len(X_train), metrics.get("accuracy", 0), prec)
+    log.info("[ML universal] обучена на %d сделках: accuracy=%.3f precision=%.3f status=%s",
+             len(X_train), metrics.get("accuracy", 0), prec, univ_status)
     return metrics
 
 
