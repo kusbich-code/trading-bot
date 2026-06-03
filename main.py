@@ -1061,6 +1061,12 @@ def maybe_reset_daily():
         state.trades_today = 0
         state.current_trade_date = today
         log_event("DAILY_RESET", "Daily counters reset")
+        # ML: ежедневный ребаланс параметров (запускаем в фоне)
+        try:
+            from app.ml.orchestrator import run_daily_rebalance as _ml_rebalance
+            Thread(target=_ml_rebalance, daemon=True).start()
+        except Exception:
+            pass
 
 
 def place_order_checked(client, ticker: str, figi: str, lots: int, raw_price: Decimal, direction: OrderDirection,
@@ -1846,6 +1852,14 @@ def process_instrument(client, item,
             add_trade(trade)
             close_position(figi, source="BOT")
             log_event("ORDER_CLOSE", f"{ticker} pnl={float(pnl):.2f} reason={close_reason}", ticker=ticker)
+            # ML: записываем исход и запускаем мягкое обновление
+            try:
+                from app.ml.experience import record_exit as _ml_exit
+                from app.ml.orchestrator import on_trade_closed as _ml_otc
+                _ml_exit(figi, float(pnl))
+                _ml_otc(figi, float(pnl))
+            except Exception:
+                pass
             del positions[ticker]
             # Cooldown 60 сек после закрытия — защита от немедленного реверса
             state.close_cooldowns[figi] = _now()
@@ -2003,6 +2017,17 @@ def process_instrument(client, item,
             "source": "BOT",
         })
 
+        # ML: записываем контекст открытия BUY
+        try:
+            from app.ml.experience import record_entry as _ml_entry
+            _ml_sid = _strategy_id or 0
+            _ml_ind = {k: state.instrument_meta.get(ticker, {}).get(k)
+                       for k in ("rsi", "macd", "macd_signal", "bb_upper", "bb_lower")}
+            _ml_entry(figi, ticker, _ml_sid, tradingmode, score, _ml_ind,
+                      float(stop_loss_pct), float(take_profit_pct))
+        except Exception:
+            pass
+
         sl_ui = f"{float(stop_loss_pct)*100:.2f}%"
         tp_ui = f"{float(take_profit_pct)*100:.2f}%"
         _sl_price = Decimal(str(_ep)) * (1 - stop_loss_pct)
@@ -2061,6 +2086,17 @@ def process_instrument(client, item,
             "status": "OPEN",
             "source": "BOT",
         })
+
+        # ML: записываем контекст открытия SELL
+        try:
+            from app.ml.experience import record_entry as _ml_entry
+            _ml_sid = _strategy_id or 0
+            _ml_ind = {k: state.instrument_meta.get(ticker, {}).get(k)
+                       for k in ("rsi", "macd", "macd_signal", "bb_upper", "bb_lower")}
+            _ml_entry(figi, ticker, _ml_sid, tradingmode, score, _ml_ind,
+                      float(stop_loss_pct), float(take_profit_pct))
+        except Exception:
+            pass
 
         sl_ui = f"{float(stop_loss_pct)*100:.2f}%"
         tp_ui = f"{float(take_profit_pct)*100:.2f}%"
@@ -2180,6 +2216,17 @@ def _parallel_strategy_worker(strategy_id: int, strat_name: str, stop_ev: thread
                     # Убран break — все стратегии обновляют цены/сигналы даже когда другая в позиции
                     _rate.throttle_if_needed()  # пауза если близко к rate limit
                     _pset(strategy_id, "сканирование", item["ticker"])
+                    # ML: подгружаем выученные параметры если уверенность достаточная
+                    try:
+                        from app.ml.orchestrator import get_ml_params as _ml_get
+                        _ml_p = _ml_get(item["figi"], strategy_id)
+                        if _ml_p:
+                            if _ml_p.get("stop_loss_pct"):
+                                item = dict(item); item["stop_loss_pct"] = Decimal(str(_ml_p["stop_loss_pct"]))
+                            if _ml_p.get("take_profit_pct"):
+                                item["take_profit_pct"] = Decimal(str(_ml_p["take_profit_pct"]))
+                    except Exception:
+                        pass
                     try:
                         process_instrument(
                             client, item,

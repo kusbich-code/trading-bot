@@ -11,7 +11,7 @@ let _lastQuotesMap = {};   // последние котировки — испо
 // Viewed profile in settings tab (may differ from active profile)
 let viewedProfileId = null;
 
-const ALLOWED_TABS = new Set(["главное", "портфель", "настройки", "история", "бэктест", "аналитик"]);
+const ALLOWED_TABS = new Set(["главное", "портфель", "настройки", "история", "бэктест", "аналитик", "обучение"]);
 
 function esc(v) {
   return String(v ?? "");
@@ -189,7 +189,7 @@ function _numVal(text) {
 }
 
 function ensureViewsExist() {
-  const required = ["главное", "портфель", "настройки", "история", "бэктест", "аналитик"];
+  const required = ["главное", "портфель", "настройки", "история", "бэктест", "аналитик", "обучение"];
   const root = document.querySelector(".app") || document.body;
   required.forEach((tab) => {
     if (!document.querySelector(`[data-view="${tab}"]`)) {
@@ -3655,6 +3655,124 @@ let _analystViewingId = null;
 let _analystMode = "search"; // "search" | "optimize"
 let _analystOptPollTimer = null;
 
+// ── ML Learning Tab ────────────────────────────────────────────────────────────
+
+async function renderLearningTab() {
+  const host = document.getElementById("view-обучение");
+  if (!host) return;
+
+  host.innerHTML = `<div style="text-align:center;padding:40px;color:#9fb3d8">Загрузка данных обучения…</div>`;
+
+  try {
+    const data = await apiGet("/api/ml/summary");
+    const states  = data.states  || [];
+    const logData = data.log     || [];
+    const totalTrades = data.total_trades || 0;
+    const avgConf     = data.avg_confidence || 0;
+    const lastReb     = data.last_rebalance || "никогда";
+
+    const confColor = (c) => c >= 0.65 ? "#2fa36b" : c >= 0.3 ? "#f0c04a" : "#9fb3d8";
+    const fmtQ = (q) => {
+      const c = q >= 0 ? "#2fa36b" : "#ff7b7b";
+      return `<span style="color:${c};font-weight:600">${q >= 0 ? "+" : ""}${Number(q).toFixed(2)}</span>`;
+    };
+
+    const instrRows = states.map(s => {
+      const conf = s.confidence || 0;
+      const wr   = ((s.win_rate || 0) * 100).toFixed(1);
+      const mode = s.ml_strategy_mode || "—";
+      const sl   = s.ml_stop_loss_pct   ? (s.ml_stop_loss_pct   * 100).toFixed(2) + "%" : "—";
+      const tp   = s.ml_take_profit_pct ? (s.ml_take_profit_pct * 100).toFixed(2) + "%" : "—";
+      const sc   = s.ml_min_score || "—";
+      return `<tr>
+        <td><b>${esc(s.ticker)}</b></td>
+        <td class="muted" style="font-size:12px">${esc(mode)}</td>
+        <td style="font-size:12px">${sl}</td>
+        <td style="font-size:12px">${tp}</td>
+        <td class="muted" style="font-size:12px">${sc}</td>
+        <td style="font-size:12px">${wr}% (${s.wins||0}/${s.trades_count||0})</td>
+        <td>${fmtQ(s.quality_score || 0)}</td>
+        <td>
+          <div style="width:80px;height:6px;background:rgba(255,255,255,.1);border-radius:3px">
+            <div style="width:${Math.round(conf*100)}%;height:100%;background:${confColor(conf)};border-radius:3px"></div>
+          </div>
+          <span class="muted" style="font-size:10px">${Math.round(conf*100)}%</span>
+        </td>
+      </tr>`;
+    }).join("") || `<tr><td colspan="8" class="muted" style="text-align:center;padding:20px">Данных пока нет — модель начнёт учиться после первых сделок</td></tr>`;
+
+    const logRows = logData.map(l => `<tr>
+      <td class="muted" style="font-size:11px">${esc((l.timestamp||"").slice(0,16))}</td>
+      <td><b>${esc(l.ticker)}</b></td>
+      <td class="muted" style="font-size:12px">${esc(l.param_changed)}</td>
+      <td style="font-size:12px">${esc(l.value_before)} → <b>${esc(l.value_after)}</b></td>
+      <td class="muted" style="font-size:11px;max-width:300px">${esc(l.reason)}</td>
+      <td style="font-size:12px">${fmtQ(l.quality_before || 0)} → ${fmtQ(l.quality_after || 0)}</td>
+    </tr>`).join("") || `<tr><td colspan="6" class="muted" style="text-align:center;padding:16px">История изменений пуста</td></tr>`;
+
+    host.innerHTML = `
+      <!-- Сводка -->
+      <div class="summary-grid" style="margin-bottom:18px">
+        <div class="card"><div class="label">Обработано сделок</div><div class="value">${totalTrades}</div></div>
+        <div class="card"><div class="label">Средняя уверенность</div><div class="value" style="color:${confColor(avgConf)}">${Math.round(avgConf*100)}%</div></div>
+        <div class="card"><div class="label">Инструментов изучено</div><div class="value">${states.length}</div></div>
+        <div class="card"><div class="label">Последний ребаланс</div><div class="value" style="font-size:13px">${esc(lastReb.slice(0,16))}</div></div>
+      </div>
+
+      <!-- Кнопки управления -->
+      <div class="block" style="padding:10px 16px;margin-bottom:12px">
+        <div class="row" style="gap:8px;flex-wrap:wrap">
+          <b style="line-height:32px">Управление:</b>
+          <button class="btn btn-primary" onclick="mlRebalance()">⚡ Запустить ребаланс</button>
+          <span class="note" style="line-height:32px">Ежедневный ребаланс запускается автоматически в 00:00 МСК</span>
+        </div>
+      </div>
+
+      <!-- Таблица инструментов -->
+      <section class="block" style="margin-bottom:14px">
+        <div class="row between" style="margin-bottom:10px">
+          <h2>Выученные параметры</h2>
+          <span class="muted" style="font-size:12px">Уверенность: <span style="color:#ff7b7b">0–30%</span> мало данных · <span style="color:#f0c04a">30–65%</span> обучается · <span style="color:#2fa36b">65%+</span> уверена</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr>
+              <th>Тикер</th><th>Режим</th><th>SL</th><th>TP</th><th>Score</th>
+              <th>Win% (W/T)</th><th>Quality</th><th>Уверенность</th>
+            </tr></thead>
+            <tbody>${instrRows}</tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Лог оптимизаций -->
+      <section class="block">
+        <h2 style="margin-bottom:10px">История оптимизаций</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr>
+              <th>Время</th><th>Тикер</th><th>Параметр</th><th>Изменение</th><th>Причина</th><th>Quality</th>
+            </tr></thead>
+            <tbody>${logRows}</tbody>
+          </table>
+        </div>
+      </section>
+    `;
+  } catch(e) {
+    host.innerHTML = `<div class="banner-warning">Ошибка загрузки: ${esc(e.message)}</div>`;
+  }
+}
+
+async function mlRebalance() {
+  try {
+    showToast("Запускаю ребаланс…", "info", 2000);
+    await apiPost("/api/ml/rebalance");
+    showToast("Ребаланс запущен в фоне. Обновите страницу через 30 секунд.", "success", 5000);
+  } catch(e) {
+    showToast("Ошибка: " + e.message, "error");
+  }
+}
+
 async function renderAnalystTab() {
   const host = document.getElementById("view-analyst");
   if (!host) return;
@@ -4419,6 +4537,8 @@ async function applyRoute() {
       await renderBacktestTab();
     } else if (tab === "аналитик") {
       await renderAnalystTab();
+    } else if (tab === "обучение") {
+      await renderLearningTab();
     }
   } catch (e) {
     console.error("[tabs] route error", e);

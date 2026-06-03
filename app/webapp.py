@@ -486,6 +486,7 @@ def dashboard_page():
       <a href="#/история" class="tab-link" data-tab-link="история">История</a>
       <a href="#/бэктест" class="tab-link" data-tab-link="бэктест">Бэктест</a>
       <a href="#/аналитик" class="tab-link" data-tab-link="аналитик">Аналитик</a>
+      <a href="#/обучение" class="tab-link" data-tab-link="обучение">🧠 Обучение</a>
     </nav>
 
     <div id="mainSummaryRow" style="display:none;margin-bottom:18px">
@@ -2932,3 +2933,54 @@ async def api_credentials_save(request: Request):
                 updates["TINVEST_ACCOUNT_ID"] = account_id
     _write_env(updates)
     return JSONResponse({"ok": True, "updated": list(updates.keys())})
+
+
+# ── ML Learning API ────────────────────────────────────────────────────────────
+
+@app.get("/api/ml/summary")
+def api_ml_summary():
+    """Сводка по состоянию обучающейся модели: инструменты, лог оптимизаций."""
+    try:
+        from app.ml.orchestrator import get_learning_summary
+        data = get_learning_summary()
+        return JSONResponse(data)
+    except Exception as e:
+        return JSONResponse({"error": str(e), "states": [], "log": []})
+
+
+@app.get("/api/ml/instrument/{figi}")
+def api_ml_instrument(figi: str):
+    """Детальная статистика ML по конкретному инструменту."""
+    try:
+        from app.ml.analyzer import get_instrument_state, get_all_states
+        from app.ml.strategy_selector import get_mode_stats
+        from app.ml.experience import get_recent_contexts
+        contexts = get_recent_contexts(figi, days=90)
+        mode_stats = get_mode_stats(figi)
+        return JSONResponse({
+            "figi": figi,
+            "contexts_count": len(contexts),
+            "mode_stats": mode_stats,
+            "recent_trades": [
+                {"time": c.get("entry_time", ""), "pnl": c.get("pnl", 0),
+                 "quality": round(c.get("quality_score", 0), 4),
+                 "mode": c.get("strategy_mode", ""),
+                 "score": c.get("signal_score", 0),
+                 "holding_h": round(c.get("holding_hours", 0), 2)}
+                for c in contexts[:20]
+            ],
+        })
+    except Exception as e:
+        return JSONResponse({"error": str(e)})
+
+
+@app.post("/api/ml/rebalance")
+async def api_ml_rebalance():
+    """Запускает принудительный ребаланс всех инструментов."""
+    import threading
+    try:
+        from app.ml.orchestrator import run_daily_rebalance
+        threading.Thread(target=run_daily_rebalance, daemon=True).start()
+        return JSONResponse({"ok": True, "message": "Ребаланс запущен в фоне"})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)})

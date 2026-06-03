@@ -342,6 +342,84 @@ def init_db():
         )
         """)
 
+        # ── ML обучающаяся модель ──────────────────────────────────────────────
+
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS ml_trade_context (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            trade_id INTEGER DEFAULT 0,
+            figi TEXT NOT NULL,
+            ticker TEXT NOT NULL,
+            strategy_id INTEGER DEFAULT 0,
+            strategy_mode TEXT DEFAULT '',
+            entry_time TEXT NOT NULL,
+            signal_score INTEGER DEFAULT 0,
+            rsi REAL,
+            macd REAL,
+            macd_signal REAL,
+            bb_upper REAL,
+            bb_lower REAL,
+            z_score REAL,
+            volume_ratio REAL,
+            momentum_5 REAL,
+            hour_of_day INTEGER DEFAULT 0,
+            day_of_week INTEGER DEFAULT 0,
+            stop_loss_pct REAL DEFAULT 0,
+            take_profit_pct REAL DEFAULT 0,
+            -- заполняется при закрытии:
+            exit_time TEXT DEFAULT '',
+            pnl REAL DEFAULT 0,
+            holding_hours REAL DEFAULT 0,
+            quality_score REAL DEFAULT 0
+        )
+        """)
+
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS ml_instrument_state (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            figi TEXT NOT NULL,
+            ticker TEXT NOT NULL,
+            strategy_id INTEGER NOT NULL,
+            -- выученные параметры:
+            ml_strategy_mode TEXT DEFAULT '',
+            ml_stop_loss_pct REAL DEFAULT 0,
+            ml_take_profit_pct REAL DEFAULT 0,
+            ml_min_score INTEGER DEFAULT 0,
+            -- статистика:
+            trades_count INTEGER DEFAULT 0,
+            wins INTEGER DEFAULT 0,
+            losses INTEGER DEFAULT 0,
+            avg_pnl REAL DEFAULT 0,
+            win_rate REAL DEFAULT 0,
+            quality_score REAL DEFAULT 0,
+            ewa_quality REAL DEFAULT 0,
+            -- мета:
+            last_updated TEXT DEFAULT '',
+            confidence REAL DEFAULT 0,
+            backtest_validated INTEGER DEFAULT 0,
+            UNIQUE(figi, strategy_id)
+        )
+        """)
+
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS ml_optimization_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            figi TEXT NOT NULL,
+            ticker TEXT NOT NULL,
+            strategy_id INTEGER DEFAULT 0,
+            param_changed TEXT NOT NULL,
+            value_before TEXT DEFAULT '',
+            value_after TEXT DEFAULT '',
+            reason TEXT DEFAULT '',
+            quality_before REAL DEFAULT 0,
+            quality_after REAL DEFAULT 0,
+            backtest_score_before REAL DEFAULT 0,
+            backtest_score_after REAL DEFAULT 0,
+            applied INTEGER DEFAULT 0
+        )
+        """)
+
         # Миграции для существующих таблиц
         for col, defval in [
             ("session_id", "0"),
