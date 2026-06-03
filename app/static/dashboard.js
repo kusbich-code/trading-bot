@@ -3711,12 +3711,49 @@ async function renderLearningTab() {
     </tr>`).join("") || `<tr><td colspan="6" class="muted" style="text-align:center;padding:16px">История изменений пуста</td></tr>`;
 
     // Phase 2 данные
-    const models   = data.trained_models || [];
+    const models    = data.trained_models || [];
     const decisions = data.decisions || [];
-    const fStat    = data.features_stats || {};
+    const fStat     = data.features_stats || {};
+
+    const univModel  = models.find(m => m.figi === "UNIVERSAL" || m.ticker === "ALL");
+    const instrModels = models.filter(m => m.figi !== "UNIVERSAL" && m.ticker !== "ALL");
+    const univActive = univModel?.status === "active";
     const activeModels = models.filter(m => m.status === "active").length;
 
-    const modelRows = models.slice(0,10).map(m => {
+    const fmtModel = (m) => {
+      const ready = m.status === "active";
+      return `
+        <div style="display:flex;gap:24px;flex-wrap:wrap;align-items:center;padding:10px 0">
+          <div>
+            <div class="label" style="font-size:11px">Статус</div>
+            <div>${ready
+              ? '<span style="color:#2fa36b;font-weight:700">✅ Активна — влияет на сделки</span>'
+              : '<span style="color:#f0c04a">⏳ Учится — мягкий режим</span>'}</div>
+          </div>
+          <div>
+            <div class="label" style="font-size:11px">Обучено на</div>
+            <div style="font-size:14px;font-weight:600">${m.n_training_samples || 0} сделок</div>
+          </div>
+          <div>
+            <div class="label" style="font-size:11px">Precision</div>
+            <div style="font-size:14px;font-weight:600">${m.precision_ ? (m.precision_*100).toFixed(1)+"%" : "—"}</div>
+          </div>
+          <div>
+            <div class="label" style="font-size:11px">Accuracy</div>
+            <div style="font-size:14px;font-weight:600">${m.accuracy ? (m.accuracy*100).toFixed(1)+"%" : "—"}</div>
+          </div>
+          <div>
+            <div class="label" style="font-size:11px">Обновлена</div>
+            <div class="muted" style="font-size:12px">${esc((m.trained_at||"").slice(0,16))}</div>
+          </div>
+        </div>`;
+    };
+
+    const univHtml = univModel
+      ? fmtModel(univModel)
+      : `<div class="muted" style="padding:16px;text-align:center">Нет данных — нужно 30+ сделок суммарно по всем инструментам</div>`;
+
+    const instrRows = instrModels.slice(0,10).map(m => {
       const ready = m.status === "active";
       return `<tr>
         <td><b>${esc(m.ticker)}</b></td>
@@ -3728,7 +3765,7 @@ async function renderLearningTab() {
         <td style="font-size:12px">${m.accuracy   ? (m.accuracy   *100).toFixed(1)+"%" : "—"}</td>
         <td class="muted" style="font-size:11px">${esc((m.trained_at||"").slice(0,16))}</td>
       </tr>`;
-    }).join("") || `<tr><td colspan="6" class="muted" style="text-align:center;padding:16px">Нет обученных моделей (нужно 30+ сделок)</td></tr>`;
+    }).join("") || `<tr><td colspan="6" class="muted" style="text-align:center;padding:12px">Нет</td></tr>`;
 
     const decisionRows = decisions.map(d => {
       const typeColor = d.decision_type.includes("block") ? "#ff7b7b"
@@ -3755,7 +3792,7 @@ async function renderLearningTab() {
       <div class="summary-grid" style="margin-bottom:18px">
         <div class="card"><div class="label">Признаков собрано</div><div class="value">${fStat.total||0}</div></div>
         <div class="card"><div class="label">Размечено сделок</div><div class="value">${fStat.labeled||0}</div></div>
-        <div class="card"><div class="label">Активных моделей</div><div class="value" style="color:${activeModels>0?'#2fa36b':'#f0c04a'}">${activeModels}/${models.length}</div></div>
+        <div class="card"><div class="label">Универсальная модель</div><div class="value" style="color:${univActive?'#2fa36b':'#f0c04a'};font-size:13px">${univActive?"✅ Активна":"⏳ Учится"}</div></div>
         <div class="card"><div class="label">Решений принято</div><div class="value">${decisions.length}</div></div>
       </div>
 
@@ -3763,26 +3800,34 @@ async function renderLearningTab() {
       <div class="block" style="padding:10px 16px;margin-bottom:12px">
         <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center">
           <div style="font-size:13px">
-            ${activeModels > 0
-              ? `<span style="color:#2fa36b;font-weight:700">🟢 ${activeModels} модел${activeModels===1?'ь':'и'} активн${activeModels===1?'а':'ы'} — влияю на сделки</span>`
-              : `<span style="color:#f0c04a">⏳ Накапливаю данные — нужно 30+ сделок на инструмент</span>`}
+            ${univActive
+              ? `<span style="color:#2fa36b;font-weight:700">🟢 Модель активна — влияет на сделки</span>`
+              : `<span style="color:#f0c04a">⏳ Накапливаю данные — нужно 30+ сделок суммарно по всем инструментам</span>`}
           </div>
           <button class="btn btn-primary" onclick="mlRebalance()">⚡ Запустить ребаланс</button>
         </div>
       </div>
 
-      <!-- GradientBoosting модели -->
+      <!-- Универсальная ML-модель -->
       <section class="block" style="margin-bottom:14px">
-        <h2 style="margin-bottom:10px">🤖 GradientBoosting модели (Phase 2)</h2>
+        <h2 style="margin-bottom:6px">🤖 Универсальная ML-модель (GradientBoosting)</h2>
+        <div class="muted" style="font-size:12px;margin-bottom:10px">Одна общая модель, обученная на всех инструментах. При достаточном числе сделок по конкретному тикеру — дополняется специализированной.</div>
+        ${univHtml}
+      </section>
+
+      ${instrModels.length > 0 ? `
+      <!-- Специализированные модели по инструментам -->
+      <section class="block" style="margin-bottom:14px">
+        <h2 style="margin-bottom:10px">📌 Специализированные модели по инструментам</h2>
         <div class="table-wrap">
           <table>
             <thead><tr>
-              <th>Тикер</th><th>Статус</th><th>Обучение</th><th>Precision</th><th>Accuracy</th><th>Обновлена</th>
+              <th>Тикер</th><th>Статус</th><th>Обучено</th><th>Precision</th><th>Accuracy</th><th>Обновлена</th>
             </tr></thead>
-            <tbody>${modelRows}</tbody>
+            <tbody>${instrRows}</tbody>
           </table>
         </div>
-      </section>
+      </section>` : ""}
 
       <!-- Лог решений -->
       <section class="block" style="margin-bottom:14px">
