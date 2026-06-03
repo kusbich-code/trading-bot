@@ -208,7 +208,7 @@ def should_exit_early(figi: str, ticker: str, strategy_id: int, features: Dict,
     if p is None:
         return False, None
 
-    active = is_active(figi, strategy_id)
+    active = is_active(figi, strategy_id) or _get_universal_model()[0] is not None
 
     if p < EXIT_THRESHOLD:
         pnl_pct = (current_price - entry_price) / entry_price * 100

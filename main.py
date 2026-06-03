@@ -71,6 +71,8 @@ from app.db import (
     get_instrument_sl_tp,
     get_recent_trade,
     get_ticker_daily_pnl,
+    save_position_feature_id,
+    get_position_feature_id,
 )
 from app.instruments import get_instrument_meta, round_to_price_step
 from app.telegram_notify import TelegramNotifier
@@ -1905,7 +1907,7 @@ def process_instrument(client, item,
                 from app.ml.feature_builder import label_features as _lf
                 from app.ml.model_trainer import should_retrain as _sr, train_model as _tm
                 from app.ml.model_predictor import invalidate_cache as _ic
-                _feat_id = pos.get("ml_feature_id", 0)
+                _feat_id = pos.get("ml_feature_id", 0) or get_position_feature_id(figi)
                 if _feat_id:
                     _quality = float(pnl) / max(0.001, abs(float(entry_price) * exec_qty_shares))
                     _lf(_feat_id, float(pnl), _quality)
@@ -2162,6 +2164,8 @@ def process_instrument(client, item,
             _feat2 = _bf2(figi, ticker, candles_dict, score, "BUY", _ml_ind2, _ob2)
             _feat_id = _sf2(figi, ticker, _strategy_id or 0, _feat2, 0)
             positions[ticker]["ml_feature_id"] = _feat_id
+            if _feat_id:
+                save_position_feature_id(figi, _feat_id)
         except Exception:
             pass
 
@@ -2249,6 +2253,8 @@ def process_instrument(client, item,
                             _tf_s.get("1hour", []), _tf_s.get("4hour", []))
             _feat_id_s = _sf_s(figi, ticker, _strategy_id or 0, _feat_s, 0)
             positions[ticker]["ml_feature_id"] = _feat_id_s
+            if _feat_id_s:
+                save_position_feature_id(figi, _feat_id_s)
         except Exception:
             pass
 

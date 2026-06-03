@@ -1,7 +1,6 @@
 """
-Обучение ML-модели GradientBoostingClassifier.
+Обучение ML-моделей GradientBoostingClassifier + Platt calibration.
 Использует накопленные данные из ml_features.
-TimeSeriesSplit — корректное разбиение для временных рядов.
 """
 import logging
 import pickle
@@ -46,7 +45,6 @@ def train_universal_model() -> Optional[Dict]:
     try:
         from sklearn.ensemble import GradientBoostingClassifier
         from sklearn.calibration import CalibratedClassifierCV
-        from sklearn.model_selection import TimeSeriesSplit
         from sklearn.metrics import precision_score, recall_score, accuracy_score
     except ImportError:
         return None
@@ -157,14 +155,13 @@ def get_training_data(figi: str, strategy_id: int) -> Tuple[list, list]:
 
 def train_model(figi: str, ticker: str, strategy_id: int) -> Optional[Dict]:
     """
-    Обучает GradientBoostingClassifier на накопленных данных.
+    Обучает GradientBoostingClassifier + Platt calibration на накопленных данных.
     Возвращает метрики или None если данных недостаточно.
     """
     try:
         from sklearn.ensemble import GradientBoostingClassifier
-        from sklearn.model_selection import TimeSeriesSplit
+        from sklearn.calibration import CalibratedClassifierCV
         from sklearn.metrics import precision_score, recall_score, accuracy_score
-        from sklearn.preprocessing import StandardScaler
     except ImportError:
         log.error("sklearn не установлен: pip install scikit-learn")
         return None
@@ -175,7 +172,6 @@ def train_model(figi: str, ticker: str, strategy_id: int) -> Optional[Dict]:
         log.info("%s: недостаточно данных (%d < %d)", ticker, len(X), MIN_SAMPLES)
         return None
 
-    # TimeSeriesSplit — не перемешиваем, т.к. данные временные
     split_idx = int(len(X) * (1 - TEST_RATIO))
     X_train, X_test = X[:split_idx], X[split_idx:]
     y_train, y_test = y[:split_idx], y[split_idx:]
@@ -184,8 +180,7 @@ def train_model(figi: str, ticker: str, strategy_id: int) -> Optional[Dict]:
         log.warning("%s: только один класс в обучающей выборке", ticker)
         return None
 
-    # Обучение
-    model = GradientBoostingClassifier(
+    base_model = GradientBoostingClassifier(
         n_estimators=100,
         learning_rate=0.1,
         max_depth=3,
@@ -193,32 +188,34 @@ def train_model(figi: str, ticker: str, strategy_id: int) -> Optional[Dict]:
         subsample=0.8,
         random_state=42,
     )
+    # Platt calibration — единая шкала вероятностей с универсальной моделью
+    model = CalibratedClassifierCV(base_model, method='sigmoid', cv=3)
     model.fit(X_train, y_train)
 
     # Метрики
     metrics = {"n_train": len(X_train), "n_test": len(X_test)}
     if X_test:
         y_pred = model.predict(X_test)
-        y_prob = model.predict_proba(X_test)[:, 1]
         metrics["accuracy"]  = round(accuracy_score(y_test, y_pred), 3)
         metrics["precision"] = round(precision_score(y_test, y_pred, zero_division=0), 3)
         metrics["recall"]    = round(recall_score(y_test, y_pred, zero_division=0), 3)
 
-        # Calibration: при каком пороге precision > 0.6?
-        thresholds = [0.5, 0.55, 0.60, 0.65, 0.70]
-        for thr in thresholds:
-            y_pred_thr = (y_prob >= thr).astype(int)
-            if sum(y_pred_thr) > 0:
-                prec = precision_score(y_test, y_pred_thr, zero_division=0)
-                metrics[f"prec_at_{int(thr*100)}"] = round(prec, 3)
-
-    # Feature importance
+    # Feature importance из базовой модели внутри calibrated wrapper
     from app.ml.feature_builder import FEATURE_NAMES
-    importance = dict(zip(FEATURE_NAMES, model.feature_importances_))
+    try:
+        inner = model.calibrated_classifiers_[0].estimator
+        importance = dict(zip(FEATURE_NAMES, inner.feature_importances_))
+    except Exception:
+        importance = {}
     top5 = sorted(importance.items(), key=lambda x: x[1], reverse=True)[:5]
     metrics["top_features"] = [(k, round(v, 3)) for k, v in top5]
 
-    # Сохранение в БД
+    prec = metrics.get("precision", 0)
+    n = len(X_train)
+    is_ready = prec >= 0.58 and n >= MIN_SAMPLES
+    instr_status = "active" if is_ready else "learning"
+
+    # Сохранение в БД с корректным статусом сразу (без race condition)
     model_bytes = pickle.dumps(model)
     now = datetime.now(tz=_MSK).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
     try:
@@ -234,26 +231,13 @@ def train_model(figi: str, ticker: str, strategy_id: int) -> Optional[Dict]:
                 model_bytes,
                 json.dumps(importance),
                 metrics.get("accuracy", 0),
-                metrics.get("precision", 0),
+                prec,
                 metrics.get("recall", 0),
-                len(X_train), "active"
+                n, instr_status
             ))
     except Exception as e:
         log.warning("save model %s: %s", ticker, e)
         return None
-
-    prec = metrics.get("precision", 0)
-    n = len(X_train)
-    is_ready = prec >= 0.58 and n >= MIN_SAMPLES
-
-    # Обновляем статус активности модели
-    try:
-        from app.db import db_cursor
-        with db_cursor() as cur:
-            cur.execute("UPDATE ml_models SET status=? WHERE figi=? AND strategy_id=? AND id=(SELECT MAX(id) FROM ml_models WHERE figi=? AND strategy_id=?)",
-                        ("active" if is_ready else "learning", figi, strategy_id, figi, strategy_id))
-    except Exception:
-        pass
 
     if is_ready:
         _notify_model_ready(ticker, n, prec, metrics)

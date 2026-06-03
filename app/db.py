@@ -134,11 +134,16 @@ def init_db():
             unrealized_pnl REAL DEFAULT 0,
             opened_at TEXT NOT NULL,
             status TEXT DEFAULT 'OPEN',
-            source TEXT DEFAULT 'BOT'
+            source TEXT DEFAULT 'BOT',
+            ml_feature_id INTEGER DEFAULT 0
         )
         """)
         try:
             cur.execute("ALTER TABLE positions ADD COLUMN source TEXT DEFAULT 'BOT'")
+        except Exception:
+            pass
+        try:
+            cur.execute("ALTER TABLE positions ADD COLUMN ml_feature_id INTEGER DEFAULT 0")
         except Exception:
             pass
 
@@ -1183,6 +1188,32 @@ def upsert_position(position: dict):
                 position.get("unrealized_pnl", 0), position["opened_at"],
                 position.get("status", "OPEN"), source,
             ))
+
+
+def save_position_feature_id(figi: str, feature_id: int, source: str = "BOT") -> None:
+    """Сохраняет ml_feature_id в открытой позиции — чтобы разметка выжила после рестарта бота."""
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                "UPDATE positions SET ml_feature_id=? WHERE figi=? AND status='OPEN' AND source=?",
+                (feature_id, figi, source)
+            )
+    except Exception:
+        pass
+
+
+def get_position_feature_id(figi: str, source: str = "BOT") -> int:
+    """Читает ml_feature_id открытой позиции из БД (fallback при рестарте бота)."""
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                "SELECT ml_feature_id FROM positions WHERE figi=? AND status='OPEN' AND source=? LIMIT 1",
+                (figi, source)
+            )
+            row = cur.fetchone()
+            return int(row[0] or 0) if row else 0
+    except Exception:
+        return 0
 
 
 def close_position(figi, source: str = "BOT"):
