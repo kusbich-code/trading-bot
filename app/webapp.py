@@ -2939,10 +2939,36 @@ async def api_credentials_save(request: Request):
 
 @app.get("/api/ml/summary")
 def api_ml_summary():
-    """Сводка по состоянию обучающейся модели: инструменты, лог оптимизаций."""
+    """Сводка по состоянию обучающейся модели: инструменты, лог оптимизаций, модели."""
     try:
         from app.ml.orchestrator import get_learning_summary
         data = get_learning_summary()
+        # Добавляем данные Phase 2: модели и решения
+        from app.db import db_cursor as _dbc_ml
+        with _dbc_ml() as _c:
+            _c.execute("""
+                SELECT figi, ticker, trained_at, accuracy, precision_, recall,
+                       n_training_samples, status
+                FROM ml_models ORDER BY id DESC LIMIT 50
+            """)
+            _cols = [d[0] for d in _c.description]
+            data["trained_models"] = [dict(zip(_cols, r)) for r in _c.fetchall()]
+            _c.execute("""
+                SELECT timestamp, ticker, decision_type, model_confidence,
+                       threshold, executed, reason
+                FROM ml_decisions ORDER BY id DESC LIMIT 30
+            """)
+            _cols2 = [d[0] for d in _c.description]
+            data["decisions"] = [dict(zip(_cols2, r)) for r in _c.fetchall()]
+            # Статистика признаков (последние 50 размеченных)
+            _c.execute("""
+                SELECT COUNT(*) as total,
+                       SUM(CASE WHEN label=1 THEN 1 ELSE 0 END) as wins,
+                       COUNT(CASE WHEN label IS NOT NULL THEN 1 END) as labeled
+                FROM ml_features
+            """)
+            row = _c.fetchone()
+            data["features_stats"] = {"total": row[0], "wins": row[1], "labeled": row[2]}
         return JSONResponse(data)
     except Exception as e:
         return JSONResponse({"error": str(e), "states": [], "log": []})

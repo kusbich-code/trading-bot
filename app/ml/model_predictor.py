@@ -16,6 +16,33 @@ RANK_MIN_THRESHOLD  = 0.45  # ниже → временно отключаем �
 _model_cache: Dict[str, tuple] = {}
 
 
+def is_active(figi: str, strategy_id: int) -> bool:
+    """True если модель обучена и готова к автономным решениям."""
+    from app.ml.model_trainer import is_model_active
+    return is_model_active(figi, strategy_id)
+
+
+def log_decision(figi: str, ticker: str, decision_type: str, confidence: float,
+                 threshold: float, executed: bool, reason: str,
+                 features: dict | None = None) -> None:
+    """Сохраняет каждое решение модели в ml_decisions."""
+    from datetime import datetime, timezone, timedelta
+    import json
+    _MSK = timezone(timedelta(hours=3))
+    now = datetime.now(tz=_MSK).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        from app.db import db_cursor
+        snap = json.dumps({k: round(v, 4) for k, v in (features or {}).items()}) if features else "{}"
+        with db_cursor() as cur:
+            cur.execute("""
+                INSERT INTO ml_decisions(timestamp, figi, ticker, decision_type,
+                    features_snapshot, model_confidence, threshold, executed, reason)
+                VALUES(?,?,?,?,?,?,?,?,?)
+            """, (now, figi, ticker, decision_type, snap, confidence, threshold, int(executed), reason))
+    except Exception as e:
+        log.debug("log_decision: %s", e)
+
+
 def _get_model(figi: str, strategy_id: int):
     """Загружает модель из кеша или БД."""
     key = f"{figi}_{strategy_id}"
@@ -52,45 +79,67 @@ def predict_probability(figi: str, strategy_id: int, features: Dict) -> Optional
 def should_enter(figi: str, ticker: str, strategy_id: int, features: Dict,
                  signal_action: str) -> Tuple[bool, Optional[float], str]:
     """
-    Фильтр входа в позицию.
-    Returns: (allow_entry, confidence, reason)
+    Фильтр входа.
+    Soft mode (не обучена): логирует но не блокирует.
+    Hard mode (обучена): блокирует при P < threshold.
     """
     p = predict_probability(figi, strategy_id, features)
     if p is None:
-        # Модели нет — используем стандартную логику
-        return True, None, "нет ML-модели (накапливаем данные)"
+        return True, None, "ML: накапливаем данные"
 
-    if p >= ENTRY_THRESHOLD:
-        reason = _format_entry_reason(features, p, "✅")
-        _send_ml_decision_tg(ticker, signal_action, "вход разрешён", p, reason)
-        return True, p, f"ML confidence={p:.2f}"
-    else:
+    active = is_active(figi, strategy_id)
+    allow = (p >= ENTRY_THRESHOLD)
+
+    if active and not allow:
         reason = _format_entry_reason(features, p, "🚫")
         _send_ml_decision_tg(ticker, signal_action, "вход заблокирован", p, reason)
+        log_decision(figi, ticker, "entry_blocked", p, ENTRY_THRESHOLD, False,
+                     f"P={p:.3f} < {ENTRY_THRESHOLD}", features)
         return False, p, f"ML блок: P={p:.2f} < {ENTRY_THRESHOLD}"
+    elif active and allow:
+        log_decision(figi, ticker, "entry_allowed", p, ENTRY_THRESHOLD, True,
+                     f"P={p:.3f} >= {ENTRY_THRESHOLD}", features)
+        return True, p, f"ML разрешил: P={p:.2f}"
+    else:
+        # Soft mode — не блокируем, только логируем
+        decision = "entry_soft_block" if not allow else "entry_soft_allow"
+        log_decision(figi, ticker, decision, p, ENTRY_THRESHOLD, True,
+                     f"soft mode P={p:.3f}", features)
+        return True, p, f"ML soft: P={p:.2f} (учимся)"
 
 
 def should_exit_early(figi: str, ticker: str, strategy_id: int, features: Dict,
                       direction: str, entry_price: float, current_price: float,
                       position_minutes: float) -> Tuple[bool, Optional[float]]:
     """
-    Досрочное закрытие позиции при развороте.
-    Returns: (should_close, confidence)
+    Досрочное закрытие при развороте.
+    Soft mode: логирует но не закрывает.
+    Hard mode: закрывает при P < EXIT_THRESHOLD.
     """
-    if position_minutes < 15:  # не трогаем первые 15 минут
+    if position_minutes < 15:
         return False, None
 
     p = predict_probability(figi, strategy_id, features)
     if p is None:
         return False, None
 
+    active = is_active(figi, strategy_id)
+
     if p < EXIT_THRESHOLD:
         pnl_pct = (current_price - entry_price) / entry_price * 100
         if direction == "SELL":
             pnl_pct = -pnl_pct
         reason = _format_exit_reason(features, p, pnl_pct)
-        _send_ml_decision_tg(ticker, direction, "досрочное закрытие", p, reason)
-        return True, p
+        if active:
+            _send_ml_decision_tg(ticker, direction, "досрочное закрытие", p, reason)
+            log_decision(figi, ticker, "early_exit", p, EXIT_THRESHOLD, True,
+                         f"P={p:.3f} < {EXIT_THRESHOLD}", features)
+            return True, p
+        else:
+            # Soft mode — только логируем
+            log_decision(figi, ticker, "early_exit_soft", p, EXIT_THRESHOLD, False,
+                         f"soft mode P={p:.3f}", features)
+            return False, p
 
     return False, p
 

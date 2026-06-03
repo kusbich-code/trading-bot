@@ -125,9 +125,56 @@ def train_model(figi: str, ticker: str, strategy_id: int) -> Optional[Dict]:
         log.warning("save model %s: %s", ticker, e)
         return None
 
-    log.info("[ML trainer] %s: обучено на %d сделках, accuracy=%.3f, precision=%.3f",
-             ticker, len(X_train), metrics.get("accuracy", 0), metrics.get("precision", 0))
+    prec = metrics.get("precision", 0)
+    n = len(X_train)
+    is_ready = prec >= 0.58 and n >= MIN_SAMPLES
+
+    # Обновляем статус активности модели
+    try:
+        from app.db import db_cursor
+        with db_cursor() as cur:
+            cur.execute("UPDATE ml_models SET status=? WHERE figi=? AND strategy_id=? AND id=(SELECT MAX(id) FROM ml_models WHERE figi=? AND strategy_id=?)",
+                        ("active" if is_ready else "learning", figi, strategy_id, figi, strategy_id))
+    except Exception:
+        pass
+
+    if is_ready:
+        _notify_model_ready(ticker, n, prec, metrics)
+
+    log.info("[ML trainer] %s: обучено n=%d accuracy=%.3f precision=%.3f ready=%s",
+             ticker, n, metrics.get("accuracy", 0), prec, is_ready)
     return metrics
+
+
+def _notify_model_ready(ticker: str, n_samples: int, precision: float, metrics: dict) -> None:
+    """Отправляет Telegram когда модель достигла порога точности."""
+    try:
+        from main import notify
+        top = metrics.get("top_features", [])
+        top_str = "\n".join(f"  {i+1}. {name}: {val:.3f}" for i, (name, val) in enumerate(top[:3]))
+        msg = (
+            f"🧠 *ML-модель готова: {ticker}*\n"
+            f"Обучена на {n_samples} сделках\n"
+            f"Precision: {precision:.0%} | Accuracy: {metrics.get('accuracy', 0):.0%}\n"
+            f"\nТоп-признаки:\n{top_str}\n"
+            f"\n✅ *Начинаю автономно влиять на сделки {ticker}*"
+        )
+        notify(msg)
+    except Exception as e:
+        log.debug("notify model ready: %s", e)
+
+
+def is_model_active(figi: str, strategy_id: int) -> bool:
+    """True если модель обучена и активна."""
+    try:
+        from app.db import db_cursor
+        with db_cursor() as cur:
+            cur.execute("SELECT status FROM ml_models WHERE figi=? AND strategy_id=? ORDER BY id DESC LIMIT 1",
+                        (figi, strategy_id))
+            row = cur.fetchone()
+            return row and row[0] == "active"
+    except Exception:
+        return False
 
 
 def load_model(figi: str, strategy_id: int):

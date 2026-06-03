@@ -43,8 +43,44 @@ def run_daily_rebalance() -> None:
             except Exception as e:
                 log.warning("[ML] deep_update %s: %s", ticker, e)
         log.info("[ML] Ежедневный ребаланс завершён (%d инструментов)", len(instruments))
+
+        # Фаза 5: ранжирование инструментов по ML-оценке
+        try:
+            _rank_instruments_daily(instruments)
+        except Exception as e:
+            log.warning("[ML] instrument ranking: %s", e)
     except Exception as e:
         log.error("[ML] daily_rebalance error: %s", e)
+
+
+def _rank_instruments_daily(instruments: list) -> None:
+    """Фаза 5: ранжирует инструменты по ML, временно отключает слабые."""
+    from app.ml.model_predictor import rank_instruments as _rank, RANK_MIN_THRESHOLD
+    if not instruments:
+        return
+    # Берём strategy_id первого инструмента (для упрощения — у каждого свой)
+    ranked = _rank([i for i, _, _ in instruments if isinstance(i, dict)], 0)
+    disabled_count = 0
+    from app.db import db_cursor
+    for instr, score, should_disable in ranked:
+        if should_disable and score < RANK_MIN_THRESHOLD:
+            try:
+                with db_cursor() as cur:
+                    cur.execute(
+                        "UPDATE strategy_instruments SET enabled=0 WHERE figi=? AND strategy_id=?",
+                        (instr.get("figi",""), instr.get("strategy_id", 0))
+                    )
+                disabled_count += 1
+                log.info("[ML rank] %s временно отключён (ML score=%.3f < %.2f)",
+                         instr.get("ticker",""), score, RANK_MIN_THRESHOLD)
+            except Exception:
+                pass
+    if disabled_count:
+        try:
+            from main import notify
+            notify(f"🧠 ML ранжирование: {disabled_count} инструментов временно отключены (низкий ML score)")
+        except Exception:
+            pass
 
 
 def get_ml_params(figi: str, strategy_id: int) -> Optional[Dict]:
@@ -188,7 +224,20 @@ def _deep_update(figi: str, ticker: str, strategy_id: int, current_params: Dict)
                 ml_params["min_score"] = new_score
                 changed = True
 
-    # 3. Сохраняем состояние
+    # 3. Переобучаем GradientBoosting если накопилось достаточно данных
+    try:
+        from app.ml.model_trainer import train_model as _tm, should_retrain as _sr
+        from app.ml.model_predictor import invalidate_cache as _ic
+        if _sr(figi, strategy_id):
+            metrics = _tm(figi, ticker, strategy_id)
+            if metrics:
+                _ic(figi, strategy_id)
+                log.info("[ML] %s GradientBoosting переобучена: acc=%.3f prec=%.3f",
+                         ticker, metrics.get("accuracy", 0), metrics.get("precision", 0))
+    except Exception as e:
+        log.debug("[ML] retrain %s: %s", ticker, e)
+
+    # 4. Сохраняем состояние
     upsert_instrument_state(figi, ticker, strategy_id, stats, ml_params)
     if changed:
         log.info("[ML] %s параметры обновлены (conf=%.2f, quality=%.4f)",

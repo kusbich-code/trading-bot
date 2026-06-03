@@ -1807,6 +1807,34 @@ def process_instrument(client, item,
                 close_signal = True
                 close_reason = "TAKE_PROFIT"
 
+        # ML Фаза 4: досрочное закрытие при развороте
+        if not close_signal:
+            try:
+                from app.ml.feature_builder import build_features as _bf_ex
+                from app.ml.model_predictor import should_exit_early as _ml_early
+                from app.ml.multi_timeframe import get_all_timeframes as _gtf_ex
+                _opened_at_str = pos.get("opened_at", _now().strftime("%Y-%m-%d %H:%M:%S"))
+                _pos_min = (_now() - datetime.strptime(_opened_at_str, "%Y-%m-%d %H:%M:%S")).total_seconds() / 60
+                _ind_ex = {"rsi": state.instrument_meta.get(ticker, {}).get("rsi") or 50,
+                           "macd": state.instrument_meta.get(ticker, {}).get("macd") or 0,
+                           "macd_signal": state.instrument_meta.get(ticker, {}).get("macd_signal") or 0,
+                           "bb_upper": state.instrument_meta.get(ticker, {}).get("bb_upper") or 0,
+                           "bb_lower": state.instrument_meta.get(ticker, {}).get("bb_lower") or 0}
+                _ob_ex = {"bid_vol": bid_vol, "ask_vol": ask_vol}
+                _tf_ex = _gtf_ex(client, figi)
+                _feat_ex = _bf_ex(figi, ticker, candles_dict, 0, direction, _ind_ex, _ob_ex,
+                                  _tf_ex.get("1hour", []), _tf_ex.get("4hour", []),
+                                  position_minutes=_pos_min)
+                _early, _p_ex = _ml_early(
+                    figi, ticker, _strategy_id or 0, _feat_ex, direction,
+                    float(entry_price), float(price), _pos_min
+                )
+                if _early:
+                    close_signal = True
+                    close_reason = "ML_EARLY_EXIT"
+            except Exception:
+                pass
+
         if close_signal:
             # Защита от гонки с sync_portfolio_positions:
             # если позиция уже закрыта в БД — очищаем память и выходим
@@ -1954,6 +1982,48 @@ def process_instrument(client, item,
             log_event("SIGNAL_SKIP", f"{ticker} SELL пропущен: аналитики BUY", ticker=ticker)
             _save_signal(skip_reason="Аналитики T-Bank: BUY против SELL", skip_filter="signal_service")
             return
+
+    # ── ML фильтр входа (Фаза 2: soft/hard mode) ─────────────────────────────
+    _ml_features_for_entry = None
+    if sig in ("BUY", "SELL"):
+        try:
+            from app.ml.feature_builder import build_features as _bf_e, store_features as _sf_e
+            from app.ml.model_predictor import should_enter as _ml_enter
+            from app.ml.multi_timeframe import get_all_timeframes as _gtf_e
+            _ml_ind_e = {"rsi": state.instrument_meta.get(ticker, {}).get("rsi") or 50,
+                         "macd": state.instrument_meta.get(ticker, {}).get("macd") or 0,
+                         "macd_signal": state.instrument_meta.get(ticker, {}).get("macd_signal") or 0,
+                         "bb_upper": state.instrument_meta.get(ticker, {}).get("bb_upper") or 0,
+                         "bb_lower": state.instrument_meta.get(ticker, {}).get("bb_lower") or 0}
+            _ob_e = {"bid_vol": bid_vol, "ask_vol": ask_vol}
+            _tf_e = _gtf_e(client, figi)
+            _ml_features_for_entry = _bf_e(
+                figi, ticker, candles_dict, score, sig, _ml_ind_e, _ob_e,
+                _tf_e.get("1hour", []), _tf_e.get("4hour", [])
+            )
+            _allow, _ml_conf, _ml_reason = _ml_enter(
+                figi, ticker, _strategy_id or 0, _ml_features_for_entry, sig
+            )
+            if not _allow:
+                _save_signal(skip_reason=_ml_reason, skip_filter="ml_entry_block")
+                return
+        except Exception:
+            pass
+
+    # ── ML адаптивные SL/TP от волатильности (Фаза 3) ────────────────────────
+    if _ml_features_for_entry and sig in ("BUY", "SELL"):
+        try:
+            from app.ml.model_predictor import compute_adaptive_sl_tp as _ml_sltp
+            _new_sl, _new_tp = _ml_sltp(_ml_features_for_entry,
+                                         float(stop_loss_pct), float(take_profit_pct))
+            if abs(_new_sl - float(stop_loss_pct)) > 0.0001 or abs(_new_tp - float(take_profit_pct)) > 0.0001:
+                log.info("ML adaptive SL/TP %s: SL %.3f%%→%.3f%% TP %.3f%%→%.3f%%",
+                         ticker, float(stop_loss_pct)*100, _new_sl*100,
+                         float(take_profit_pct)*100, _new_tp*100)
+                stop_loss_pct   = Decimal(str(_new_sl))
+                take_profit_pct = Decimal(str(_new_tp))
+        except Exception:
+            pass
 
     # ── Авто-расчёт лотов от суммы ИТОГО портфеля ────────────────────────────
     if int(item.get("auto_lots", 0) or 0) and sig in ("BUY", "SELL"):
@@ -2141,14 +2211,30 @@ def process_instrument(client, item,
             "source": "BOT",
         })
 
-        # ML: записываем контекст открытия SELL
+        # ML Phase 1: запись контекста SELL
         try:
-            from app.ml.experience import record_entry as _ml_entry
-            _ml_sid = _strategy_id or 0
-            _ml_ind = {k: state.instrument_meta.get(ticker, {}).get(k)
-                       for k in ("rsi", "macd", "macd_signal", "bb_upper", "bb_lower")}
-            _ml_entry(figi, ticker, _ml_sid, tradingmode, score, _ml_ind,
-                      float(stop_loss_pct), float(take_profit_pct))
+            from app.ml.experience import record_entry as _ml_entry_s
+            _ml_ind_s = {k: state.instrument_meta.get(ticker, {}).get(k)
+                         for k in ("rsi", "macd", "macd_signal", "bb_upper", "bb_lower")}
+            _ml_entry_s(figi, ticker, _strategy_id or 0, tradingmode, score, _ml_ind_s,
+                        float(stop_loss_pct), float(take_profit_pct))
+        except Exception:
+            pass
+        # ML Phase 2: сохранение признаков SELL + id в positions
+        try:
+            from app.ml.feature_builder import build_features as _bf_s, store_features as _sf_s
+            from app.ml.multi_timeframe import get_all_timeframes as _gtf_s
+            _ml_ind_s2 = {"rsi": state.instrument_meta.get(ticker, {}).get("rsi") or 50,
+                          "macd": state.instrument_meta.get(ticker, {}).get("macd") or 0,
+                          "macd_signal": state.instrument_meta.get(ticker, {}).get("macd_signal") or 0,
+                          "bb_upper": state.instrument_meta.get(ticker, {}).get("bb_upper") or 0,
+                          "bb_lower": state.instrument_meta.get(ticker, {}).get("bb_lower") or 0}
+            _ob_s = {"bid_vol": bid_vol, "ask_vol": ask_vol}
+            _tf_s = _gtf_s(client, figi)
+            _feat_s = _bf_s(figi, ticker, candles_dict, score, "SELL", _ml_ind_s2, _ob_s,
+                            _tf_s.get("1hour", []), _tf_s.get("4hour", []))
+            _feat_id_s = _sf_s(figi, ticker, _strategy_id or 0, _feat_s, 0)
+            positions[ticker]["ml_feature_id"] = _feat_id_s
         except Exception:
             pass
 

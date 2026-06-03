@@ -3710,30 +3710,96 @@ async function renderLearningTab() {
       <td style="font-size:12px">${fmtQ(l.quality_before || 0)} → ${fmtQ(l.quality_after || 0)}</td>
     </tr>`).join("") || `<tr><td colspan="6" class="muted" style="text-align:center;padding:16px">История изменений пуста</td></tr>`;
 
+    // Phase 2 данные
+    const models   = data.trained_models || [];
+    const decisions = data.decisions || [];
+    const fStat    = data.features_stats || {};
+    const activeModels = models.filter(m => m.status === "active").length;
+
+    const modelRows = models.slice(0,10).map(m => {
+      const ready = m.status === "active";
+      return `<tr>
+        <td><b>${esc(m.ticker)}</b></td>
+        <td>${ready
+          ? '<span style="color:#2fa36b;font-weight:700">✅ Активна</span>'
+          : '<span style="color:#f0c04a">⏳ Учится</span>'}</td>
+        <td class="muted" style="font-size:12px">${m.n_training_samples || 0} сделок</td>
+        <td style="font-size:12px">${m.precision_ ? (m.precision_*100).toFixed(1)+"%" : "—"}</td>
+        <td style="font-size:12px">${m.accuracy   ? (m.accuracy   *100).toFixed(1)+"%" : "—"}</td>
+        <td class="muted" style="font-size:11px">${esc((m.trained_at||"").slice(0,16))}</td>
+      </tr>`;
+    }).join("") || `<tr><td colspan="6" class="muted" style="text-align:center;padding:16px">Нет обученных моделей (нужно 30+ сделок)</td></tr>`;
+
+    const decisionRows = decisions.map(d => {
+      const typeColor = d.decision_type.includes("block") ? "#ff7b7b"
+                       : d.decision_type.includes("exit") ? "#f0c04a" : "#2fa36b";
+      const typeLabel = {
+        "entry_blocked":    "🚫 Вход заблокирован",
+        "entry_allowed":    "✅ Вход разрешён",
+        "entry_soft_block": "📊 Мягкий блок (учусь)",
+        "entry_soft_allow": "📊 Мягкий вход (учусь)",
+        "early_exit":       "⚡ Ранний выход",
+        "early_exit_soft":  "📊 Мягкий выход (учусь)",
+      }[d.decision_type] || d.decision_type;
+      return `<tr>
+        <td class="muted" style="font-size:11px">${esc((d.timestamp||"").slice(11,19))}</td>
+        <td><b>${esc(d.ticker)}</b></td>
+        <td style="font-size:12px;color:${typeColor}">${typeLabel}</td>
+        <td style="font-size:12px">${d.model_confidence ? (d.model_confidence*100).toFixed(0)+"%" : "—"}</td>
+        <td class="muted" style="font-size:11px;max-width:250px">${esc(d.reason||"")}</td>
+      </tr>`;
+    }).join("") || `<tr><td colspan="5" class="muted" style="text-align:center;padding:12px">Решений пока нет</td></tr>`;
+
     host.innerHTML = `
       <!-- Сводка -->
       <div class="summary-grid" style="margin-bottom:18px">
-        <div class="card"><div class="label">Обработано сделок</div><div class="value">${totalTrades}</div></div>
-        <div class="card"><div class="label">Средняя уверенность</div><div class="value" style="color:${confColor(avgConf)}">${Math.round(avgConf*100)}%</div></div>
-        <div class="card"><div class="label">Инструментов изучено</div><div class="value">${states.length}</div></div>
-        <div class="card"><div class="label">Последний ребаланс</div><div class="value" style="font-size:13px">${esc(lastReb.slice(0,16))}</div></div>
+        <div class="card"><div class="label">Признаков собрано</div><div class="value">${fStat.total||0}</div></div>
+        <div class="card"><div class="label">Размечено сделок</div><div class="value">${fStat.labeled||0}</div></div>
+        <div class="card"><div class="label">Активных моделей</div><div class="value" style="color:${activeModels>0?'#2fa36b':'#f0c04a'}">${activeModels}/${models.length}</div></div>
+        <div class="card"><div class="label">Решений принято</div><div class="value">${decisions.length}</div></div>
       </div>
 
-      <!-- Кнопки управления -->
+      <!-- Статус + управление -->
       <div class="block" style="padding:10px 16px;margin-bottom:12px">
-        <div class="row" style="gap:8px;flex-wrap:wrap">
-          <b style="line-height:32px">Управление:</b>
+        <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center">
+          <div style="font-size:13px">
+            ${activeModels > 0
+              ? `<span style="color:#2fa36b;font-weight:700">🟢 ${activeModels} модел${activeModels===1?'ь':'и'} активн${activeModels===1?'а':'ы'} — влияю на сделки</span>`
+              : `<span style="color:#f0c04a">⏳ Накапливаю данные — нужно 30+ сделок на инструмент</span>`}
+          </div>
           <button class="btn btn-primary" onclick="mlRebalance()">⚡ Запустить ребаланс</button>
-          <span class="note" style="line-height:32px">Ежедневный ребаланс запускается автоматически в 00:00 МСК</span>
         </div>
       </div>
 
-      <!-- Таблица инструментов -->
+      <!-- GradientBoosting модели -->
       <section class="block" style="margin-bottom:14px">
-        <div class="row between" style="margin-bottom:10px">
-          <h2>Выученные параметры</h2>
-          <span class="muted" style="font-size:12px">Уверенность: <span style="color:#ff7b7b">0–30%</span> мало данных · <span style="color:#f0c04a">30–65%</span> обучается · <span style="color:#2fa36b">65%+</span> уверена</span>
+        <h2 style="margin-bottom:10px">🤖 GradientBoosting модели (Phase 2)</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr>
+              <th>Тикер</th><th>Статус</th><th>Обучение</th><th>Precision</th><th>Accuracy</th><th>Обновлена</th>
+            </tr></thead>
+            <tbody>${modelRows}</tbody>
+          </table>
         </div>
+      </section>
+
+      <!-- Лог решений -->
+      <section class="block" style="margin-bottom:14px">
+        <h2 style="margin-bottom:10px">📋 Последние решения ML</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr>
+              <th>Время</th><th>Тикер</th><th>Решение</th><th>Уверенность</th><th>Причина</th>
+            </tr></thead>
+            <tbody>${decisionRows}</tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Выученные параметры (Phase 1) -->
+      <section class="block" style="margin-bottom:14px">
+        <h2 style="margin-bottom:10px">📊 Оптимизированные параметры (Phase 1)</h2>
         <div class="table-wrap">
           <table>
             <thead><tr>
@@ -3745,9 +3811,9 @@ async function renderLearningTab() {
         </div>
       </section>
 
-      <!-- Лог оптимизаций -->
+      <!-- Лог оптимизаций (Phase 1) -->
       <section class="block">
-        <h2 style="margin-bottom:10px">История оптимизаций</h2>
+        <h2 style="margin-bottom:10px">📜 История параметров</h2>
         <div class="table-wrap">
           <table>
             <thead><tr>
