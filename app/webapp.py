@@ -3016,6 +3016,73 @@ def api_ml_instrument(figi: str):
         return JSONResponse({"error": str(e)})
 
 
+@app.get("/api/instrument/stats/{figi}")
+def api_instrument_stats(figi: str):
+    """Котировки + диапазоны дня/недели/месяца/года для блока позиции."""
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+    from app.services.tbank_client import get_candles_range as _gcr
+    _msk = _tz(timedelta(hours=3))
+
+    _stats_cache = getattr(api_instrument_stats, "_cache", {})
+    _now_ts = time.time()
+    cached = _stats_cache.get(figi)
+    if cached and _now_ts - cached["ts"] < 60:
+        return JSONResponse(cached["data"])
+
+    try:
+        candles = _gcr(figi=figi, interval_name="day", days=365)
+        if not candles:
+            return JSONResponse({"error": "no data"})
+
+        def _f(v):
+            return float(v) if v is not None else None
+
+        today_str = _dt.now(_msk).strftime("%Y-%m-%d")
+        today_c  = [c for c in candles if str(c.get("time", "")).startswith(today_str)]
+        week_c   = candles[-5:]  if len(candles) >= 5  else candles
+        month_c  = candles[-22:] if len(candles) >= 22 else candles
+        year_c   = candles
+
+        prev_close = _f(candles[-2]["close"]) if len(candles) >= 2 else None
+        open_today = _f(today_c[0]["open"])   if today_c else None
+        day_high   = max((_f(c["high"])  for c in today_c if c.get("high")),  default=None)
+        day_low    = min((_f(c["low"])   for c in today_c if c.get("low")),   default=None)
+        week_high  = max((_f(c["high"])  for c in week_c  if c.get("high")),  default=None)
+        week_low   = min((_f(c["low"])   for c in week_c  if c.get("low")),   default=None)
+        month_high = max((_f(c["high"])  for c in month_c if c.get("high")),  default=None)
+        month_low  = min((_f(c["low"])   for c in month_c if c.get("low")),   default=None)
+        year_high  = max((_f(c["high"])  for c in year_c  if c.get("high")),  default=None)
+        year_low   = min((_f(c["low"])   for c in year_c  if c.get("low")),   default=None)
+        avg_vol    = int(sum(_f(c["volume"]) or 0 for c in candles[-20:]) / min(20, len(candles))) if candles else 0
+
+        # Капитализация и мультипликаторы — из таблицы strategy_instruments (если есть)
+        mkt_cap = None
+        try:
+            with __import__("app.db", fromlist=["db_cursor"]).db_cursor() as _c:
+                _c.execute("SELECT market_cap, pe_ratio, pb_ratio, ps_ratio FROM strategy_instruments WHERE figi=? LIMIT 1", (figi,))
+                _row = _c.fetchone()
+                if _row:
+                    mkt_cap = _row[0]
+        except Exception:
+            pass
+
+        data = {
+            "prev_close":  prev_close,
+            "open_today":  open_today,
+            "day_high":    day_high,   "day_low":    day_low,
+            "week_high":   week_high,  "week_low":   week_low,
+            "month_high":  month_high, "month_low":  month_low,
+            "year_high":   year_high,  "year_low":   year_low,
+            "avg_vol":     avg_vol,
+            "market_cap":  mkt_cap,
+        }
+        _stats_cache[figi] = {"ts": _now_ts, "data": data}
+        api_instrument_stats._cache = _stats_cache
+        return JSONResponse(data)
+    except Exception as e:
+        return JSONResponse({"error": str(e)})
+
+
 @app.post("/api/ml/rebalance")
 async def api_ml_rebalance():
     """Запускает принудительный ребаланс всех инструментов."""

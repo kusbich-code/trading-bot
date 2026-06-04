@@ -790,14 +790,24 @@ async function renderPositionDetails(positions) {
       </div>
       ${positions.map(p => `
       <section class="block" id="pos-detail-${esc(p.figi)}" style="margin-top:6px;padding:12px 16px">
-        <div class="row" style="gap:8px;margin-bottom:8px">
-          <h2 style="margin:0">${esc(p.ticker)}</h2>
-          <span class="badge" style="background:${p.direction==='BUY'?'rgba(47,163,107,.2)':'rgba(191,77,90,.2)'};color:${p.direction==='BUY'?'#2fa36b':'#ff7b7b'}">
-            ${p.direction==='BUY'?'Лонг':'Шорт'}
-          </span>
-          <span class="muted" style="font-size:12px">Вход: ${esc(p.entry_price_ui)}</span>
+        <div class="row between" style="margin-bottom:10px;flex-wrap:wrap;gap:6px">
+          <div class="row" style="gap:8px">
+            <h2 style="margin:0">${esc(p.ticker)}</h2>
+            <span class="badge" style="background:${p.direction==='BUY'?'rgba(47,163,107,.2)':'rgba(191,77,90,.2)'};color:${p.direction==='BUY'?'#2fa36b':'#ff7b7b'}">
+              ${p.direction==='BUY'?'Лонг':'Шорт'}
+            </span>
+          </div>
+          <div class="row" style="gap:16px;flex-wrap:wrap">
+            <div><span class="muted" style="font-size:11px">Вход</span><div style="font-size:14px;font-weight:600">${esc(p.entry_price_ui)}</div></div>
+            <div><span class="muted" style="font-size:11px">Текущая</span><div id="pos-cur-${esc(p.figi)}" style="font-size:14px;font-weight:600">—</div></div>
+            <div><span class="muted" style="font-size:11px">Пред. закр.</span><div id="pos-prevc-${esc(p.figi)}" style="font-size:13px">—</div></div>
+            <div><span class="muted" style="font-size:11px">Открытие</span><div id="pos-open-${esc(p.figi)}" style="font-size:13px">—</div></div>
+          </div>
         </div>
-        <div style="display:grid;grid-template-columns:1fr 360px;gap:14px;align-items:start">
+        <div id="pos-stats-${esc(p.figi)}" style="display:grid;grid-template-columns:repeat(3,1fr);gap:4px 16px;margin-bottom:10px;padding:8px 10px;background:rgba(255,255,255,.03);border-radius:6px;font-size:12px">
+          <div class="muted" style="text-align:center;padding:4px;grid-column:span 3;font-size:11px">Загрузка котировок…</div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 340px;gap:14px;align-items:start">
           <div id="pos-chart-${esc(p.figi)}" style="height:220px;width:100%;min-width:0"></div>
           <div id="pos-news-${esc(p.figi)}" style="max-height:220px;overflow-y:auto">
             <div class="muted" style="text-align:center;padding:20px;font-size:12px">Загрузка новостей…</div>
@@ -807,6 +817,10 @@ async function renderPositionDetails(positions) {
   }
 
   await _refreshPosCharts();
+  for (const p of positions) {
+    _loadPosStats(p.figi, p.current_price);
+    _loadPosNews(p.figi);
+  }
 }
 
 async function _refreshPosCharts() {
@@ -981,6 +995,42 @@ function _showSignalPopup(sigEl, tr) {
     }
   };
   setTimeout(() => document.addEventListener("click", window._sigCloseHandler), 50);
+}
+
+async function _loadPosStats(figi, currentPrice) {
+  const statsEl = document.getElementById(`pos-stats-${figi}`);
+  const curEl   = document.getElementById(`pos-cur-${figi}`);
+  const prevcEl = document.getElementById(`pos-prevc-${figi}`);
+  const openEl  = document.getElementById(`pos-open-${figi}`);
+  if (!statsEl) return;
+  try {
+    const s = await apiGet(`/api/instrument/stats/${figi}`);
+    if (s.error) { statsEl.innerHTML = `<div class="muted" style="grid-column:span 3">Нет данных</div>`; return; }
+
+    const fmt = (v) => v != null ? Number(v).toFixed(2) : '—';
+    const fmtVol = (v) => v ? (v >= 1000000 ? (v/1000000).toFixed(1)+' млн' : v >= 1000 ? (v/1000).toFixed(0)+' тыс' : v) : '—';
+    const fmtCap = (v) => v ? (v >= 1e12 ? (v/1e12).toFixed(1)+' трлн ₽' : v >= 1e9 ? (v/1e9).toFixed(0)+' млрд ₽' : '—') : '—';
+
+    if (curEl && currentPrice) curEl.textContent = fmt(currentPrice) + ' ₽';
+    if (prevcEl) prevcEl.textContent = s.prev_close != null ? fmt(s.prev_close) + ' ₽' : '—';
+    if (openEl)  openEl.textContent  = s.open_today != null ? fmt(s.open_today) + ' ₽' : '—';
+
+    const rows = [
+      ['День',   s.day_low   != null ? fmt(s.day_low)   + ' – ' + fmt(s.day_high)   : '—'],
+      ['Неделя', s.week_low  != null ? fmt(s.week_low)  + ' – ' + fmt(s.week_high)  : '—'],
+      ['Месяц',  s.month_low != null ? fmt(s.month_low) + ' – ' + fmt(s.month_high) : '—'],
+      ['Год',    s.year_low  != null ? fmt(s.year_low)  + ' – ' + fmt(s.year_high)  : '—'],
+      ['Ср. объём', fmtVol(s.avg_vol)],
+      ['Капитализация', fmtCap(s.market_cap)],
+    ];
+    statsEl.innerHTML = rows.map(([label, val]) => `
+      <div>
+        <div class="muted" style="font-size:10px;margin-bottom:1px">${label}</div>
+        <div style="font-size:12px;font-weight:500">${val}</div>
+      </div>`).join('');
+  } catch(e) {
+    if (statsEl) statsEl.innerHTML = `<div class="muted" style="grid-column:span 3;font-size:11px">Ошибка загрузки котировок</div>`;
+  }
 }
 
 async function _loadPosNews(figi) {
