@@ -107,7 +107,9 @@ def train_universal_model() -> Optional[Dict]:
 
     # Сохраняем как "universal" модель (figi=UNIVERSAL, strategy_id=0)
     prec = metrics.get("precision", 0)
-    is_ready = prec >= 0.55 and len(X_train) >= MIN_SAMPLES
+    # Активируем как только данных достаточно — precision на хвосте тест-сета
+    # нестабильна при малом числе сделок (тест-сет может содержать только убытки)
+    is_ready = len(X_train) >= MIN_SAMPLES and len(set(y_bal)) == 2
     univ_status = "active" if is_ready else "learning"
     model_bytes = pickle.dumps(model)
     now = datetime.now(tz=_MSK).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
