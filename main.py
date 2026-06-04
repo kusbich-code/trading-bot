@@ -2341,13 +2341,34 @@ def _parallel_strategy_worker(strategy_id: int, strat_name: str, stop_ev: thread
 
             # Синхронизируем in-memory dict с БД: если позиция исчезла (закрыта вручную
             # или через sync_portfolio_positions) — забываем её и освобождаем координатор
+            _db_open_pos = get_open_positions(source="BOT")
+            _db_bot_figis = {p["figi"] for p in _db_open_pos}
             if positions:
-                db_bot_figis = {p["figi"] for p in get_open_positions(source="BOT")}
                 for tk in list(positions.keys()):
-                    if positions[tk].get("figi", "") not in db_bot_figis:
+                    if positions[tk].get("figi", "") not in _db_bot_figis:
                         log.info("Parallel [%s] %s: позиция закрыта снаружи, сбрасываем", strat_name, tk)
                         del positions[tk]
                         _parallel_coord.release(strategy_id)
+            else:
+                # Resync: если dict пуст, но в БД есть OPEN BOT позиция по нашим инструментам
+                _instr_figi_set = {i["figi"] for i in instr}
+                for _bp in _db_open_pos:
+                    if _bp["figi"] in _instr_figi_set and _bp["figi"] not in {
+                        v.get("figi") for v in positions.values()
+                    }:
+                        _tk2 = _bp["ticker"]
+                        positions[_tk2] = {
+                            "figi":         _bp["figi"],
+                            "direction":    _bp["direction"],
+                            "entry_price":  float(_bp["entry_price"]),
+                            "qty":          int(_bp["qty"]),
+                            "opened_at":    _bp.get("opened_at", ""),
+                            "trailing_stop": 0.0,
+                            "ml_feature_id": _bp.get("ml_feature_id", 0),
+                        }
+                        if _parallel_coord.is_free:
+                            _parallel_coord.try_claim(strategy_id, _bp["figi"], _tk2)
+                        log.info("Parallel [%s] resync: восстановлена позиция %s из БД", strat_name, _tk2)
 
             # Если нет открытых позиций и координатор занят — обновляем сигналы/цены,
             # но не открываем позиции (process_instrument сам проверяет _coord.try_claim)
