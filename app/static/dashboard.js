@@ -340,33 +340,34 @@ function _buildSummaryHtml(s, hasError) {
             </div>`;
           }).join("")}
         </div>` : "";
-      return `<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
-        <div class="sgrp">
-          <div class="sgrp-lbl" style="${warn ? 'color:#f0a500;border-color:#f0a500' : ''}">API</div>
-          <div class="sgrp-cards" style="grid-template-columns:1fr">
-            <div class="crd" style="background:${bg}">
-              <div class="lbl">Запросов/мин <span style="opacity:.5;font-size:9px">(бот)</span></div>
-              <div class="val" style="color:${color};font-size:15px">${s.api_rpm} <span style="font-size:11px;opacity:.7">/ ${s.api_rpm_limit}</span></div>
-              <div style="background:rgba(255,255,255,.08);border-radius:4px;height:4px;margin-top:4px;overflow:hidden">
-                <div style="height:100%;width:${Math.min(pct,100)}%;background:${color};border-radius:4px;transition:width .5s"></div>
-              </div>
-              ${breakdownHtml}
-              ${warn ? `<div style="font-size:10px;color:#f0a500;margin-top:6px">⚠️ ${pct >= 95 ? 'Лимит исчерпан' : 'Нагрузка высокая'}</div>` : ''}
-              <div style="margin-top:12px;border-top:1px solid rgba(76,141,255,.1);padding-top:10px">
-                <div style="font-size:9px;font-weight:700;color:#7ab0e8;text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px">📺 РБК ТВ</div>
-                <iframe
-                  src="https://smotret.tv/rbk"
-                  style="width:100%;height:220px;border:none;border-radius:6px;background:#000;display:block"
-                  allowfullscreen
-                  allow="autoplay; encrypted-media; fullscreen"
-                  loading="lazy"
-                ></iframe>
+      return `
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px">
+          <div class="sgrp">
+            <div class="sgrp-lbl" style="${warn ? 'color:#f0a500;border-color:#f0a500' : ''}">API</div>
+            <div class="sgrp-cards" style="grid-template-columns:1fr">
+              <div class="crd" style="background:${bg}">
+                <div class="lbl">Запросов/мин <span style="opacity:.5;font-size:9px">(бот)</span></div>
+                <div class="val" style="color:${color};font-size:15px">${s.api_rpm} <span style="font-size:11px;opacity:.7">/ ${s.api_rpm_limit}</span></div>
+                <div style="background:rgba(255,255,255,.08);border-radius:4px;height:4px;margin-top:4px;overflow:hidden">
+                  <div style="height:100%;width:${Math.min(pct,100)}%;background:${color};border-radius:4px;transition:width .5s"></div>
+                </div>
+                ${breakdownHtml}
+                ${warn ? `<div style="font-size:10px;color:#f0a500;margin-top:6px">⚠️ ${pct >= 95 ? 'Лимит исчерпан' : 'Нагрузка высокая'}</div>` : ''}
               </div>
             </div>
           </div>
+          <div style="display:flex;flex-direction:column;gap:0">
+            <div style="font-size:9px;font-weight:700;color:#7ab0e8;text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px">📺 РБК ТВ</div>
+            <iframe
+              src="https://smotret.tv/rbk"
+              style="width:100%;flex:1;min-height:260px;border:none;border-radius:8px;background:#000;display:block"
+              allowfullscreen
+              allow="autoplay; encrypted-media; fullscreen"
+              loading="lazy"
+            ></iframe>
+          </div>
         </div>
-        <div id="newsWidgetInner" style="background:#0a1628;border:1px solid rgba(76,141,255,.12);border-radius:10px;overflow:hidden"></div>
-      </div>`;
+        <div id="newsWidgetInner" style="background:#0a1628;border:1px solid rgba(76,141,255,.12);border-radius:10px;overflow:hidden"></div>`;
     })() : ""}
   </div>`;
 }
