@@ -592,12 +592,9 @@ function _applySessionData(d) {
   set("sessUntilLbl", sess.until_label || "До открытия");
   set("sessVolVal", vol.label || "—", vol.color || "#9fb3d8");
   set("sessAtrVal", vol.atr ? `ATR ${vol.atr.toFixed(2)}%` : "");
-  // таймер — только если счётчик ещё не запущен для этой сессии
+  // Всегда показываем текущее значение счётчика (уже тикает независимо)
   const timerEl = document.getElementById("sessTimerVal");
-  if (timerEl && timerEl.textContent === "—") {
-    _sessionSecsLeft = sess.seconds_left || 0;
-    timerEl.textContent = _fmtTimer(_sessionSecsLeft);
-  }
+  if (timerEl) timerEl.textContent = _fmtTimer(_sessionSecsLeft);
 }
 
 async function _loadSessionData() {
