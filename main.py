@@ -928,6 +928,37 @@ def is_moex_session_open() -> bool:
     return (600 <= t < 1130) or (1145 <= t < 1430)
 
 
+def _secs_to_next_session_open() -> tuple[int, str]:
+    """Секунды до следующего открытия сессии + метка времени открытия (МСК)."""
+    now = datetime.now(MSK_TZ)
+    t = now.hour * 60 + now.minute
+
+    # Следующее событие открытия в минутах от полуночи
+    # Вечерняя 19:05 открывается если сейчас между 18:50 и 19:05 (перерыв)
+    if now.weekday() < 5 and 1130 <= t < 1145:
+        open_min, label = 1145, "19:05"
+    elif now.weekday() < 5 and t < 600:
+        open_min, label = 600, "10:00"
+    else:
+        # Следующий торговый день 10:00
+        days_ahead = 1
+        if now.weekday() == 4:   # пятница → понедельник
+            days_ahead = 3
+        elif now.weekday() == 5: # суббота → понедельник
+            days_ahead = 2
+        next_day = now + timedelta(days=days_ahead)
+        target = next_day.replace(hour=10, minute=0, second=0, microsecond=0)
+        secs = int((target - now).total_seconds())
+        return max(secs, 0), "10:00"
+
+    target_h, target_m = divmod(open_min, 60)
+    target = now.replace(hour=target_h, minute=target_m, second=0, microsecond=0)
+    if target <= now:
+        target += timedelta(days=1)
+    secs = int((target - now).total_seconds())
+    return max(secs, 0), label
+
+
 def is_tradable(status) -> bool:
     # T-Bank API возвращает enum как целое число (5=NORMAL_TRADING, 1=NOT_AVAILABLE и т.д.)
     # Используем allowlist вместо denylist чтобы надёжно блокировать всё неизвестное
@@ -2383,6 +2414,22 @@ def _parallel_strategy_worker(strategy_id: int, strat_name: str, stop_ev: thread
                 stop_ev.wait(timeout=interval)
                 continue
 
+            # ── Sleep mode: если торговля только в сессию и биржа закрыта ────
+            if not positions:  # с открытой позицией продолжаем мониторинг
+                _pid_str = get_setting("active_profile_id", "").strip()
+                _trade_session_only = "1"
+                if _pid_str:
+                    from app.db import get_profile_setting as _gps
+                    _trade_session_only = _gps(int(_pid_str), "trade_only_session", "1")
+                if _trade_session_only == "1" and not is_moex_session_open():
+                    _sleep_secs, _open_label = _secs_to_next_session_open()
+                    _wake_label = (datetime.now(MSK_TZ) + timedelta(seconds=_sleep_secs)).strftime("%H:%M")
+                    _pset(strategy_id, f"🌙 сон до {_wake_label}")
+                    log.debug("Parallel [%s] sleep mode %ds до %s", strat_name, _sleep_secs, _open_label)
+                    # Спим до открытия сессии (но не дольше 10 мин — на случай смены настроек)
+                    stop_ev.wait(timeout=min(_sleep_secs, 600))
+                    continue
+
             if not instr:
                 _pset(strategy_id, "нет инструментов")
                 stop_ev.wait(timeout=interval)
@@ -2679,6 +2726,18 @@ def main():
                     state.status = "SESSION_STOPPED_BY_LIMIT"
                     state.sync_runtime()
                     time.sleep(60)
+                    continue
+
+                # ── Sleep mode: если биржа закрыта и trade_only_session=1 ────
+                _pid_sl = get_setting("active_profile_id", "").strip()
+                _tos = get_profile_setting(int(_pid_sl), "trade_only_session", "1") if _pid_sl else "1"
+                if _tos == "1" and not is_moex_session_open() and not state.open_positions:
+                    _sl_secs, _sl_lbl = _secs_to_next_session_open()
+                    _sl_wake = (datetime.now(MSK_TZ) + timedelta(seconds=_sl_secs)).strftime("%H:%M")
+                    state.status = f"SLEEP_UNTIL_{_sl_wake}"
+                    state.sync_runtime()
+                    log.info("Основной цикл: sleep mode до %s (%d с)", _sl_lbl, _sl_secs)
+                    time.sleep(min(_sl_secs, 600))
                     continue
 
                 max_loss = Decimal(get_setting("max_daily_loss_rub", "200"))

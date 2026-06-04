@@ -382,7 +382,13 @@ def summary_payload() -> Dict[str, Any]:
     elif not portfolio_ok:
         trading_status = "Проблема"
     else:
-        trading_status = "Ведётся"
+        # Проверяем режим сна (биржа закрыта + trade_only_session=1)
+        _bot_state = get_runtime("status", "")
+        if _bot_state and _bot_state.startswith("SLEEP_UNTIL_"):
+            _wake_time = _bot_state.replace("SLEEP_UNTIL_", "")
+            trading_status = f"🌙 Сон до {_wake_time}"
+        else:
+            trading_status = "Ведётся"
 
     api_rpm       = int(get_runtime("api_rpm", "0") or 0)
     api_rpm_limit = int(get_runtime("api_rpm_limit", "600") or 600)
