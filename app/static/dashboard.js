@@ -352,6 +352,16 @@ function _buildSummaryHtml(s, hasError) {
               </div>
               ${breakdownHtml}
               ${warn ? `<div style="font-size:10px;color:#f0a500;margin-top:6px">⚠️ ${pct >= 95 ? 'Лимит исчерпан' : 'Нагрузка высокая'}</div>` : ''}
+              <div style="margin-top:12px;border-top:1px solid rgba(76,141,255,.1);padding-top:10px">
+                <div style="font-size:9px;font-weight:700;color:#7ab0e8;text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px">📺 РБК ТВ</div>
+                <iframe
+                  src="https://smotret.tv/rbk"
+                  style="width:100%;height:220px;border:none;border-radius:6px;background:#000;display:block"
+                  allowfullscreen
+                  allow="autoplay; encrypted-media; fullscreen"
+                  loading="lazy"
+                ></iframe>
+              </div>
             </div>
           </div>
         </div>
@@ -470,28 +480,6 @@ async function renderMainShell() {
         <span class="note">Одна позиция на все потоки</span>
       </div>
       <div id="parallelStatusBody"></div>
-    </section>
-
-    <!-- ── РБК ТВ ── -->
-    <section class="block" style="padding:10px 16px;margin-bottom:6px">
-      <div class="row between" style="margin-bottom:8px">
-        <h2 style="margin:0">📺 РБК ТВ</h2>
-        <button class="btn" style="font-size:11px;padding:2px 8px" onclick="
-          const w=document.getElementById('rbkStreamWrap');
-          const hidden=w.style.display==='none';
-          w.style.display=hidden?'block':'none';
-          this.textContent=hidden?'Скрыть':'Показать';
-        ">Скрыть</button>
-      </div>
-      <div id="rbkStreamWrap">
-        <iframe
-          src="https://smotret.tv/rbk"
-          style="width:100%;height:420px;border:none;border-radius:6px;background:#000"
-          allowfullscreen
-          allow="autoplay; encrypted-media; fullscreen"
-          loading="lazy"
-        ></iframe>
-      </div>
     </section>
 
     <!-- ── Графики инструментов (настройки + сетка) ── -->
