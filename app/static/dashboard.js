@@ -240,13 +240,15 @@ async function renderSummaryCards() {
   const oldVals = isFirst ? [] : Array.from(host.querySelectorAll('.val')).map(e => e.textContent.trim());
   host.innerHTML = newHtml;
   host.dataset.built = "1";
-  // Восстанавливаем новости (newsWidgetInner внутри summaryCards пересоздаётся при каждом рендере)
+  // Восстанавливаем новости (newsWidgetInner пересоздаётся при каждом рендере)
   if (savedNewsHtml !== null) {
     const nw = document.getElementById("newsWidgetInner");
     if (nw) { nw.innerHTML = savedNewsHtml; nw.dataset.newsInited = "1"; }
   } else {
     _initNewsWidget();
   }
+  // TV iframe создаётся один раз, не перерисовывается
+  _initRbkWidget();
   if (isFirst) {
     // Первый рендер: fade-in карточек
     host.querySelectorAll('.crd').forEach((c, i) => {
@@ -358,13 +360,7 @@ function _buildSummaryHtml(s, hasError) {
           </div>
           <div style="display:flex;flex-direction:column;gap:0">
             <div style="font-size:9px;font-weight:700;color:#7ab0e8;text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px">📺 РБК ТВ</div>
-            <iframe
-              src="https://smotret.tv/rbk"
-              style="width:100%;flex:1;min-height:260px;border:none;border-radius:8px;background:#000;display:block"
-              allowfullscreen
-              allow="autoplay; encrypted-media; fullscreen"
-              loading="lazy"
-            ></iframe>
+            <div id="rbkTvWidget" style="flex:1;min-height:260px;border-radius:8px;overflow:hidden;background:#000"></div>
           </div>
         </div>
         <div id="newsWidgetInner" style="background:#0a1628;border:1px solid rgba(76,141,255,.12);border-radius:10px;overflow:hidden"></div>`;
@@ -386,7 +382,7 @@ function toggleSummaryCardsVisibility() {
   if (!wrapper) return;
   const show = getTabFromHash() === "главное";
   wrapper.style.display = show ? "block" : "none";
-  if (show) _initNewsWidget();
+  if (show) { _initNewsWidget(); _initRbkWidget(); }
 }
 
 function _initNewsWidget() {
@@ -394,6 +390,19 @@ function _initNewsWidget() {
   if (!host || host.dataset.newsInited) return;
   host.dataset.newsInited = "1";
   _renderNews();
+}
+
+function _initRbkWidget() {
+  const host = document.getElementById("rbkTvWidget");
+  if (!host || host.dataset.inited) return;
+  host.dataset.inited = "1";
+  host.innerHTML = `<iframe
+    src="https://smotret.tv/rbk"
+    style="width:100%;height:100%;min-height:260px;border:none;display:block"
+    allowfullscreen
+    allow="autoplay; encrypted-media; fullscreen"
+    loading="lazy"
+  ></iframe>`;
 }
 
 async function _renderNews() {
@@ -412,8 +421,8 @@ async function _renderNews() {
           <span style="font-size:10px;font-weight:700;color:#7ab0e8;text-transform:uppercase;letter-spacing:.08em">Коммерсантъ</span>
           <span style="font-size:9px;color:#3a6080;background:rgba(76,141,255,.1);border:1px solid rgba(76,141,255,.2);border-radius:3px;padding:1px 5px">Экономика</span>
         </div>
-        <div style="flex:1;overflow-y:auto;padding:8px 12px;scrollbar-width:thin;scrollbar-color:#1e3a5f #0a1628">
-          ${news.map(n => `
+        <div style="max-height:180px;overflow-y:auto;padding:8px 12px;scrollbar-width:thin;scrollbar-color:#1e3a5f #0a1628">
+          ${news.slice(0,5).map(n => `
             <div style="margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid rgba(30,58,95,.5)">
               <a href="${esc(n.link)}" target="_blank" rel="noopener"
                  style="color:#c4dcff;font-size:11.5px;line-height:1.45;text-decoration:none;display:block">
