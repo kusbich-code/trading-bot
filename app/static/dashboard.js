@@ -444,6 +444,23 @@ async function renderMainShell() {
       <div id="runtimeGrid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:6px"></div>
       <div id="botExplainInline" style="margin-top:8px"></div>
       <div id="telegramDiagBox"></div>
+      <!-- Сессия + Волатильность -->
+      <div id="sessionBar" style="margin-top:10px;padding-top:10px;border-top:1px solid rgba(76,141,255,.1);display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+        <div class="row" style="gap:8px;align-items:center">
+          <span id="sessionLabel" style="font-size:12px;font-weight:700;color:#7ab0e8">—</span>
+          <span id="sessionTime" style="font-size:11px;color:#9fb3d8">—</span>
+        </div>
+        <div class="row" style="gap:4px;align-items:center">
+          <span class="muted" style="font-size:11px" id="sessionUntilLabel">—</span>
+          <span id="sessionTimer" style="font-size:13px;font-weight:700;font-variant-numeric:tabular-nums;color:#c4dcff;min-width:60px">—</span>
+        </div>
+        <div style="width:1px;height:16px;background:rgba(255,255,255,.1)"></div>
+        <div class="row" style="gap:6px;align-items:center">
+          <span class="muted" style="font-size:11px">Рынок:</span>
+          <span id="sessionVolatility" style="font-size:12px;font-weight:700">—</span>
+          <span id="sessionAtr" class="muted" style="font-size:11px"></span>
+        </div>
+      </div>
     </section>
 
     <div id="balanceWarningsBox"></div>
@@ -527,6 +544,76 @@ async function renderMainShell() {
   host.dataset.initialized = "1";
   document.getElementById("btnSandboxPayIn")?.addEventListener("click", sandboxPayIn);
   document.getElementById("btnTelegramDiag")?.addEventListener("click", telegramDiag);
+  _startSessionWidget();
+}
+
+// ── Session + Volatility widget ───────────────────────────────────────────────
+
+let _sessionData = null;
+let _sessionSecsLeft = 0;
+let _sessionTimerInterval = null;
+
+function _fmtTimer(secs) {
+  if (secs <= 0) return "00:00:00";
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  const s = secs % 60;
+  return `${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`;
+}
+
+function _updateSessionTimer() {
+  const el = document.getElementById("sessionTimer");
+  if (!el) return;
+  _sessionSecsLeft = Math.max(0, _sessionSecsLeft - 1);
+  el.textContent = _fmtTimer(_sessionSecsLeft);
+  if (_sessionSecsLeft === 0) {
+    clearInterval(_sessionTimerInterval);
+    _loadSessionData();  // перезагружаем при смене сессии
+  }
+}
+
+async function _loadSessionData() {
+  try {
+    const d = await apiGet("/api/market/session");
+    _sessionData = d;
+    const sess = d.session || {};
+    const vol  = d.volatility || {};
+
+    const typeColors = {
+      "основная":  "#2fa36b",
+      "вечерняя":  "#7ab0e8",
+      "перерыв":   "#f0c04a",
+      "закрыта":   "#9fb3d8",
+      "выходной":  "#9fb3d8",
+    };
+    const color = typeColors[sess.type] || "#9fb3d8";
+
+    const labelEl = document.getElementById("sessionLabel");
+    const timeEl  = document.getElementById("sessionTime");
+    const untilEl = document.getElementById("sessionUntilLabel");
+    const timerEl = document.getElementById("sessionTimer");
+    const volEl   = document.getElementById("sessionVolatility");
+    const atrEl   = document.getElementById("sessionAtr");
+
+    if (labelEl) { labelEl.textContent = sess.label || "—"; labelEl.style.color = color; }
+    if (timeEl)  timeEl.textContent = sess.type !== "выходной" ? `${sess.start} – ${sess.end}` : "";
+    if (untilEl) untilEl.textContent = (sess.until_label || "—") + ":";
+    if (volEl)   { volEl.textContent = vol.label || "—"; volEl.style.color = vol.color || "#9fb3d8"; }
+    if (atrEl)   atrEl.textContent = vol.atr ? `ATR ${vol.atr.toFixed(2)}%` : "";
+
+    _sessionSecsLeft = sess.seconds_left || 0;
+    if (timerEl) timerEl.textContent = _fmtTimer(_sessionSecsLeft);
+
+    clearInterval(_sessionTimerInterval);
+    _sessionTimerInterval = setInterval(_updateSessionTimer, 1000);
+  } catch(e) {
+    // silent fail
+  }
+}
+
+function _startSessionWidget() {
+  _loadSessionData();
+  setInterval(_loadSessionData, 60000);  // обновляем данные каждую минуту
 }
 
 async function renderMainData() {

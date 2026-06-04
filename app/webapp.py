@@ -732,6 +732,90 @@ def api_news_ticker(figi: str = "", hours: int = 4):
     return JSONResponse(news)
 
 
+# ── market session + volatility ───────────────────────────────────────────────
+
+@app.get("/api/market/session")
+def api_market_session():
+    """Тип сессии MOEX, таймер и индикатор волатильности."""
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+    _msk = _tz(_td(hours=3))
+    now = _dt.now(_msk)
+    h, m = now.hour, now.minute
+    total_min = h * 60 + m
+
+    # Сессии MOEX (пн–пт)
+    MAIN_START  = 10 * 60        # 10:00
+    MAIN_END    = 18 * 60 + 50   # 18:50
+    EVE_START   = 19 * 60 + 5    # 19:05
+    EVE_END     = 23 * 60 + 50   # 23:50
+    is_weekday  = now.weekday() < 5
+
+    def _secs_to(target_h, target_m):
+        t = _dt(now.year, now.month, now.day, target_h, target_m, tzinfo=_msk)
+        diff = (t - now).total_seconds()
+        if diff < 0:
+            diff += 86400
+        return int(diff)
+
+    if not is_weekday:
+        # Выходной → до понедельника 10:00
+        days_ahead = (7 - now.weekday()) % 7 or 7
+        next_open = now.replace(hour=10, minute=0, second=0, microsecond=0) + _td(days=days_ahead)
+        secs = int((next_open - now).total_seconds())
+        session = {"type": "выходной", "label": "Выходной", "until_label": "До открытия",
+                   "seconds_left": secs, "start": "10:00 пн", "end": "18:50"}
+    elif MAIN_START <= total_min < MAIN_END:
+        session = {"type": "основная", "label": "Основная сессия", "until_label": "До закрытия",
+                   "seconds_left": _secs_to(18, 50), "start": "10:00", "end": "18:50"}
+    elif MAIN_END <= total_min < EVE_START:
+        session = {"type": "перерыв", "label": "Перерыв", "until_label": "До вечерней",
+                   "seconds_left": _secs_to(19, 5), "start": "18:50", "end": "19:05"}
+    elif EVE_START <= total_min < EVE_END:
+        session = {"type": "вечерняя", "label": "Вечерняя сессия", "until_label": "До закрытия",
+                   "seconds_left": _secs_to(23, 50), "start": "19:05", "end": "23:50"}
+    elif total_min < MAIN_START:
+        session = {"type": "закрыта", "label": "Биржа закрыта", "until_label": "До открытия",
+                   "seconds_left": _secs_to(10, 0), "start": "—", "end": "10:00"}
+    else:
+        session = {"type": "закрыта", "label": "Биржа закрыта", "until_label": "До открытия",
+                   "seconds_left": _secs_to(10, 0) or 86400, "start": "—", "end": "10:00"}
+
+    # Волатильность из последних ml_features (atr_pct, regime)
+    volatility = {"label": "нет данных", "color": "#9fb3d8", "atr": 0.0}
+    try:
+        from app.db import db_cursor as _dbc_v
+        with _dbc_v() as _cv:
+            _cv.execute("""
+                SELECT AVG(atr_pct), AVG(regime), AVG(sma_gap_pct)
+                FROM ml_features ORDER BY id DESC LIMIT 10
+            """)
+            row = _cv.fetchone()
+        if row and row[0]:
+            atr = float(row[0] or 0)
+            regime = float(row[1] or 0)
+            gap = float(row[2] or 0)
+            volatility["atr"] = round(atr, 3)
+            if atr > 0.5 or regime >= 3:
+                volatility["label"] = "⚡ Волатильно"
+                volatility["color"] = "#f0c04a"
+            elif 1.2 <= regime < 2:
+                volatility["label"] = "📈 Тренд ↑"
+                volatility["color"] = "#2fa36b"
+            elif 1.8 <= regime < 3:
+                volatility["label"] = "📉 Тренд ↓"
+                volatility["color"] = "#ff7b7b"
+            elif atr < 0.2 and abs(gap) < 0.05:
+                volatility["label"] = "〰️ Боковик"
+                volatility["color"] = "#9fb3d8"
+            else:
+                volatility["label"] = "〰️ Боковик"
+                volatility["color"] = "#9fb3d8"
+    except Exception:
+        pass
+
+    return JSONResponse({"session": session, "volatility": volatility, "server_time_msk": now.strftime("%H:%M:%S")})
+
+
 # ── dashboard data endpoints ───────────────────────────────────────────────────
 
 @app.get("/api/dashboard/summary")
