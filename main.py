@@ -73,6 +73,7 @@ from app.db import (
     get_ticker_daily_pnl,
     save_position_feature_id,
     get_position_feature_id,
+    update_position_price,
 )
 from app.instruments import get_instrument_meta, round_to_price_step
 from app.telegram_notify import TelegramNotifier
@@ -1757,18 +1758,14 @@ def process_instrument(client, item,
         else:
             unrealized_pnl = (entry_price - price) * _qty_shares_u
 
-        upsert_position({
-            "ticker": ticker,
-            "figi": figi,
-            "direction": direction,
-            "qty": qty,
-            "entry_price": float(entry_price),
-            "current_price": float(price),
-            "unrealized_pnl": float(unrealized_pnl),
-            "opened_at": pos["opened_at"],
-            "status": "OPEN",
-            "source": "BOT",
-        })
+        _still_open = update_position_price(figi, float(price), float(unrealized_pnl))
+        if not _still_open:
+            # Позиция закрыта снаружи (_handle_manual_close) пока мы мониторили
+            log.info("%s: позиция закрыта снаружи в БД — сбрасываем из мониторинга", ticker)
+            del positions[ticker]
+            if _coord is not None:
+                _coord.release(_strategy_id)
+            return
 
         if trailing_stop_enabled:
             # Трейлинг-стоп: движется вместе с ценой, никогда против прибыли

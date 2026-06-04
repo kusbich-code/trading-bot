@@ -1216,6 +1216,17 @@ def get_position_feature_id(figi: str, source: str = "BOT") -> int:
         return 0
 
 
+def update_position_price(figi: str, current_price: float, unrealized_pnl: float,
+                          source: str = "BOT") -> bool:
+    """Updates price/pnl for an open position. Returns False if position was already closed externally."""
+    with db_cursor() as cur:
+        cur.execute(
+            "UPDATE positions SET current_price=?, unrealized_pnl=? WHERE figi=? AND status='OPEN' AND source=?",
+            (current_price, unrealized_pnl, figi, source)
+        )
+        return (cur.rowcount or 0) > 0
+
+
 def close_position(figi, source: str = "BOT"):
     with db_cursor() as cur:
         cur.execute("UPDATE positions SET status='CLOSED' WHERE figi=? AND status='OPEN' AND source=?",
