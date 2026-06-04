@@ -403,6 +403,10 @@ def summary_payload() -> Dict[str, Any]:
         "trades_today": st.get("trades_count", 0),
         "daily_pnl_ui": fmt_money(st.get("total_pnl", 0)),
         "total_commission_ui": fmt_money(st.get("total_commission", 0)),
+        "unrealized_pnl_ui": fmt_money(sum(
+            float(p.get("unrealized_pnl", 0) or 0)
+            for p in get_open_positions(source="PORTFOLIO")
+        )),
         "cash_rub_ui": fmt_money(portfolio.get("cash", 0)),
         "positions_value_rub_ui": fmt_money(portfolio.get("positions_value", 0)),
         "blocked_rub_ui": fmt_money(portfolio.get("blocked", 0)),

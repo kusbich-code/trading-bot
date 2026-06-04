@@ -288,6 +288,20 @@ function _buildSummaryHtml(s, hasError) {
         ${_crd("PnL реал.",   s.daily_pnl_ui)}
         ${_crd("PnL нереал.", s.unrealized_pnl_ui || "0.00")}
         ${_crd("Комиссия",    s.total_commission_ui)}
+        <div class="crd" style="grid-column:span 2">
+          <div class="lbl">Тип сессии</div>
+          <div class="val" id="sessTypeVal" style="font-size:13px">—</div>
+          <div class="muted" id="sessTimeVal" style="font-size:10px;margin-top:2px">—</div>
+        </div>
+        <div class="crd">
+          <div class="lbl" id="sessUntilLbl">До открытия</div>
+          <div class="val" id="sessTimerVal" style="font-variant-numeric:tabular-nums;font-size:14px">—</div>
+        </div>
+        <div class="crd">
+          <div class="lbl">Рынок</div>
+          <div class="val" id="sessVolVal" style="font-size:12px">—</div>
+          <div class="muted" id="sessAtrVal" style="font-size:10px;margin-top:2px"></div>
+        </div>
       </div>
     </div>
     ${hasError ? `<div class="sgrp">
@@ -444,23 +458,6 @@ async function renderMainShell() {
       <div id="runtimeGrid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:6px"></div>
       <div id="botExplainInline" style="margin-top:8px"></div>
       <div id="telegramDiagBox"></div>
-      <!-- Сессия + Волатильность -->
-      <div id="sessionBar" style="margin-top:10px;padding-top:10px;border-top:1px solid rgba(76,141,255,.1);display:flex;align-items:center;gap:16px;flex-wrap:wrap">
-        <div class="row" style="gap:8px;align-items:center">
-          <span id="sessionLabel" style="font-size:12px;font-weight:700;color:#7ab0e8">—</span>
-          <span id="sessionTime" style="font-size:11px;color:#9fb3d8">—</span>
-        </div>
-        <div class="row" style="gap:4px;align-items:center">
-          <span class="muted" style="font-size:11px" id="sessionUntilLabel">—</span>
-          <span id="sessionTimer" style="font-size:13px;font-weight:700;font-variant-numeric:tabular-nums;color:#c4dcff;min-width:60px">—</span>
-        </div>
-        <div style="width:1px;height:16px;background:rgba(255,255,255,.1)"></div>
-        <div class="row" style="gap:6px;align-items:center">
-          <span class="muted" style="font-size:11px">Рынок:</span>
-          <span id="sessionVolatility" style="font-size:12px;font-weight:700">—</span>
-          <span id="sessionAtr" class="muted" style="font-size:11px"></span>
-        </div>
-      </div>
     </section>
 
     <div id="balanceWarningsBox"></div>
@@ -562,7 +559,7 @@ function _fmtTimer(secs) {
 }
 
 function _updateSessionTimer() {
-  const el = document.getElementById("sessionTimer");
+  const el = document.getElementById("sessTimerVal");
   if (!el) return;
   _sessionSecsLeft = Math.max(0, _sessionSecsLeft - 1);
   el.textContent = _fmtTimer(_sessionSecsLeft);
@@ -588,16 +585,16 @@ async function _loadSessionData() {
     };
     const color = typeColors[sess.type] || "#9fb3d8";
 
-    const labelEl = document.getElementById("sessionLabel");
-    const timeEl  = document.getElementById("sessionTime");
-    const untilEl = document.getElementById("sessionUntilLabel");
-    const timerEl = document.getElementById("sessionTimer");
-    const volEl   = document.getElementById("sessionVolatility");
-    const atrEl   = document.getElementById("sessionAtr");
+    const labelEl = document.getElementById("sessTypeVal");
+    const timeEl  = document.getElementById("sessTimeVal");
+    const untilEl = document.getElementById("sessUntilLbl");
+    const timerEl = document.getElementById("sessTimerVal");
+    const volEl   = document.getElementById("sessVolVal");
+    const atrEl   = document.getElementById("sessAtrVal");
 
     if (labelEl) { labelEl.textContent = sess.label || "—"; labelEl.style.color = color; }
     if (timeEl)  timeEl.textContent = sess.type !== "выходной" ? `${sess.start} – ${sess.end}` : "";
-    if (untilEl) untilEl.textContent = (sess.until_label || "—") + ":";
+    if (untilEl) untilEl.textContent = sess.until_label || "До открытия";
     if (volEl)   { volEl.textContent = vol.label || "—"; volEl.style.color = vol.color || "#9fb3d8"; }
     if (atrEl)   atrEl.textContent = vol.atr ? `ATR ${vol.atr.toFixed(2)}%` : "";
 
