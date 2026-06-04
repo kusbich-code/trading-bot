@@ -492,8 +492,11 @@ def dashboard_page():
     <div id="mainSummaryRow" style="display:none;margin-bottom:18px;display:grid;grid-template-columns:1fr 1fr;gap:6px;align-items:start">
       <section id="summaryCards" style="margin-bottom:0"></section>
       <div id="rbkTvColumn" style="background:#0a1628;border:1px solid rgba(76,141,255,.12);border-radius:10px;overflow:hidden;display:flex;flex-direction:column">
-        <div style="font-size:9px;font-weight:700;color:#7ab0e8;text-transform:uppercase;letter-spacing:.08em;padding:10px 12px 6px;border-bottom:1px solid rgba(76,141,255,.1);flex-shrink:0">📺 РБК ТВ</div>
-        <div style="position:relative;width:100%;padding-bottom:56.25%">
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px 6px;border-bottom:1px solid rgba(76,141,255,.1);flex-shrink:0">
+          <span style="font-size:9px;font-weight:700;color:#7ab0e8;text-transform:uppercase;letter-spacing:.08em">📺 РБК ТВ</span>
+          <button onclick="(function(){var w=document.getElementById('rbkTvWrap'),b=document.getElementById('rbkTvBtn');var h=w.style.display==='none';w.style.display=h?'block':'none';b.textContent=h?'Свернуть':'Развернуть';})()" id="rbkTvBtn" style="font-size:10px;padding:2px 8px;background:rgba(76,141,255,.1);border:1px solid rgba(76,141,255,.25);color:#7ab0e8;border-radius:4px;cursor:pointer">Свернуть</button>
+        </div>
+        <div id="rbkTvWrap" style="position:relative;width:100%;padding-bottom:56.25%">
           <iframe src="https://smotret.tv/rbk"
             style="position:absolute;top:0;left:0;width:100%;height:100%;border:none;display:block"
             allowfullscreen allow="autoplay; encrypted-media; fullscreen"
