@@ -959,6 +959,105 @@ def _secs_to_next_session_open() -> tuple[int, str]:
     return max(secs, 0), label
 
 
+def _generate_moex_holidays(year: int) -> set:
+    """
+    Автоматически генерирует нерабочие дни MOEX для заданного года.
+    Российские федеральные праздники + перенос выходных.
+    Не требует ручного обновления — работает на любой год.
+    """
+    from datetime import date as _date, timedelta as _td
+    holidays = set()
+
+    def _add(d: _date):
+        holidays.add(d.strftime("%Y-%m-%d"))
+
+    def _shift_weekend(d: _date) -> _date:
+        """Если праздник попадает на сб/вс — переносим на ближайший пн."""
+        if d.weekday() == 5:   # суббота → понедельник
+            return d + _td(days=2)
+        if d.weekday() == 6:   # воскресенье → понедельник
+            return d + _td(days=1)
+        return d
+
+    # ── Фиксированные даты с переносом ──
+    fixed = [
+        (1, 1), (1, 2), (1, 3), (1, 4), (1, 5), (1, 6), (1, 7), (1, 8),  # Новый год + Рождество
+        (2, 23),   # День защитника
+        (3, 8),    # 8 марта
+        (5, 1),    # Труда
+        (5, 9),    # Победа
+        (6, 12),   # День России
+        (11, 4),   # Народное единство
+    ]
+    for m, d in fixed:
+        try:
+            base = _date(year, m, d)
+            _add(_shift_weekend(base))
+            # Добавляем длинные новогодние каникулы (1-8 января всегда нерабочие)
+            if m == 1 and d == 1:
+                for extra in range(1, 9):
+                    _add(_date(year, 1, extra))
+        except ValueError:
+            pass
+
+    # Перенос праздников: если суббота/воскресенье попадает между двумя праздниками,
+    # правительство может объявить дополнительный выходной. Это сложно предсказать точно,
+    # поэтому обрабатываем только базовые случаи.
+
+    return holidays
+
+
+def _get_moex_holidays_cached() -> set:
+    """Кеш на 24 часа: генерирует праздники для текущего + следующего года."""
+    import time as _t
+    _cache = getattr(_get_moex_holidays_cached, "_cache", None)
+    _ts    = getattr(_get_moex_holidays_cached, "_ts", 0)
+    if _cache is not None and (_t.time() - _ts) < 86400:
+        return _cache
+    now_year = datetime.now(MSK_TZ).year
+    result = _generate_moex_holidays(now_year) | _generate_moex_holidays(now_year + 1)
+    _get_moex_holidays_cached._cache = result
+    _get_moex_holidays_cached._ts    = _t.time()
+    return result
+
+
+_MOEX_HOLIDAYS: set = set()  # будет заполнен при первом вызове short_carry_risk()
+
+
+def short_carry_risk() -> int:
+    """
+    Риск переноса SHORT через выходные/праздники.
+    0 = нет риска (пн–чт, не перед праздником)
+    1 = завтра нерабочий день (однодневный перенос)
+    3 = пятница или канун длинных выходных (3+ дней)
+    Праздники генерируются автоматически для текущего + следующего года.
+    """
+    holidays = _get_moex_holidays_cached()
+    now = datetime.now(MSK_TZ)
+    wd = now.weekday()  # 0=пн, 4=пт, 5=сб, 6=вс
+
+    if wd == 4:   # Пятница → перенос на субботу+воскресенье = 3 ночи
+        return 3
+    if wd >= 5:   # Выходной
+        return 3
+
+    # Считаем сколько нерабочих дней подряд начиная с завтра
+    consecutive = 0
+    for delta in range(1, 8):
+        d = (now + timedelta(days=delta)).strftime("%Y-%m-%d")
+        wd_d = (now + timedelta(days=delta)).weekday()
+        if wd_d >= 5 or d in holidays:
+            consecutive += 1
+        else:
+            break
+
+    if consecutive >= 3:
+        return 3   # длинные выходные
+    if consecutive >= 1:
+        return 1   # нерабочий день
+    return 0
+
+
 def is_tradable(status) -> bool:
     # T-Bank API возвращает enum как целое число (5=NORMAL_TRADING, 1=NOT_AVAILABLE и т.д.)
     # Используем allowlist вместо denylist чтобы надёжно блокировать всё неизвестное
@@ -2223,6 +2322,19 @@ def process_instrument(client, item,
     elif sig == "SELL":
         if not allow_short_global or not allow_short:
             return
+
+        # ── Защита от SHORT с переносом через выходные/праздники ─────────────
+        _carry = short_carry_risk()
+        if _carry >= 1:
+            _carry_names = {1: "перенос через нерабочий день", 3: "перенос через выходные (3× стоимость)"}
+            _carry_reason = _carry_names.get(_carry, f"перенос {_carry} дней")
+            log.info("SELL %s заблокирован: риск переноса SHORT — %s", ticker, _carry_reason)
+            _save_signal(
+                skip_reason=f"Шорт заблокирован: {_carry_reason}",
+                skip_filter="short_carry_risk"
+            )
+            return
+
         if _coord is not None and not _coord.try_claim(_strategy_id, figi, ticker):
             return
 

@@ -395,12 +395,18 @@ def init_db():
             regime REAL DEFAULT 0,
             sector_corr REAL DEFAULT 0,
             ticker_hash REAL DEFAULT 0,
+            -- признак риска переноса SHORT v5.3.8
+            short_carry_risk REAL DEFAULT 0,
             -- результат (заполняется при закрытии)
             pnl REAL,
             quality_score REAL,
             label INTEGER  -- 1=прибыльная, 0=убыточная
         )
         """)
+        try:
+            cur.execute("ALTER TABLE ml_features ADD COLUMN short_carry_risk REAL DEFAULT 0")
+        except Exception:
+            pass
 
         cur.execute("""
         CREATE TABLE IF NOT EXISTS ml_models (

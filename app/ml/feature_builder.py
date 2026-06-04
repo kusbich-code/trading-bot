@@ -181,6 +181,31 @@ def build_features(
             update_sector_returns(figi, returns_5m)
         sector_corr = compute_sector_correlation(figi, returns_5m)
 
+    # ── Риск переноса SHORT через выходные/праздники ─────────────────────────
+    _wd = now_msk.weekday()
+    if _wd >= 4:   # пятница или выходной
+        short_carry_risk = 3.0
+    else:
+        # Считаем нерабочих дней подряд начиная с завтра
+        _consecutive = 0
+        for _delta in range(1, 8):
+            _d = now_msk + timedelta(days=_delta)
+            _ds = _d.strftime("%Y-%m-%d")
+            if _d.weekday() >= 5:
+                _consecutive += 1
+            else:
+                # Проверяем через основной модуль если доступен
+                try:
+                    from main import _get_moex_holidays_cached as _ghc
+                    _hols = _ghc()
+                    if _ds in _hols:
+                        _consecutive += 1
+                        continue
+                except Exception:
+                    pass
+                break
+        short_carry_risk = 3.0 if _consecutive >= 3 else (1.0 if _consecutive >= 1 else 0.0)
+
     # ── Рыночный режим (упрощённый, без отдельного модуля) ────────────────────
     regime = 0.0
     if len(closes_5m) >= 20:
@@ -234,6 +259,7 @@ def build_features(
         "regime":        regime,
         "sector_corr":   round(sector_corr, 4),
         "ticker_hash":   get_ticker_code(ticker),
+        "short_carry_risk": short_carry_risk,  # 0=норма, 1=1 день, 3=выходные/праздник
     }
     return features
 
@@ -251,8 +277,9 @@ FEATURE_NAMES = [
     "vwap_dev",        # отклонение от VWAP в %
     "session_phase",   # 0=pre, 1=open, 2=morning, 3=lunch, 4=afternoon, 5=close
     "regime",          # 0=ranging, 1=trending_up, 2=trending_down, 3=volatile
-    "sector_corr",     # корреляция с SBER/GAZP
-    "ticker_hash",     # числовой код тикера (для универсальной модели)
+    "sector_corr",        # корреляция с SBER/GAZP
+    "ticker_hash",        # числовой код тикера (для универсальной модели)
+    "short_carry_risk",   # 0=норма, 1=нерабочий день, 3=выходные/праздник (комиссия за перенос)
 ]
 
 # Словарь тикер → числовой код
