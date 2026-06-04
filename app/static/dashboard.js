@@ -236,8 +236,6 @@ async function renderSummaryCards() {
   const newHtml = _buildSummaryHtml(s, hasError);
   const isFirst = !host.dataset.built;
   const savedNewsHtml = !isFirst ? (document.getElementById("newsWidgetInner")?.innerHTML ?? null) : null;
-  // Сохраняем DOM-узел iframe ДО перерисовки (перемещение узла не перезагружает стрим)
-  const savedTvIframe = document.querySelector("#rbkTvWidget iframe") || null;
   // Запомним старые значения .val перед перезаписью
   const oldVals = isFirst ? [] : Array.from(host.querySelectorAll('.val')).map(e => e.textContent.trim());
   host.innerHTML = newHtml;
@@ -248,13 +246,6 @@ async function renderSummaryCards() {
     if (nw) { nw.innerHTML = savedNewsHtml; nw.dataset.newsInited = "1"; }
   } else {
     _initNewsWidget();
-  }
-  // Возвращаем тот же iframe (не создаём новый — перемещение узла не сбрасывает видео)
-  const tvHost = document.getElementById("rbkTvWidget");
-  if (tvHost && savedTvIframe) {
-    tvHost.appendChild(savedTvIframe);
-  } else {
-    _initRbkWidget();
   }
   if (isFirst) {
     // Первый рендер: fade-in карточек
@@ -350,27 +341,21 @@ function _buildSummaryHtml(s, hasError) {
           }).join("")}
         </div>` : "";
       return `
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px">
-          <div class="sgrp">
-            <div class="sgrp-lbl" style="${warn ? 'color:#f0a500;border-color:#f0a500' : ''}">API</div>
-            <div class="sgrp-cards" style="grid-template-columns:1fr">
-              <div class="crd" style="background:${bg}">
-                <div class="lbl">Запросов/мин <span style="opacity:.5;font-size:9px">(бот)</span></div>
-                <div class="val" style="color:${color};font-size:15px">${s.api_rpm} <span style="font-size:11px;opacity:.7">/ ${s.api_rpm_limit}</span></div>
-                <div style="background:rgba(255,255,255,.08);border-radius:4px;height:4px;margin-top:4px;overflow:hidden">
-                  <div style="height:100%;width:${Math.min(pct,100)}%;background:${color};border-radius:4px;transition:width .5s"></div>
-                </div>
-                ${breakdownHtml}
-                ${warn ? `<div style="font-size:10px;color:#f0a500;margin-top:6px">⚠️ ${pct >= 95 ? 'Лимит исчерпан' : 'Нагрузка высокая'}</div>` : ''}
+        <div class="sgrp">
+          <div class="sgrp-lbl" style="${warn ? 'color:#f0a500;border-color:#f0a500' : ''}">API</div>
+          <div class="sgrp-cards" style="grid-template-columns:1fr">
+            <div class="crd" style="background:${bg}">
+              <div class="lbl">Запросов/мин <span style="opacity:.5;font-size:9px">(бот)</span></div>
+              <div class="val" style="color:${color};font-size:15px">${s.api_rpm} <span style="font-size:11px;opacity:.7">/ ${s.api_rpm_limit}</span></div>
+              <div style="background:rgba(255,255,255,.08);border-radius:4px;height:4px;margin-top:4px;overflow:hidden">
+                <div style="height:100%;width:${Math.min(pct,100)}%;background:${color};border-radius:4px;transition:width .5s"></div>
               </div>
+              ${breakdownHtml}
+              ${warn ? `<div style="font-size:10px;color:#f0a500;margin-top:6px">⚠️ ${pct >= 95 ? 'Лимит исчерпан' : 'Нагрузка высокая'}</div>` : ''}
             </div>
           </div>
-          <div style="display:flex;flex-direction:column;gap:0">
-            <div style="font-size:9px;font-weight:700;color:#7ab0e8;text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px">📺 РБК ТВ</div>
-            <div id="rbkTvWidget" style="flex:1;min-height:260px;border-radius:8px;overflow:hidden;background:#000"></div>
-          </div>
         </div>
-        <div id="newsWidgetInner" style="background:#0a1628;border:1px solid rgba(76,141,255,.12);border-radius:10px;overflow:hidden"></div>`;
+        <div id="newsWidgetInner" style="margin-top:6px;background:#0a1628;border:1px solid rgba(76,141,255,.12);border-radius:10px;overflow:hidden"></div>`;
     })() : ""}
   </div>`;
 }
@@ -389,7 +374,7 @@ function toggleSummaryCardsVisibility() {
   if (!wrapper) return;
   const show = getTabFromHash() === "главное";
   wrapper.style.display = show ? "block" : "none";
-  if (show) { _initNewsWidget(); _initRbkWidget(); }
+  if (show) _initNewsWidget();
 }
 
 function _initNewsWidget() {
@@ -399,18 +384,6 @@ function _initNewsWidget() {
   _renderNews();
 }
 
-function _initRbkWidget() {
-  const host = document.getElementById("rbkTvWidget");
-  if (!host || host.dataset.inited) return;
-  host.dataset.inited = "1";
-  host.innerHTML = `<iframe
-    src="https://smotret.tv/rbk"
-    style="width:100%;height:100%;min-height:260px;border:none;display:block"
-    allowfullscreen
-    allow="autoplay; encrypted-media; fullscreen"
-    loading="lazy"
-  ></iframe>`;
-}
 
 async function _renderNews() {
   const host = document.getElementById("newsWidgetInner");
