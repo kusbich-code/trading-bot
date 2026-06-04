@@ -61,13 +61,19 @@ def train_universal_model() -> Optional[Dict]:
     if len(set(y_train)) < 2:
         return None
 
+    # Балансируем веса классов: побед обычно меньше чем убытков
+    from collections import Counter
+    _cnt = Counter(y_train)
+    _total = len(y_train)
+    _sample_weight = [_total / (_cnt[yi] * len(_cnt)) for yi in y_train]
+
     base_model = GradientBoostingClassifier(
         n_estimators=150, learning_rate=0.08, max_depth=3,
-        min_samples_leaf=5, subsample=0.8, random_state=42,
+        min_samples_leaf=3, subsample=0.8, random_state=42,
     )
     # Platt scaling — калибрует вероятности чтобы P=0.65 реально было 65%
     model = CalibratedClassifierCV(base_model, method='sigmoid', cv=3)
-    model.fit(X_train, y_train)
+    model.fit(X_train, y_train, sample_weight=_sample_weight)
 
     metrics = {"n_train": len(X_train), "n_test": len(X_test), "universal": True}
     if X_test:
@@ -180,17 +186,22 @@ def train_model(figi: str, ticker: str, strategy_id: int) -> Optional[Dict]:
         log.warning("%s: только один класс в обучающей выборке", ticker)
         return None
 
+    from collections import Counter
+    _cnt = Counter(y_train)
+    _total = len(y_train)
+    _sample_weight = [_total / (_cnt[yi] * len(_cnt)) for yi in y_train]
+
     base_model = GradientBoostingClassifier(
         n_estimators=100,
         learning_rate=0.1,
         max_depth=3,
-        min_samples_leaf=5,
+        min_samples_leaf=3,
         subsample=0.8,
         random_state=42,
     )
     # Platt calibration — единая шкала вероятностей с универсальной моделью
     model = CalibratedClassifierCV(base_model, method='sigmoid', cv=3)
-    model.fit(X_train, y_train)
+    model.fit(X_train, y_train, sample_weight=_sample_weight)
 
     # Метрики
     metrics = {"n_train": len(X_train), "n_test": len(X_test)}
