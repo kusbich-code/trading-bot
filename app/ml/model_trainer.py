@@ -61,11 +61,26 @@ def train_universal_model() -> Optional[Dict]:
     if len(set(y_train)) < 2:
         return None
 
-    # Балансируем веса классов: побед обычно меньше чем убытков
-    from collections import Counter
-    _cnt = Counter(y_train)
-    _total = len(y_train)
-    _sample_weight = [_total / (_cnt[yi] * len(_cnt)) for yi in y_train]
+    # Oversample minority class (wins) до уровня majority (losses)
+    from random import Random as _Rng
+    _rng = _Rng(42)
+    _win_X  = [X_train[i] for i, y in enumerate(y_train) if y == 1]
+    _loss_X = [X_train[i] for i, y in enumerate(y_train) if y == 0]
+    _win_y  = [1] * len(_win_X)
+    _loss_y = [0] * len(_loss_X)
+    # Дублируем wins чтобы выровнять классы
+    if len(_win_X) < len(_loss_X) and _win_X:
+        _factor = len(_loss_X) // len(_win_X)
+        _extra  = len(_loss_X) % len(_win_X)
+        _win_X = _win_X * _factor + _rng.sample(_win_X, _extra)
+        _win_y = [1] * len(_win_X)
+    X_bal = _win_X + _loss_X
+    y_bal = _win_y + _loss_y
+    # Перемешиваем
+    _idx = list(range(len(X_bal)))
+    _rng.shuffle(_idx)
+    X_bal = [X_bal[i] for i in _idx]
+    y_bal = [y_bal[i] for i in _idx]
 
     base_model = GradientBoostingClassifier(
         n_estimators=150, learning_rate=0.08, max_depth=3,
@@ -73,7 +88,7 @@ def train_universal_model() -> Optional[Dict]:
     )
     # Platt scaling — калибрует вероятности чтобы P=0.65 реально было 65%
     model = CalibratedClassifierCV(base_model, method='sigmoid', cv=3)
-    model.fit(X_train, y_train, sample_weight=_sample_weight)
+    model.fit(X_bal, y_bal)
 
     metrics = {"n_train": len(X_train), "n_test": len(X_test), "universal": True}
     if X_test:
