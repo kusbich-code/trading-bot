@@ -2039,12 +2039,11 @@ def process_instrument(client, item,
         if _cost_1lot > 0:
             _total  = Decimal(str(state.session_total_assets or state.session_balance_current))
             _auto   = max(1, int(_total / _cost_1lot))
-            # ML confidence-based scaling: высокая уверенность → больше позиция
-            if _ml_features_for_entry:
+            # ML confidence-based scaling: только когда модель реально предсказала (не None)
+            if _ml_features_for_entry and '_ml_conf' in dir() and _ml_conf is not None:
                 try:
                     from app.ml.model_predictor import compute_lot_scale as _cls
-                    _ml_p_for_scale = _ml_conf if '_ml_conf' in dir() and _ml_conf else 0.5
-                    _ml_lot_scale = _cls(float(_ml_p_for_scale or 0.5))
+                    _ml_lot_scale = _cls(float(_ml_conf))
                     if _ml_lot_scale < 1.0:
                         _auto = max(1, int(_auto * _ml_lot_scale))
                 except Exception:
