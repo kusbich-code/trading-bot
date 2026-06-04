@@ -514,6 +514,8 @@ def dashboard_page():
     <section id="view-history" data-view="история" class="hidden"></section>
     <section id="view-backtest" data-view="бэктест" class="hidden"></section>
     <section id="view-analyst" data-view="аналитик" class="hidden"></section>
+    <section id="view-обучение" data-view="обучение" class="hidden"></section>
+    <section id="view-справка" data-view="справка" class="hidden"></section>
   </div>
 
   <div id="toastHost" class="toast-host"></div>

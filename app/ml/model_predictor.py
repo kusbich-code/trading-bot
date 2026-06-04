@@ -16,6 +16,9 @@ RANK_MIN_THRESHOLD  = 0.45  # ниже → временно отключаем �
 # Кеш загруженных моделей: figi_sid → (model, meta)
 _model_cache: Dict[str, tuple] = {}
 
+# Guard от дублирования early_exit: figi → timestamp последнего решения
+_exit_decided: Dict[str, float] = {}
+
 
 def is_active(figi: str, strategy_id: int) -> bool:
     """True если модель обучена и готова к автономным решениям."""
@@ -204,6 +207,13 @@ def should_exit_early(figi: str, ticker: str, strategy_id: int, features: Dict,
     if position_minutes < 15:
         return False, None
 
+    # Guard: не выдавать повторное решение exit в течение 5 минут
+    import time as _time
+    _now_ts = _time.monotonic()
+    _last = _exit_decided.get(figi, 0)
+    if _now_ts - _last < 300:
+        return False, None
+
     p = predict_probability(figi, strategy_id, features)
     if p is None:
         return False, None
@@ -216,6 +226,7 @@ def should_exit_early(figi: str, ticker: str, strategy_id: int, features: Dict,
             pnl_pct = -pnl_pct
         reason = _format_exit_reason(features, p, pnl_pct)
         if active:
+            _exit_decided[figi] = _now_ts  # ставим guard на 5 минут
             _send_ml_decision_tg(ticker, direction, "досрочное закрытие", p, reason)
             log_decision(figi, ticker, "early_exit", p, EXIT_THRESHOLD, True,
                          f"P={p:.3f} < {EXIT_THRESHOLD}", features)

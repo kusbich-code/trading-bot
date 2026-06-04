@@ -11,7 +11,7 @@ let _lastQuotesMap = {};   // последние котировки — испо
 // Viewed profile in settings tab (may differ from active profile)
 let viewedProfileId = null;
 
-const ALLOWED_TABS = new Set(["главное", "портфель", "настройки", "история", "бэктест", "аналитик", "обучение"]);
+const ALLOWED_TABS = new Set(["главное", "портфель", "настройки", "история", "бэктест", "аналитик", "обучение", "справка"]);
 
 function esc(v) {
   return String(v ?? "");
@@ -189,7 +189,7 @@ function _numVal(text) {
 }
 
 function ensureViewsExist() {
-  const required = ["главное", "портфель", "настройки", "история", "бэктест", "аналитик", "обучение"];
+  const required = ["главное", "портфель", "настройки", "история", "бэктест", "аналитик", "обучение", "справка"];
   const root = document.querySelector(".app") || document.body;
   required.forEach((tab) => {
     if (!document.querySelector(`[data-view="${tab}"]`)) {
@@ -3712,6 +3712,346 @@ let _analystOptPollTimer = null;
 
 // ── ML Learning Tab ────────────────────────────────────────────────────────────
 
+// ── Справка ─────────────────────────────────────────────────────────────────
+
+function renderHelpTab() {
+  const host = document.getElementById("view-справка");
+  if (!host || host.dataset.initialized) return;
+  host.dataset.initialized = "1";
+
+  const sec = (id, title, content) => `
+    <section class="block" style="margin-bottom:14px">
+      <h2 style="margin-bottom:12px;cursor:pointer;user-select:none" onclick="
+        var b=this.nextElementSibling;
+        b.style.display=b.style.display==='none'?'block':'none';
+        this.querySelector('.hchev').textContent=b.style.display==='none'?'▶':'▼';
+      ">
+        ${title} <span class="hchev muted" style="font-size:12px;margin-left:6px">▼</span>
+      </h2>
+      <div id="help-${id}">${content}</div>
+    </section>`;
+
+  const code = (t) => `<code style="background:rgba(76,141,255,.15);padding:2px 6px;border-radius:4px;font-size:12px">${t}</code>`;
+  const h3 = (t) => `<div style="font-weight:700;color:#c4dcff;margin:14px 0 6px">${t}</div>`;
+  const p  = (t) => `<p style="color:#9fb3d8;font-size:13px;line-height:1.6;margin:0 0 8px">${t}</p>`;
+  const li = (items) => `<ul style="color:#9fb3d8;font-size:13px;line-height:1.8;margin:0 0 8px;padding-left:20px">${items.map(i=>`<li>${i}</li>`).join("")}</ul>`;
+  const warn = (t) => `<div style="background:rgba(240,160,0,.1);border:1px solid rgba(240,160,0,.3);border-radius:6px;padding:8px 12px;font-size:12px;color:#f0c04a;margin:8px 0">${t}</div>`;
+  const ok = (t) => `<div style="background:rgba(47,163,107,.1);border:1px solid rgba(47,163,107,.3);border-radius:6px;padding:8px 12px;font-size:12px;color:#2fa36b;margin:8px 0">${t}</div>`;
+
+  const pre = (t) => `<pre style="background:#040d1a;border:1px solid rgba(76,141,255,.15);border-radius:8px;padding:14px;font-size:11.5px;line-height:1.6;color:#a0c4ff;overflow-x:auto;margin:10px 0">${t}</pre>`;
+
+  // ── ML СХЕМА ────────────────────────────────────────────────────────────────
+  const mlDiagram = pre(`
+  ТОРГОВЫЙ СИГНАЛ от стратегии (BUY / SELL)
+           │
+           ▼
+  ╔══════════════════════════════════════════════╗
+  ║       СБОРЩИК ПРИЗНАКОВ  (30 features)      ║
+  ║  ┌────────────┐ ┌──────────┐ ┌────────────┐ ║
+  ║  │  5м свечи  │ │ 1ч / 4ч │ │  API + рын.│ ║
+  ║  │ z-score    │ │ trend_1h │ │ RSI 14     │ ║
+  ║  │ momentum   │ │ trend_4h │ │ MACD 12-26 │ ║
+  ║  │ breakout   │ │ volatil. │ │ BB 20 ±2σ  │ ║
+  ║  │ vol_ratio  │ └──────────┘ │ bid_press. │ ║
+  ║  │ atr_pct    │              │ hour_sin   │ ║
+  ║  └────────────┘              └────────────┘ ║
+  ╚═══════════════════╤══════════════════════════╝
+                      │  вектор 30 чисел
+                      ▼
+  ╔══════════════════════════════════════════════╗
+  ║   GradientBoosting + Platt Calibration      ║
+  ║                                              ║
+  ║   150 деревьев → P(прибыльная) = 0.00..1.00 ║
+  ║   Обучен на 36 сделках, accuracy=77.8%      ║
+  ╚═══════════════════╤══════════════════════════╝
+                      │  вероятность P
+                      ▼
+  ╔══════════════════════════════════════════════╗
+  ║         МЕТА-СТРАТЕГИЯ  "2 из 3"            ║
+  ║                                              ║
+  ║  ① score ≥ min_score  (сигнал достаточно    ║
+  ║     сильный по стратегии)                   ║
+  ║  ② ML P ≥ 0.60        (модель уверена)      ║
+  ║  ③ 1ч-тренд подтверждает направление        ║
+  ║                                              ║
+  ║  Нужно минимум 2 из 3 → позиция открывается ║
+  ╚═══════════════════╤══════════════════════════╝
+                      │
+            ┌─────────┴──────────┐
+            ▼                    ▼
+  ┌──────────────────┐  ┌────────────────────┐
+  │  МАСШТАБ ЛОТОВ   │  │  АДАПТИВНЫЕ SL/TP  │
+  │                  │  │                    │
+  │ P≥0.90 → 100%    │  │  ATR высокий →     │
+  │ P≥0.80 →  80%    │  │  SL×1.5, TP×1.6   │
+  │ P≥0.70 →  65%    │  │  ATR низкий  →     │
+  │ P≥0.65 →  50%    │  │  SL×0.75, TP×0.85 │
+  │ P≥0.60 →  35%    │  │                    │
+  └──────────────────┘  └────────────────────┘
+                      │
+                      ▼
+  ╔══════════════════════════════════════════════╗
+  ║         МОНИТОРИНГ ОТКРЫТОЙ ПОЗИЦИИ         ║
+  ║                                              ║
+  ║  Каждые 5 сек: новые признаки → P ?         ║
+  ║                                              ║
+  ║  P < 0.40 (через 15+ мин) → РАННИЙ ВЫХОД    ║
+  ║  Иначе → стандартные SL / TP               ║
+  ╚═══════════════════╤══════════════════════════╝
+                      │  закрытие позиции
+                      ▼
+  ╔══════════════════════════════════════════════╗
+  ║      РАЗМЕТКА И НАКОПЛЕНИЕ ОПЫТА            ║
+  ║                                              ║
+  ║  label = 1 (PnL > 0)  или  0 (PnL ≤ 0)     ║
+  ║  Строка в ml_features → переобучение        ║
+  ║  При 10+ новых сделках → retrain модели     ║
+  ╚══════════════════════════════════════════════╝`);
+
+  // ── PHASE 1 DIAGRAM ─────────────────────────────────────────────────────────
+  const phase1Diagram = pre(`
+  ИСТОРИЯ СДЕЛОК (последние 90 дней)
+           │
+           ▼
+  ┌─────────────────────────────────────┐
+  │   АНАЛИЗ КАЧЕСТВА (EWA quality)    │
+  │                                     │
+  │ quality_score = pnl / invested      │
+  │ Экспоненц. скользящее среднее       │
+  │ confidence = f(число сделок)        │
+  └───────────────┬─────────────────────┘
+                  │ confidence ≥ порог
+                  ▼
+  ┌──────────────────────────────────────────┐
+  │           ОПТИМИЗАЦИЯ                   │
+  │                                          │
+  │  conf ≥ 0.50 → Coordinate Descent:      │
+  │    Перебор 5400 комбо SL/TP/score       │
+  │    Лучшая expectancy → применяем        │
+  │                                          │
+  │  conf ≥ 0.65 → Thompson Sampling:       │
+  │    Выбор режима стратегии               │
+  │    (mean_reversion / breakout / trend)  │
+  └──────────────────────────────────────────┘`);
+
+  host.innerHTML = `
+  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px">
+    ${["ml","phase1","strategies","positions","settings","faq"].map((s,i)=>`
+    <button class="btn${i===0?' btn-primary':''}" onclick="
+      document.querySelectorAll('[data-hsec]').forEach(e=>e.style.display='none');
+      document.getElementById('hs-${s}').style.display='block';
+      document.querySelectorAll('.help-nav-btn').forEach(e=>e.classList.remove('btn-primary'));
+      this.classList.add('btn-primary');
+    " class="btn help-nav-btn${i===0?' btn-primary':''}">${
+      ["🤖 ML Модель","📊 Оптимизация","⚡ Стратегии","📋 Позиции","⚙️ Настройки","❓ FAQ"][i]
+    }</button>`).join("")}
+  </div>
+
+  <!-- ML Модель -->
+  <div data-hsec id="hs-ml">
+    ${h3("🤖 ML-модель — принцип работы")}
+    ${p("Система использует <b>GradientBoostingClassifier</b> с калибровкой Platt — для каждой потенциальной сделки вычисляется вероятность P(прибыльная). Модель учится на реальных сделках бота.")}
+    ${mlDiagram}
+
+    ${h3("30 признаков модели")}
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px">
+      ${[
+        ["5м технические","z_score, sma_gap_pct, momentum_5, breakout_dist, vol_ratio, atr_pct"],
+        ["1ч контекст","z_score_1h, trend_1h, volatility_1h"],
+        ["4ч макро","trend_4h, momentum_4h"],
+        ["Стакан ордеров","bid_pressure, spread_pct, book_depth_ratio"],
+        ["API индикаторы","rsi (14), macd_diff (12-26-9), bb_position (20, ±2σ)"],
+        ["Сигнал","signal_dir, signal_score"],
+        ["Время","hour_sin, hour_cos, is_morning, is_close, day_of_week"],
+        ["Позиция","position_minutes, session_phase, vwap_dev"],
+        ["Рынок","regime, sector_corr, ticker_hash"],
+      ].map(([t,v])=>`<div style="background:rgba(255,255,255,.03);border-radius:6px;padding:8px 10px">
+        <div style="font-size:10px;font-weight:700;color:#7ab0e8;margin-bottom:4px">${t}</div>
+        <div style="font-size:11px;color:#9fb3d8">${v}</div>
+      </div>`).join("")}
+    </div>
+
+    ${h3("Пороги принятия решений")}
+    <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px">
+      <div style="background:rgba(47,163,107,.08);border:1px solid rgba(47,163,107,.2);border-radius:6px;padding:10px">
+        <div style="font-weight:700;color:#2fa36b;margin-bottom:6px">Вход в позицию</div>
+        <div style="font-size:12px;color:#9fb3d8;line-height:1.8">
+          P ≥ 0.90 → 100% лотов<br>
+          P ≥ 0.80 → 80% лотов<br>
+          P ≥ 0.70 → 65% лотов<br>
+          P ≥ 0.65 → 50% лотов<br>
+          P ≥ 0.60 → 35% лотов<br>
+          P &lt; 0.60 → вход заблокирован
+        </div>
+      </div>
+      <div style="background:rgba(255,123,123,.08);border:1px solid rgba(255,123,123,.2);border-radius:6px;padding:10px">
+        <div style="font-weight:700;color:#ff7b7b;margin-bottom:6px">Выход из позиции</div>
+        <div style="font-size:12px;color:#9fb3d8;line-height:1.8">
+          P &lt; 0.40 (через ≥15 мин) → ранний выход<br>
+          SL / TP → стандартное закрытие<br><br>
+          <span style="color:#f0c04a">Soft mode</span> (до активации): решения<br>
+          логируются, но не исполняются
+        </div>
+      </div>
+    </div>
+
+    ${h3("Цикл обучения")}
+    ${li([
+      "При каждом <b>открытии</b> позиции — собираются 30 признаков, записываются в <code>ml_features</code>",
+      "При <b>закрытии</b> — ставится метка: label=1 (прибыль) или label=0 (убыток)",
+      "Когда накопилось <b>10+ новых</b> размеченных сделок — модель переобучается в фоне",
+      "<b>Ежедневно в 02:00 МСК</b> — принудительное переобучение + проверка дрейфа",
+      "Модель активируется когда накоплено ≥30 размеченных сделок (сейчас: 45 ✅)"
+    ])}
+
+    ${ok("✅ Модель активна — precision=50%, accuracy=77.8%, обучена на 36 сделках (15 побед / 21 поражение в train)")}
+    ${warn("⚠️ Качество модели растёт с каждой новой сделкой. При precision≥58% начнёт присылать Telegram-уведомление.")}
+  </div>
+
+  <!-- Phase 1 Оптимизация -->
+  <div data-hsec id="hs-phase1" style="display:none">
+    ${h3("📊 Фаза 1 — Автооптимизация параметров стратегий")}
+    ${p("Параллельно с ML-моделью (Phase 2) работает система самообучения Phase 1 которая оптимизирует SL, TP и минимальный score на основе истории торговли.")}
+    ${phase1Diagram}
+
+    ${h3("Confidence — уровень уверенности")}
+    ${li([
+      "<b>0.30+</b> (5+ сделок) → Мягкий сдвиг score на 1-3 пункта",
+      "<b>0.50+</b> (10+ сделок) → Оптимизация SL/TP: Coordinate Descent по 5400 комбинациям",
+      "<b>0.65+</b> (15+ сделок) → Выбор режима стратегии: Thompson Sampling",
+      "<b>0.75+</b> (20+ сделок) → Временное отключение инструментов с низким качеством"
+    ])}
+
+    ${h3("Что было оптимизировано (последний ребаланс 03.06.2026)")}
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px">
+      ${[
+        ["VTBR","SL 0.6%→0.3%, TP 2%→1.5%, score 0→20"],
+        ["TATN","SL 0.6%→0.2%"],
+        ["SBER","SL 0.5%→0.6%, TP 1%→1.5%"],
+        ["ROSN","min_score 40→50"],
+        ["NVTK","TP 1.5%→2%"],
+        ["MOEX","SL 0.5%→0.3%, TP 1.5%→2%"],
+        ["GAZP","SL 0.6%→0.5%"],
+        ["ALRS","режим trend→breakout, score 0→50"],
+        ["AFLT","SL 0.6%→0.2%, TP 2%→1.5%, score 0→20"],
+      ].map(([t,d])=>`<div style="background:rgba(255,255,255,.03);border-radius:6px;padding:8px 10px">
+        <div style="font-weight:700;color:#c4dcff;font-size:13px">${t}</div>
+        <div style="font-size:11px;color:#9fb3d8">${d}</div>
+      </div>`).join("")}
+    </div>
+  </div>
+
+  <!-- Стратегии -->
+  <div data-hsec id="hs-strategies" style="display:none">
+    ${h3("⚡ Параллельные стратегии")}
+    ${p("Бот торгует 12 инструментами одновременно через параллельные потоки. Координатор гарантирует что в любой момент открыта только ОДНА позиция.")}
+
+    ${h3("Статусы стратегий")}
+    <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:12px">
+      ${[
+        ["🟢 в позиции","Эта стратегия держит активную позицию"],
+        ["⚪ другая стратегия в позиции","Координатор заблокирован другой стратегией"],
+        ["🔵 ожидание сигнала","Сканирует рынок, ждёт сигнала BUY/SELL"],
+        ["🟡 торговля не ведётся","Вне торговой сессии MOEX"],
+        ["🔴 бот выключен","Торговля отключена в настройках"],
+        ["⚡ сканирование","Активно проверяет текущий инструмент"],
+      ].map(([s,d])=>`<div style="background:rgba(255,255,255,.03);border-radius:6px;padding:8px 12px">
+        <div style="font-size:12px;font-weight:600;color:#c4dcff;margin-bottom:3px">${s}</div>
+        <div style="font-size:11px;color:#9fb3d8">${d}</div>
+      </div>`).join("")}
+    </div>
+
+    ${h3("PnL периоды")}
+    ${li([
+      "<b>PnL день</b> — прибыль/убыток с 00:00 текущих суток (МСК)",
+      "<b>PnL неделя</b> — с понедельника текущей недели",
+      "<b>PnL мес.</b> — с 1-го числа текущего месяца",
+      "<b>Стопов мес.</b> — сколько раз срабатывал дневной лимит потерь за 30 дней"
+    ])}
+
+    ${h3("Торговые сессии MOEX")}
+    ${li([
+      "<b>Основная:</b> 10:00 – 18:50 МСК (пн–пт)",
+      "<b>Вечерняя:</b> 19:05 – 23:50 МСК (пн–пт)",
+      "<b>Режим mean_reversion</b> — возврат к средней, RSI-фильтр",
+      "<b>Режим breakout</b> — пробой уровней, импульс",
+      "<b>Режим trend</b> — следование тренду, SMA-фильтр"
+    ])}
+  </div>
+
+  <!-- Позиции -->
+  <div data-hsec id="hs-positions" style="display:none">
+    ${h3("📋 Блок позиций — расшифровка полей")}
+    ${li([
+      "<b>PnL</b> = (exit − entry) × акции − комиссия. Для SELL: (entry − exit) × акции − комиссия",
+      "<b>Вход / Выход</b> — средняя цена исполнения ордера",
+      "<b>Кол-во лотов × размер</b> — лоты × акций в лоте = итого акций",
+      "<b>Комиссия</b> = (entry × акции + exit × акции) × 0.04%",
+      "<b>STOP_LOSS</b> — позиция закрыта по достижению уровня стопа",
+      "<b>TAKE_PROFIT</b> — позиция закрыта по достижению тейка",
+      "<b>ML_EARLY_EXIT</b> — модель решила закрыть досрочно (P < 0.40)",
+      "<b>exchange</b> — закрыто нативным стопом брокера (без ордера бота)",
+      "<b>manual</b> — закрыто вручную через брокерское приложение"
+    ])}
+
+    ${h3("Блок котировок (Финам-стиль)")}
+    ${li([
+      "<b>Пред. закр.</b> — цена закрытия предыдущей торговой сессии",
+      "<b>Открытие</b> — цена первой свечи текущей сессии",
+      "<b>День / Неделя / Месяц / Год</b> — диапазон High–Low за период",
+      "<b>Ср. объём</b> — среднедневной объём за 20 дней",
+      "Данные берутся из T-Bank API (дневные свечи), кэш 60 сек"
+    ])}
+  </div>
+
+  <!-- Настройки -->
+  <div data-hsec id="hs-settings" style="display:none">
+    ${h3("⚙️ Ключевые настройки бота")}
+    ${li([
+      "<b>check_interval_sec</b> — частота опроса инструментов (сек). Меньше = быстрее реакция но больше API-запросов",
+      "<b>stop_loss_pct</b> — стоп-лосс в %. ML может адаптировать на ±50% от базового",
+      "<b>take_profit_pct</b> — тейк-профит в %. ML может адаптировать на ±60%",
+      "<b>min_signal_score</b> — минимальный score сигнала для входа (0-100)",
+      "<b>max_daily_loss_rub</b> — максимальный дневной убыток. При превышении торговля блокируется до следующего дня",
+      "<b>auto_lots</b> — автоматический расчёт числа лотов от суммы портфеля. ML скейлит по уверенности",
+      "<b>use_order_book_filter</b> — использовать давление стакана для фильтрации сигналов",
+      "<b>use_api_confirm</b> — подтверждение сигнала через RSI/MACD/BB от T-Bank API"
+    ])}
+
+    ${h3("API лимиты T-Bank")}
+    ${li([
+      "Лимит: 600 запросов/мин на аккаунт",
+      "Каждый инструмент: GetCandles + GetLastPrices + GetOrderBook каждый цикл",
+      "12 инструментов × 3 запроса × 12 итераций/мин ≈ 432 запроса",
+      "GetTechAnalysis (RSI/MACD/BB) — только при use_api_confirm=true",
+      "⚠️ При нагрузке > 80% рекомендуется увеличить check_interval_sec"
+    ])}
+  </div>
+
+  <!-- FAQ -->
+  <div data-hsec id="hs-faq" style="display:none">
+    ${h3("❓ Часто задаваемые вопросы")}
+    ${[
+      ["Почему модель в статусе «Учится»?",
+       "Модель активируется после накопления ≥30 размеченных сделок (после закрытия позиций). Сейчас: 45 сделок, модель активна."],
+      ["Что такое мягкий режим (soft mode)?",
+       "Когда модель не активирована — все решения логируются в ml_decisions, но НЕ исполняются. Торговля идёт по обычным правилам стратегии."],
+      ["Почему позиция закрылась раньше SL/TP?",
+       "Модель обнаружила разворот: P(прибыльная) упала ниже 0.40 через 15+ минут после открытия. Это ML_EARLY_EXIT — защита от больших убытков."],
+      ["Почему у всех стратегий статус «ожидание сигнала» когда есть позиция?",
+       "Возможно, координатор потерял состояние после рестарта бота. Бот автоматически восстанавливает позицию из БД каждые 5 сек. Если не восстановилось через 30 сек — проверь Telegram-уведомления."],
+      ["Как часто обновляются параметры SL/TP?",
+       "Ежедневно в 02:00 МСК — полный ребаланс. При накоплении 10+ новых сделок — частичное обновление. Также можно вручную через кнопку «Запустить ребаланс» на вкладке Обучение."],
+      ["Что значит PnL = -52.55 при одинаковой цене входа и выхода?",
+       "Комиссия брокера — она взимается при открытии И закрытии. При цене 325 ₽ × 202 акции × 2 стороны × 0.04% = 52.55 ₽ даже при нулевом движении цены."],
+    ].map(([q,a])=>`
+      <div style="margin-bottom:12px;border-bottom:1px solid rgba(255,255,255,.05);padding-bottom:12px">
+        <div style="font-weight:600;color:#c4dcff;margin-bottom:4px">Q: ${q}</div>
+        <div style="font-size:12px;color:#9fb3d8;line-height:1.6">A: ${a}</div>
+      </div>`).join("")}
+  </div>`;
+}
+
 async function renderLearningTab() {
   const host = document.getElementById("view-обучение");
   if (!host) return;
@@ -4726,6 +5066,8 @@ async function applyRoute() {
       await renderAnalystTab();
     } else if (tab === "обучение") {
       await renderLearningTab();
+    } else if (tab === "справка") {
+      renderHelpTab();
     }
   } catch (e) {
     console.error("[tabs] route error", e);

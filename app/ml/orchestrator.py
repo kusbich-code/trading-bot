@@ -366,15 +366,22 @@ def _check_concept_drift() -> None:
     """
     Drift detection: если rolling accuracy (последние 20 сделок) < 48% →
     принудительное переобучение + Telegram предупреждение.
+    Проверяет только сделки ПОСЛЕ первой активации модели (не бэкфил).
     """
     try:
         from app.db import db_cursor
         with db_cursor() as cur:
+            # Берём только сделки после первой активации модели
+            cur.execute("SELECT MIN(trained_at) FROM ml_models WHERE status='active'")
+            row = cur.fetchone()
+            activation_date = (row[0] if row and row[0] else None)
+            if not activation_date:
+                return  # Модель ещё не активирована — нечего проверять
             cur.execute("""
                 SELECT label FROM ml_features
-                WHERE label IS NOT NULL
+                WHERE label IS NOT NULL AND timestamp >= ?
                 ORDER BY id DESC LIMIT 20
-            """)
+            """, (activation_date,))
             labels = [row[0] for row in cur.fetchall()]
         if len(labels) < 10:
             return
