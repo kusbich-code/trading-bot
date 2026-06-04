@@ -400,7 +400,7 @@ async function _renderNews() {
       st.id = "tickerStyle";
       st.textContent = `@keyframes ticker{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}
         .ticker-wrap{overflow:hidden;white-space:nowrap;cursor:default}
-        .ticker-track{display:inline-block;animation:ticker 200s linear infinite}
+        .ticker-track{display:inline-block;animation:ticker 280s linear infinite}
         .ticker-track:hover{animation-play-state:paused}
         .ticker-item{display:inline-block;padding:0 32px;font-size:11.5px;color:#c4dcff;vertical-align:middle}
         .ticker-item a{color:inherit;text-decoration:none}
