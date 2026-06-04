@@ -487,6 +487,7 @@ def dashboard_page():
       <a href="#/бэктест" class="tab-link" data-tab-link="бэктест">Бэктест</a>
       <a href="#/аналитик" class="tab-link" data-tab-link="аналитик">Аналитик</a>
       <a href="#/обучение" class="tab-link" data-tab-link="обучение">🧠 Обучение</a>
+      <a href="#/справка" class="tab-link" data-tab-link="справка">📖 Справка</a>
     </nav>
 
     <div id="mainSummaryRow" style="display:none;margin-bottom:18px">
