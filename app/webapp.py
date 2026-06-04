@@ -493,10 +493,12 @@ def dashboard_page():
       <section id="summaryCards" style="margin-bottom:0"></section>
       <div id="rbkTvColumn" style="background:#0a1628;border:1px solid rgba(76,141,255,.12);border-radius:10px;overflow:hidden;display:flex;flex-direction:column">
         <div style="font-size:9px;font-weight:700;color:#7ab0e8;text-transform:uppercase;letter-spacing:.08em;padding:10px 12px 6px;border-bottom:1px solid rgba(76,141,255,.1);flex-shrink:0">📺 РБК ТВ</div>
-        <iframe src="https://smotret.tv/rbk"
-          style="width:100%;height:300px;border:none;display:block"
-          allowfullscreen allow="autoplay; encrypted-media; fullscreen"
-          loading="lazy"></iframe>
+        <div style="position:relative;width:100%;padding-bottom:56.25%">
+          <iframe src="https://smotret.tv/rbk"
+            style="position:absolute;top:0;left:0;width:100%;height:100%;border:none;display:block"
+            allowfullscreen allow="autoplay; encrypted-media; fullscreen"
+            loading="lazy"></iframe>
+        </div>
       </div>
     </div>
 
