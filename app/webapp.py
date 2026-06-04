@@ -655,6 +655,7 @@ def api_news_ticker(figi: str = "", hours: int = 4):
         ("РБК",         "https://rssexport.rbc.ru/rbcnews/news/30/full.rss"),
         ("Finam",       "https://www.finam.ru/analysis/conews/rsspoint/"),
         ("Коммерсантъ", "https://www.kommersant.ru/RSS/section-economics.xml"),
+        ("Ведомости",   "https://www.vedomosti.ru/rss/articles"),
     ]
 
     # Начало текущей торговой сессии MOEX (10:00 МСК = 07:00 UTC)
@@ -665,9 +666,11 @@ def api_news_ticker(figi: str = "", hours: int = 4):
     if _now_msk.hour < 10:
         session_start = session_start.replace(day=_now_msk.day - 1)
 
-    # Граница по времени: сначала пробуем N часов, иначе с начала сессии
+    # Граница по времени: берём max охват — либо N часов, либо начало сессии
     cutoff_hours = datetime.now(timezone.utc) - timedelta(hours=hours)
     cutoff_session = session_start.astimezone(timezone.utc)
+    # Используем более раннюю границу чтобы показать больше новостей
+    cutoff = min(cutoff_hours, cutoff_session)
 
     def _parse_date(pub_raw):
         if not pub_raw:
@@ -697,8 +700,7 @@ def api_news_ticker(figi: str = "", hours: int = 4):
                 if not any(kw.lower() in text_check for kw in keywords):
                     continue
                 pub_dt = _parse_date(pub_raw)
-                # Показываем новости за N часов; если мало — за сессию
-                if pub_dt and pub_dt < cutoff_session:
+                if pub_dt and pub_dt < cutoff:
                     continue
                 date_ui = pub_dt.astimezone(_msk).strftime("%d.%m %H:%M") if pub_dt else pub_raw[:16]
                 all_news.append({
@@ -720,7 +722,7 @@ def api_news_ticker(figi: str = "", hours: int = 4):
             seen_titles.add(t)
             news.append({"title": n["title"], "link": n["link"],
                          "date": n["date"], "source": n["source"]})
-        if len(news) >= 15:
+        if len(news) >= 20:
             break
 
     _ticker_news_cache[figi] = {"ts": now, "data": news}

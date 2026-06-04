@@ -987,7 +987,7 @@ async function _loadPosNews(figi) {
   const el = document.getElementById(`pos-news-${figi}`);
   if (!el) return;
   try {
-    const news = await apiGet(`/api/news/ticker?figi=${figi}&hours=4`);
+    const news = await apiGet(`/api/news/ticker?figi=${figi}&hours=24`);
     if (!news || !news.length) {
       el.innerHTML = '<div class="muted" style="text-align:center;padding:20px;font-size:12px">Новостей за 4 часа не найдено</div>';
       return;
