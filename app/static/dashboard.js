@@ -236,6 +236,8 @@ async function renderSummaryCards() {
   const newHtml = _buildSummaryHtml(s, hasError);
   const isFirst = !host.dataset.built;
   const savedNewsHtml = !isFirst ? (document.getElementById("newsWidgetInner")?.innerHTML ?? null) : null;
+  // Сохраняем DOM-узел iframe ДО перерисовки (перемещение узла не перезагружает стрим)
+  const savedTvIframe = document.querySelector("#rbkTvWidget iframe") || null;
   // Запомним старые значения .val перед перезаписью
   const oldVals = isFirst ? [] : Array.from(host.querySelectorAll('.val')).map(e => e.textContent.trim());
   host.innerHTML = newHtml;
@@ -247,8 +249,13 @@ async function renderSummaryCards() {
   } else {
     _initNewsWidget();
   }
-  // TV iframe создаётся один раз, не перерисовывается
-  _initRbkWidget();
+  // Возвращаем тот же iframe (не создаём новый — перемещение узла не сбрасывает видео)
+  const tvHost = document.getElementById("rbkTvWidget");
+  if (tvHost && savedTvIframe) {
+    tvHost.appendChild(savedTvIframe);
+  } else {
+    _initRbkWidget();
+  }
   if (isFirst) {
     // Первый рендер: fade-in карточек
     host.querySelectorAll('.crd').forEach((c, i) => {
@@ -414,22 +421,34 @@ async function _renderNews() {
       host.innerHTML = `<div style="padding:12px;color:#4a7aaa;font-size:12px">Нет новостей</div>`;
       return;
     }
-    host.style.cssText = host.style.cssText; // keep existing
+    // Инжектируем стиль бегущей строки один раз
+    if (!document.getElementById("tickerStyle")) {
+      const st = document.createElement("style");
+      st.id = "tickerStyle";
+      st.textContent = `@keyframes ticker{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}
+        .ticker-wrap{overflow:hidden;white-space:nowrap;cursor:default}
+        .ticker-track{display:inline-block;animation:ticker 90s linear infinite}
+        .ticker-track:hover{animation-play-state:paused}
+        .ticker-item{display:inline-block;padding:0 32px;font-size:11.5px;color:#c4dcff;vertical-align:middle}
+        .ticker-item a{color:inherit;text-decoration:none}
+        .ticker-item a:hover{color:#7ab0e8;text-decoration:underline}
+        .ticker-sep{color:#2e5a80;margin-right:6px}`;
+      document.head.appendChild(st);
+    }
+    const items = news.slice(0, 50);
+    // Дублируем для бесшовного цикла
+    const buildItems = (arr) => arr.map(n =>
+      `<span class="ticker-item"><span class="ticker-sep">◆</span><a href="${esc(n.link)}" target="_blank" rel="noopener">${esc(n.title)}</a></span>`
+    ).join("");
+    const track = buildItems(items) + buildItems(items);
     host.innerHTML = `
-      <div style="display:flex;flex-direction:column;height:100%;min-height:180px">
-        <div style="padding:10px 12px 8px;border-bottom:1px solid rgba(76,141,255,.12);flex-shrink:0;display:flex;align-items:center;gap:8px">
+      <div style="display:flex;flex-direction:column;height:100%">
+        <div style="padding:8px 12px 6px;border-bottom:1px solid rgba(76,141,255,.12);flex-shrink:0;display:flex;align-items:center;gap:8px">
           <span style="font-size:10px;font-weight:700;color:#7ab0e8;text-transform:uppercase;letter-spacing:.08em">Коммерсантъ</span>
           <span style="font-size:9px;color:#3a6080;background:rgba(76,141,255,.1);border:1px solid rgba(76,141,255,.2);border-radius:3px;padding:1px 5px">Экономика</span>
         </div>
-        <div style="max-height:180px;overflow-y:auto;padding:8px 12px;scrollbar-width:thin;scrollbar-color:#1e3a5f #0a1628">
-          ${news.slice(0,5).map(n => `
-            <div style="margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid rgba(30,58,95,.5)">
-              <a href="${esc(n.link)}" target="_blank" rel="noopener"
-                 style="color:#c4dcff;font-size:11.5px;line-height:1.45;text-decoration:none;display:block">
-                ${esc(n.title)}
-              </a>
-              <span style="color:#2e5a80;font-size:10px;margin-top:2px;display:block">${esc(n.date)}</span>
-            </div>`).join("")}
+        <div class="ticker-wrap" style="flex:1;display:flex;align-items:center;padding:6px 0">
+          <div class="ticker-track">${track}</div>
         </div>
       </div>`;
   } catch(e) {

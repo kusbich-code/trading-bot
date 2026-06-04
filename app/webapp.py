@@ -584,7 +584,7 @@ def api_news():
             root = ET.fromstring(resp.read())
         items = root.findall(".//item")
         news = []
-        for item in items[:20]:
+        for item in items[:50]:
             title = (item.findtext("title") or "").strip()
             link  = (item.findtext("link")  or "").strip()
             pub   = (item.findtext("pubDate") or "").strip()
