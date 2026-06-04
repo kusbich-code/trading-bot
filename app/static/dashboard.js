@@ -235,18 +235,11 @@ async function renderSummaryCards() {
 
   const newHtml = _buildSummaryHtml(s, hasError);
   const isFirst = !host.dataset.built;
-  const savedNewsHtml = !isFirst ? (document.getElementById("newsWidgetInner")?.innerHTML ?? null) : null;
   // Запомним старые значения .val перед перезаписью
   const oldVals = isFirst ? [] : Array.from(host.querySelectorAll('.val')).map(e => e.textContent.trim());
   host.innerHTML = newHtml;
   host.dataset.built = "1";
-  // Восстанавливаем новости (newsWidgetInner пересоздаётся при каждом рендере)
-  if (savedNewsHtml !== null) {
-    const nw = document.getElementById("newsWidgetInner");
-    if (nw) { nw.innerHTML = savedNewsHtml; nw.dataset.newsInited = "1"; }
-  } else {
-    _initNewsWidget();
-  }
+  if (isFirst) _initNewsWidget();
   if (isFirst) {
     // Первый рендер: fade-in карточек
     host.querySelectorAll('.crd').forEach((c, i) => {
@@ -355,7 +348,7 @@ function _buildSummaryHtml(s, hasError) {
             </div>
           </div>
         </div>
-        <div id="newsWidgetInner" style="margin-top:6px;background:#0a1628;border:1px solid rgba(76,141,255,.12);border-radius:10px;overflow:hidden"></div>`;
+        `;
     })() : ""}
   </div>`;
 }
