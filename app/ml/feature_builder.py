@@ -259,9 +259,10 @@ FEATURE_NAMES = [
 _TICKER_CODES: dict = {}
 
 def get_ticker_code(ticker: str) -> float:
-    """Стабильный числовой код тикера для универсальной модели."""
+    """Стабильный числовой код тикера для универсальной модели (CRC32 — не зависит от PYTHONHASHSEED)."""
     if ticker not in _TICKER_CODES:
-        _TICKER_CODES[ticker] = float(abs(hash(ticker)) % 1000) / 1000
+        import binascii
+        _TICKER_CODES[ticker] = float((binascii.crc32(ticker.encode()) & 0xFFFFFFFF) % 1000) / 1000
     return _TICKER_CODES[ticker]
 
 

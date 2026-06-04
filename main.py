@@ -2155,13 +2155,16 @@ def process_instrument(client, item,
         # ML Phase 2: сохранение признаков для обучения модели
         try:
             from app.ml.feature_builder import build_features as _bf2, store_features as _sf2
+            from app.ml.multi_timeframe import get_all_timeframes as _gtf2
             _ml_ind2 = {"rsi": state.instrument_meta.get(ticker, {}).get("rsi") or 50,
                         "macd": state.instrument_meta.get(ticker, {}).get("macd") or 0,
                         "macd_signal": state.instrument_meta.get(ticker, {}).get("macd_signal") or 0,
                         "bb_upper": state.instrument_meta.get(ticker, {}).get("bb_upper") or 0,
                         "bb_lower": state.instrument_meta.get(ticker, {}).get("bb_lower") or 0}
             _ob2 = {"bid_vol": bid_vol, "ask_vol": ask_vol}
-            _feat2 = _bf2(figi, ticker, candles_dict, score, "BUY", _ml_ind2, _ob2)
+            _tf2 = _gtf2(client, figi)
+            _feat2 = _bf2(figi, ticker, candles_dict, score, "BUY", _ml_ind2, _ob2,
+                          _tf2.get("1hour", []), _tf2.get("4hour", []))
             _feat_id = _sf2(figi, ticker, _strategy_id or 0, _feat2, 0)
             positions[ticker]["ml_feature_id"] = _feat_id
             if _feat_id:
