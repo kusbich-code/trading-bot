@@ -240,6 +240,8 @@ async function renderSummaryCards() {
   host.innerHTML = newHtml;
   host.dataset.built = "1";
   if (isFirst) _initNewsWidget();
+  // Восстанавливаем данные сессии сразу из кеша (без лишнего API-запроса)
+  _applySessionData(_sessionData);
   if (isFirst) {
     // Первый рендер: fade-in карточек
     host.querySelectorAll('.crd').forEach((c, i) => {
@@ -569,43 +571,44 @@ function _updateSessionTimer() {
   }
 }
 
+function _applySessionData(d) {
+  if (!d) return;
+  const sess = d.session || {};
+  const vol  = d.volatility || {};
+  const typeColors = {
+    "основная": "#2fa36b", "вечерняя": "#7ab0e8",
+    "перерыв":  "#f0c04a", "закрыта":  "#9fb3d8", "выходной": "#9fb3d8",
+  };
+  const color = typeColors[sess.type] || "#9fb3d8";
+
+  const set = (id, txt, clr) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (txt !== undefined) el.textContent = txt;
+    if (clr !== undefined) el.style.color = clr;
+  };
+  set("sessTypeVal", sess.label || "—", color);
+  set("sessTimeVal", sess.type !== "выходной" ? `${sess.start || "—"} – ${sess.end || "—"}` : "");
+  set("sessUntilLbl", sess.until_label || "До открытия");
+  set("sessVolVal", vol.label || "—", vol.color || "#9fb3d8");
+  set("sessAtrVal", vol.atr ? `ATR ${vol.atr.toFixed(2)}%` : "");
+  // таймер — только если счётчик ещё не запущен для этой сессии
+  const timerEl = document.getElementById("sessTimerVal");
+  if (timerEl && timerEl.textContent === "—") {
+    _sessionSecsLeft = sess.seconds_left || 0;
+    timerEl.textContent = _fmtTimer(_sessionSecsLeft);
+  }
+}
+
 async function _loadSessionData() {
   try {
     const d = await apiGet("/api/market/session");
     _sessionData = d;
-    const sess = d.session || {};
-    const vol  = d.volatility || {};
-
-    const typeColors = {
-      "основная":  "#2fa36b",
-      "вечерняя":  "#7ab0e8",
-      "перерыв":   "#f0c04a",
-      "закрыта":   "#9fb3d8",
-      "выходной":  "#9fb3d8",
-    };
-    const color = typeColors[sess.type] || "#9fb3d8";
-
-    const labelEl = document.getElementById("sessTypeVal");
-    const timeEl  = document.getElementById("sessTimeVal");
-    const untilEl = document.getElementById("sessUntilLbl");
-    const timerEl = document.getElementById("sessTimerVal");
-    const volEl   = document.getElementById("sessVolVal");
-    const atrEl   = document.getElementById("sessAtrVal");
-
-    if (labelEl) { labelEl.textContent = sess.label || "—"; labelEl.style.color = color; }
-    if (timeEl)  timeEl.textContent = sess.type !== "выходной" ? `${sess.start} – ${sess.end}` : "";
-    if (untilEl) untilEl.textContent = sess.until_label || "До открытия";
-    if (volEl)   { volEl.textContent = vol.label || "—"; volEl.style.color = vol.color || "#9fb3d8"; }
-    if (atrEl)   atrEl.textContent = vol.atr ? `ATR ${vol.atr.toFixed(2)}%` : "";
-
-    _sessionSecsLeft = sess.seconds_left || 0;
-    if (timerEl) timerEl.textContent = _fmtTimer(_sessionSecsLeft);
-
+    _sessionSecsLeft = (d.session || {}).seconds_left || 0;
+    _applySessionData(d);
     clearInterval(_sessionTimerInterval);
     _sessionTimerInterval = setInterval(_updateSessionTimer, 1000);
-  } catch(e) {
-    // silent fail
-  }
+  } catch(e) { /* silent */ }
 }
 
 function _startSessionWidget() {
