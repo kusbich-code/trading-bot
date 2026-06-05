@@ -1324,7 +1324,14 @@ def api_dashboard_bot_explain():
     elif enabled_instruments_count == 0:
         reasons.append("Нет активных инструментов" + (" в параллельных стратегиях" if parallel_on else " в стратегии"))
     if trade_only_session == "1":
-        reasons.append("Торговля ограничена торговой сессией (trade_only_session=1)")
+        # Показываем только когда сессия закрыта, а не всегда
+        from datetime import datetime as _dt2, timezone as _tz2, timedelta as _td2
+        _msk2 = _tz2(_td2(hours=3))
+        _now2 = _dt2.now(_msk2)
+        _t2 = _now2.hour * 60 + _now2.minute
+        _session_open = _now2.weekday() < 5 and ((600 <= _t2 < 1130) or (1145 <= _t2 < 1430))
+        if not _session_open:
+            reasons.append("Спящий режим — биржа закрыта (торговля только в сессию)")
 
     max_pos = int(str(settings_map.get("max_open_positions", "2")))
     cur_pos = len(open_positions)

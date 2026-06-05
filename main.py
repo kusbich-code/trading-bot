@@ -547,17 +547,8 @@ def is_session_allowed(client, figi: str) -> bool:
         return True
 
     status = get_trading_status(client, figi)
-    status_str = str(status)
-
-    allowed_statuses = {
-        "SECURITY_TRADING_STATUS_NORMAL_TRADING",
-        "SECURITY_TRADING_STATUS_DEALER_NORMAL_TRADING",
-        "SECURITY_TRADING_STATUS_SESSION_OPEN",
-        "SECURITY_TRADING_STATUS_OPENING_PERIOD",
-        "SECURITY_TRADING_STATUS_CLOSING_PERIOD",
-    }
-
-    return status_str in allowed_statuses or "NORMAL_TRADING" in status_str or "SESSION_OPEN" in status_str
+    # API возвращает integer (5=NORMAL) или строку — проверяем оба формата
+    return is_tradable(status)
 
 
 def notify(message: str, is_error: bool = False):
