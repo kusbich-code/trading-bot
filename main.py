@@ -1055,6 +1055,39 @@ def short_carry_risk() -> int:
     return 3 if consecutive >= 3 else 1
 
 
+def should_force_close_short() -> bool:
+    """
+    True если открытый SHORT нужно принудительно закрыть чтобы не тащить через выходные.
+    Срабатывает за 1 час до конца каждой сессии в дни с carry-риском:
+      - Основная сессия 10:00-18:50: закрываем с 17:50 МСК
+      - Вечерняя сессия 19:05-23:50: закрываем с 22:50 МСК
+    """
+    holidays = _get_moex_holidays_cached()
+    now = datetime.now(MSK_TZ)
+    wd = now.weekday()
+    t = now.hour * 60 + now.minute
+
+    # Есть ли carry-риск?
+    has_risk = wd == 4  # пятница
+    if not has_risk and wd < 5:
+        tomorrow = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+        has_risk = tomorrow in holidays
+    if not has_risk:
+        return False
+
+    in_main = 600 <= t < 1130   # 10:00-18:50
+    in_eve  = 1145 <= t < 1430  # 19:05-23:50
+
+    # За 1 час до конца основной сессии (17:50+)
+    if in_main and t >= 17 * 60 + 50:
+        return True
+    # За 1 час до конца вечерней сессии (22:50+)
+    if in_eve and t >= 22 * 60 + 50:
+        return True
+
+    return False
+
+
 def is_tradable(status) -> bool:
     # T-Bank API возвращает enum как целое число (5=NORMAL_TRADING, 1=NOT_AVAILABLE и т.д.)
     # Используем allowlist вместо denylist чтобы надёжно блокировать всё неизвестное
@@ -1937,6 +1970,12 @@ def process_instrument(client, item,
                 close_signal = True
                 close_reason = "TAKE_PROFIT"
 
+        # Принудительное закрытие SHORT перед выходными/праздниками
+        if not close_signal and direction == "SELL" and should_force_close_short():
+            close_signal = True
+            close_reason = "SHORT_CARRY_CLOSE"
+            log.info("%s: принудительное закрытие SHORT (риск переноса через выходные)", ticker)
+
         # ML Фаза 4: досрочное закрытие при развороте
         if not close_signal:
             try:
@@ -2057,6 +2096,13 @@ def process_instrument(client, item,
             # Рассчитываем % движения цены для наглядности
             _price_move_pct = (float(exit_price) - float(entry_price)) / float(entry_price) * 100
             _price_move_sign = "+" if _price_move_pct >= 0 else ""
+            # Читаемое название причины закрытия
+            _reason_display = {
+                "STOP_LOSS":         "Стоп-лосс",
+                "TAKE_PROFIT":       "Тейк-профит",
+                "ML_EARLY_EXIT":     "ML: досрочный выход",
+                "SHORT_CARRY_CLOSE": "⚠️ Закрытие SHORT перед выходными",
+            }.get(close_reason, close_reason)
             # Пометка трейлинг-стопа
             _trailing_note = ""
             if close_reason == "STOP_LOSS" and trailing_stop_enabled:
@@ -2071,7 +2117,7 @@ def process_instrument(client, item,
                 f"Лотов: {exec_qty_lots} × {_lot_sz_c} шт = {exec_qty_shares} акций\n"
                 f"Сумма: {float(gross_amount):,.0f} ₽\n"
                 f"PnL: {_pnl_sign}{float(pnl):.2f} ₽\n"
-                f"Причина: {close_reason}{_trailing_note}"
+                f"Причина: {_reason_display}{_trailing_note}"
             )
         return
 
