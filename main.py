@@ -2221,13 +2221,17 @@ def process_instrument(client, item,
         if _cost_1lot > 0:
             _total  = Decimal(str(state.session_total_assets or state.session_balance_current))
             _auto   = max(1, int(_total / _cost_1lot))
-            # ML confidence-based scaling: только когда модель реально предсказала (не None)
+            # ML confidence-based scaling: только когда модель уверена выше порога входа.
+            # Если P < ENTRY_THRESHOLD — мета-стратегия уже переопределила ML (score+trend),
+            # поэтому скейлинг не применяем — используем полный auto_lots.
             if _ml_features_for_entry and '_ml_conf' in dir() and _ml_conf is not None:
                 try:
-                    from app.ml.model_predictor import compute_lot_scale as _cls
-                    _ml_lot_scale = _cls(float(_ml_conf))
-                    if _ml_lot_scale < 1.0:
-                        _auto = max(1, int(_auto * _ml_lot_scale))
+                    from app.ml.model_predictor import compute_lot_scale as _cls, ENTRY_THRESHOLD as _ET
+                    if float(_ml_conf) >= _ET:
+                        _ml_lot_scale = _cls(float(_ml_conf))
+                        if _ml_lot_scale < 1.0:
+                            _auto = max(1, int(_auto * _ml_lot_scale))
+                    # else: P < порога → не скейлим, meta-strategy взяла управление
                 except Exception:
                     pass
             if _auto != lot:
