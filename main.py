@@ -114,42 +114,41 @@ notifier = TelegramNotifier()
 
 class _ParallelCoord:
     """
-    Гарантирует, что только ОДНА позиция открыта во всех потоках параллельных стратегий.
+    Координатор параллельных стратегий.
+    Позволяет открывать несколько позиций одновременно, ограниченных:
+      - max_open_positions (настройка бота)
+      - доступным балансом (проверяется в process_instrument)
 
     Протокол:
-      1. Перед открытием позиции: вызовите try_claim(strategy_id, figi).
-         Возвращает True только если ни один другой поток не удерживает блокировку.
-      2. После закрытия: вызовите release(strategy_id).
-      3. Остальные потоки проверяют is_free() каждый цикл; если False и они не
-         владелец, они пропускают обработку инструмента и ждут.
+      1. try_claim(sid, figi) → True если этот поток ещё не занят И не превышен лимит.
+      2. release(sid) → освобождает слот после закрытия позиции.
+      3. is_owner(sid) → True если этот поток держит позицию.
+      4. is_free → True если нет ни одной открытой позиции.
     """
     def __init__(self):
         self._lock = threading.Lock()
-        self._owner_sid: Optional[int] = None
-        self._owner_figi: Optional[str] = None
-        self._owner_ticker: Optional[str] = None
+        self._owners: Dict[int, str] = {}   # strategy_id → figi
 
     @property
     def is_free(self) -> bool:
         with self._lock:
-            return self._owner_sid is None
+            return len(self._owners) == 0
 
     def try_claim(self, sid: int, figi: str, ticker: str = "") -> bool:
         with self._lock:
-            if self._owner_sid is None:
-                self._owner_sid    = sid
-                self._owner_figi   = figi
-                self._owner_ticker = ticker
-                self._persist()
-                return True
-            return False
+            if sid in self._owners:
+                return False  # этот поток уже держит позицию
+            max_pos = int(get_setting("max_open_positions", "3"))
+            if len(self._owners) >= max_pos:
+                return False  # достигнут лимит позиций
+            self._owners[sid] = figi
+            self._persist()
+            return True
 
     def release(self, sid: int) -> bool:
         with self._lock:
-            if self._owner_sid == sid:
-                self._owner_sid    = None
-                self._owner_figi   = None
-                self._owner_ticker = None
+            if sid in self._owners:
+                del self._owners[sid]
                 self._persist()
                 return True
             return False
@@ -158,23 +157,30 @@ class _ParallelCoord:
         try:
             import json as _j
             set_runtime("parallel_coord", _j.dumps({
-                "owner_strategy_id": self._owner_sid,
-                "owner_figi":        self._owner_figi,
-                "owner_ticker":      self._owner_ticker,
+                "owners": self._owners,
+                # Для обратной совместимости с _handle_manual_close
+                "owner_strategy_id": next(iter(self._owners), None),
+                "owner_figi":        next(iter(self._owners.values()), None),
             }))
         except Exception:
             pass
 
     def is_owner(self, sid: int) -> bool:
         with self._lock:
-            return self._owner_sid == sid
+            return sid in self._owners
+
+    @property
+    def owner_count(self) -> int:
+        with self._lock:
+            return len(self._owners)
 
     def snapshot(self) -> dict:
         with self._lock:
             return {
-                "owner_strategy_id": self._owner_sid,
-                "owner_figi":        self._owner_figi,
-                "owner_ticker":      self._owner_ticker,
+                "owners": dict(self._owners),
+                "owner_strategy_id": next(iter(self._owners), None),
+                "owner_figi":        next(iter(self._owners.values()), None),
+                "owner_ticker":      None,
             }
 
 
@@ -2131,8 +2137,9 @@ def process_instrument(client, item,
         return
 
     if _coord is not None:
-        # Параллельный режим: пропускаем если другая стратегия удерживает блокировку позиции
-        if not _coord.is_free and not _coord.is_owner(_strategy_id):
+        # Параллельный режим: пропускаем если лимит позиций достигнут и этот поток не владелец
+        _max_pos = int(_cfg("max_open_positions", "3"))
+        if _coord.owner_count >= _max_pos and not _coord.is_owner(_strategy_id):
             return
     elif len(positions) >= int(_cfg("max_open_positions", "2")):
         return
@@ -2219,7 +2226,9 @@ def process_instrument(client, item,
         _comm_v     = Decimal(_cfg("estimated_commission_pct", "0.0004"))
         _cost_1lot  = Decimal(str(_lot_size_v)) * price * (1 + _comm_v)
         if _cost_1lot > 0:
-            _total  = Decimal(str(state.session_total_assets or state.session_balance_current))
+            # Используем доступные средства (cash), а не total_assets —
+            # это автоматически учитывает уже открытые позиции других стратегий
+            _total  = Decimal(str(state.session_balance_current or state.session_total_assets))
             _auto   = max(1, int(_total / _cost_1lot))
             # ML confidence-based scaling: только когда модель уверена выше порога входа.
             # Если P < ENTRY_THRESHOLD — мета-стратегия уже переопределила ML (score+trend),
@@ -2574,8 +2583,9 @@ def _parallel_strategy_worker(strategy_id: int, strat_name: str, stop_ev: thread
 
             # Если нет открытых позиций и координатор занят — обновляем сигналы/цены,
             # но не открываем позиции (process_instrument сам проверяет _coord.try_claim)
-            if not positions and not _parallel_coord.is_free and not _parallel_coord.is_owner(strategy_id):
-                _pset(strategy_id, "ожидание — другая стратегия в позиции")
+            _max_pos_w = int(get_setting("max_open_positions", "3"))
+            if not positions and _parallel_coord.owner_count >= _max_pos_w and not _parallel_coord.is_owner(strategy_id):
+                _pset(strategy_id, "ожидание — лимит позиций достигнут")
 
             if get_setting("bot_enabled", "1") != "1":
                 _pset(strategy_id, "бот выключен")
@@ -2641,8 +2651,8 @@ def _parallel_strategy_worker(strategy_id: int, strat_name: str, stop_ev: thread
             if positions:
                 status = "в позиции"
                 ticker = list(positions.keys())[0]
-            elif not _parallel_coord.is_free and not _parallel_coord.is_owner(strategy_id):
-                status = "другая стратегия в позиции"
+            elif _parallel_coord.owner_count >= int(get_setting("max_open_positions", "3")) and not _parallel_coord.is_owner(strategy_id):
+                status = "лимит позиций достигнут"
                 ticker = ""
             elif not is_moex_session_open():
                 status = "торговля не ведётся"
