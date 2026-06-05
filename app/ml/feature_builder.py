@@ -182,11 +182,11 @@ def build_features(
         sector_corr = compute_sector_correlation(figi, returns_5m)
 
     # ── Риск переноса SHORT через выходные/праздники ─────────────────────────
+    # 0=норма, 1=завтра нерабочий (после 17:00), 3=длинные выходные (после 17:00)
     _wd = now_msk.weekday()
-    if _wd >= 4:   # пятница или выходной
+    if _wd >= 5:   # выходной
         short_carry_risk = 3.0
     else:
-        # Считаем нерабочих дней подряд начиная с завтра
         _consecutive = 0
         for _delta in range(1, 8):
             _d = now_msk + timedelta(days=_delta)
@@ -194,17 +194,22 @@ def build_features(
             if _d.weekday() >= 5:
                 _consecutive += 1
             else:
-                # Проверяем через основной модуль если доступен
                 try:
                     from main import _get_moex_holidays_cached as _ghc
-                    _hols = _ghc()
-                    if _ds in _hols:
+                    if _ds in _ghc():
                         _consecutive += 1
                         continue
                 except Exception:
                     pass
                 break
-        short_carry_risk = 3.0 if _consecutive >= 3 else (1.0 if _consecutive >= 1 else 0.0)
+        if _consecutive == 0:
+            short_carry_risk = 0.0
+        elif now_msk.hour < 17:   # до 17:00 — ещё можно открыть шорт
+            short_carry_risk = 0.0
+        elif _consecutive >= 3:
+            short_carry_risk = 3.0
+        else:
+            short_carry_risk = 1.0
 
     # ── Рыночный режим (упрощённый, без отдельного модуля) ────────────────────
     regime = 0.0
