@@ -246,6 +246,8 @@ state = BotState()
 # Сопоставляет response_order_id → Queue; place_order_checked() блокируется на очереди,
 # _orders_stream_worker() помещает объект OrderTrades при получении исполнения.
 _pending_orders: Dict[str, _queue.Queue] = {}
+# figi-и позиций которые мониторинг сейчас закрывает — защита от дублей с _handle_manual_close
+_closing_in_progress: Set[str] = set()
 _bot_client_cls = None  # устанавливается в main() до запуска потока стрима
 _30034_count: Dict[str, int] = {}  # figi → число последовательных 30034 за сессию
 
@@ -857,6 +859,10 @@ def sync_portfolio_positions(client):
                         continue
                 except Exception:
                     pass
+                # Мониторинг уже закрывает эту позицию — не создаём дубль
+                if bp["figi"] in _closing_in_progress:
+                    log.debug("sync_portfolio: %s закрывается мониторингом, пропускаем", bp["ticker"])
+                    continue
                 log.info("Позиция %s не найдена в портфеле — определяем причину закрытия", bp["ticker"])
                 _handle_manual_close(bp, market_map, client=client)
 
@@ -2015,13 +2021,18 @@ def process_instrument(client, item,
                     return
             except Exception:
                 pass
-            close_dir = OrderDirection.ORDER_DIRECTION_SELL if direction == "BUY" else OrderDirection.ORDER_DIRECTION_BUY
-            # Отменяем ВСЕ ордера по figi перед закрытием (нативные стопы + лимитники)
-            _cancel_all_orders_for_figi(client, figi, ticker)
-            order_result = place_order_checked(client, ticker, figi, qty, price, close_dir, market=True)
-            if not order_result:
-                state.order_cooldowns[figi] = _now()
-                return
+            # Флаг "закрытие в процессе" — не даёт _handle_manual_close создать дубль
+            _closing_in_progress.add(figi)
+            try:
+                close_dir = OrderDirection.ORDER_DIRECTION_SELL if direction == "BUY" else OrderDirection.ORDER_DIRECTION_BUY
+                # Отменяем ВСЕ ордера по figi перед закрытием (нативные стопы + лимитники)
+                _cancel_all_orders_for_figi(client, figi, ticker)
+                order_result = place_order_checked(client, ticker, figi, qty, price, close_dir, market=True)
+                if not order_result:
+                    state.order_cooldowns[figi] = _now()
+                    return
+            finally:
+                _closing_in_progress.discard(figi)
 
             exit_price = Decimal(str(order_result["executed_price"]))
             exec_qty_lots = int(order_result["lots_executed"] or qty)

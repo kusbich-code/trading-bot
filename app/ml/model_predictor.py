@@ -19,6 +19,9 @@ _model_cache: Dict[str, tuple] = {}
 # Guard от дублирования early_exit: figi → timestamp последнего решения
 _exit_decided: Dict[str, float] = {}
 
+# Дедупликация entry_allowed/entry_soft_allow: не логируем одно решение чаще раз в 60 сек
+_entry_log_ts: Dict[str, float] = {}  # figi → monotonic timestamp последнего лога
+
 
 def is_active(figi: str, strategy_id: int) -> bool:
     """True если модель обучена и готова к автономным решениям."""
@@ -186,13 +189,22 @@ def should_enter(figi: str, ticker: str, strategy_id: int, features: Dict,
         log_decision(figi, ticker, "entry_blocked", p, ENTRY_THRESHOLD, False, block_reason, features)
         return False, p, block_reason
     elif active:
-        log_decision(figi, ticker, "entry_allowed", p, ENTRY_THRESHOLD, True,
-                     f"Meta {meta_score}/3 P={p:.3f}", features)
+        # Дедупликация: entry_allowed логируем не чаще раз в 60 сек на figi
+        import time as _t
+        _now_mt = _t.monotonic()
+        if _now_mt - _entry_log_ts.get(figi, 0) >= 60:
+            log_decision(figi, ticker, "entry_allowed", p, ENTRY_THRESHOLD, True,
+                         f"Meta {meta_score}/3 P={p:.3f}", features)
+            _entry_log_ts[figi] = _now_mt
         return True, p, f"ML: P={p:.2f} meta={meta_score}/3"
     else:
         decision = "entry_soft_block" if not meta_allow else "entry_soft_allow"
-        log_decision(figi, ticker, decision, p, ENTRY_THRESHOLD, True,
-                     f"soft meta={meta_score}/3 P={p:.3f}", features)
+        import time as _t2
+        _now_mt2 = _t2.monotonic()
+        if _now_mt2 - _entry_log_ts.get(figi, 0) >= 60:
+            log_decision(figi, ticker, decision, p, ENTRY_THRESHOLD, True,
+                         f"soft meta={meta_score}/3 P={p:.3f}", features)
+            _entry_log_ts[figi] = _now_mt2
         return True, p, f"ML soft: P={p:.2f} meta={meta_score}/3"
 
 
