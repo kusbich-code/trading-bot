@@ -2264,8 +2264,8 @@ def process_instrument(client, item,
                     pass
             if _auto != lot:
                 log_event("AUTO_LOTS",
-                          f"{ticker}: итого {float(_total):.0f}₽ / {float(_cost_1lot):.0f}₽/лот = {_auto} лотов"
-                          f" (ML scale={_ml_lot_scale:.2f})",
+                          f"{ticker}: бюджет {float(_budget):.0f}₽ (портфель {float(_assets):.0f}₽/{_max_pos_al}) "
+                          f"/ {float(_cost_1lot):.0f}₽/лот = {_auto} лотов (ML scale={_ml_lot_scale:.2f})",
                           ticker=ticker)
             lot = _auto
 
