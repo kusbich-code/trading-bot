@@ -8,4 +8,5 @@ data/*.json
 !logs/.gitkeep
 !data/.gitkeep
 data/trading_bot.sqlite3
-.vscode/*
+.vscode/*.claude/
+check_js.py
