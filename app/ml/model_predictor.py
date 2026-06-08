@@ -210,10 +210,15 @@ def should_enter(figi: str, ticker: str, strategy_id: int, features: Dict,
 
     if active and not meta_allow:
         block_reason = f"Meta 2/3: {meta_score}/3 условий (ML={cond_ml}) — {meta_reason}"
-        reason_tg = _format_entry_reason(features, p, "🚫")
-        _send_ml_decision_tg(ticker, signal_action, "вход заблокирован", p,
-                             reason_tg + f"\n  Meta: {meta_score}/3 условий")
-        log_decision(figi, ticker, "entry_blocked", p, ENTRY_THRESHOLD, False, block_reason, features)
+        # Дедуп: Telegram + запись в БД не чаще раз в 60 сек на figi (иначе спам каждые ~5с)
+        import time as _tb
+        _now_tb = _tb.monotonic()
+        if _now_tb - _entry_log_ts.get(figi, 0) >= 60:
+            reason_tg = _format_entry_reason(features, p, "🚫")
+            _send_ml_decision_tg(ticker, signal_action, "вход заблокирован", p,
+                                 reason_tg + f"\n  Meta: {meta_score}/3 условий")
+            log_decision(figi, ticker, "entry_blocked", p, ENTRY_THRESHOLD, False, block_reason, features)
+            _entry_log_ts[figi] = _now_tb
         return False, p, block_reason
     elif active:
         # Дедупликация: entry_allowed логируем не чаще раз в 60 сек на figi
@@ -291,7 +296,6 @@ def compute_adaptive_sl_tp(features: Dict, base_sl: float, base_tp: float) -> Tu
     Returns: (sl_pct, tp_pct)
     """
     atr_pct = features.get("atr_pct", 0)
-    vol_1h  = features.get("volatility_1h", 0)
 
     if atr_pct <= 0:
         return base_sl, base_tp
@@ -319,26 +323,26 @@ def compute_adaptive_sl_tp(features: Dict, base_sl: float, base_tp: float) -> Tu
 
 def rank_instruments(instruments: list, strategy_id: int) -> list:
     """
-    Сортирует инструменты по P(прибыльная сделка).
-    Слабые (P < RANK_MIN_THRESHOLD) помечает для временного отключения.
+    Ранжирует инструменты по исторической прибыльности (EWA quality_score из
+    ml_instrument_state), а НЕ по предсказанию на нулевых признаках.
+    disable=False всегда — авто-отключение убрано (слишком рискованно при малых данных).
     """
     ranked = []
-    for instr in instruments:
-        figi = instr.get("figi", "")
-        model, _ = _get_model(figi, strategy_id)
-        if not model:
-            ranked.append((instr, 0.5, False))  # нет модели → нейтральный
-            continue
-        # Нейтральные признаки для ранжирования
-        try:
-            from app.ml.feature_builder import FEATURE_NAMES, features_to_vector
-            neutral_features = {n: 0.0 for n in FEATURE_NAMES}
-            p = model.predict_proba([features_to_vector(neutral_features)])[0][1]
-            disable = p < RANK_MIN_THRESHOLD
-            ranked.append((instr, round(float(p), 4), disable))
-        except Exception:
-            ranked.append((instr, 0.5, False))
-
+    try:
+        from app.db import db_cursor
+        with db_cursor() as cur:
+            for instr in instruments:
+                figi = instr.get("figi", "")
+                cur.execute(
+                    "SELECT quality_score, confidence FROM ml_instrument_state WHERE figi=? ORDER BY id DESC LIMIT 1",
+                    (figi,)
+                )
+                row = cur.fetchone()
+                score = float(row[0]) if row and row[0] is not None else 0.0
+                ranked.append((instr, round(score, 4), False))
+    except Exception as e:
+        log.debug("rank_instruments: %s", e)
+        return [(i, 0.0, False) for i in instruments]
     ranked.sort(key=lambda x: x[1], reverse=True)
     return ranked
 
@@ -353,7 +357,7 @@ def _send_ml_decision_tg(ticker: str, direction: str, decision: str,
         emoji = "🤖"
         conf_bar = "█" * int(confidence * 10) + "░" * (10 - int(confidence * 10))
         msg = (
-            f"{emoji} *ML-решение: {decision}*\n"
+            f"{emoji} ML-решение: {decision}\n"
             f"{ticker} | {direction}\n"
             f"Уверенность: {confidence:.0%} [{conf_bar}]\n"
             f"{details}"

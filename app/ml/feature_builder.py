@@ -1,6 +1,6 @@
 """
 Сборщик признаков для ML-модели.
-Вычисляет 30 признаков из разных источников данных.
+Вычисляет 31 признак из разных источников данных.
 """
 import logging
 import math
@@ -35,7 +35,7 @@ def build_features(
     position_minutes: float = 0.0,      # сколько минут открыта позиция
 ) -> Dict[str, float]:
     """
-    Собирает 25 признаков. Все числовые, NaN заменяются на 0.
+    Собирает 31 признак. Все числовые, NaN заменяются на 0.
     """
     from datetime import datetime, timezone, timedelta
     _MSK = timezone(timedelta(hours=3))

@@ -14,6 +14,42 @@ _MSK = timezone(timedelta(hours=3))
 MIN_SAMPLES    = 30   # минимум сделок до начала обучения
 RETRAIN_EVERY  = 10   # переобучаем каждые N новых сделок
 TEST_RATIO     = 0.2  # 20% на тест (последние по времени)
+MIN_PRECISION_ACTIVATE = 0.50  # минимальная precision для активации универсальной модели
+
+
+def _balance_classes(X_train: list, y_train: list) -> Tuple[list, list]:
+    """Oversample миноритарного класса до уровня мажоритарного (детерминированно)."""
+    from random import Random as _Rng
+    _rng = _Rng(42)
+    win_X  = [X_train[i] for i, y in enumerate(y_train) if y == 1]
+    loss_X = [X_train[i] for i, y in enumerate(y_train) if y == 0]
+    if not win_X or not loss_X:
+        return X_train, y_train
+    # дублируем миноритарный класс
+    if len(win_X) < len(loss_X):
+        factor = len(loss_X) // len(win_X)
+        extra  = len(loss_X) % len(win_X)
+        win_X = win_X * factor + _rng.sample(win_X, extra)
+    elif len(loss_X) < len(win_X):
+        factor = len(win_X) // len(loss_X)
+        extra  = len(win_X) % len(loss_X)
+        loss_X = loss_X * factor + _rng.sample(loss_X, extra)
+    X_bal = win_X + loss_X
+    y_bal = [1] * len(win_X) + [0] * len(loss_X)
+    idx = list(range(len(X_bal)))
+    _rng.shuffle(idx)
+    return [X_bal[i] for i in idx], [y_bal[i] for i in idx]
+
+
+def _archive_active_models(cur, figi: str, strategy_id: int) -> None:
+    """Помечает прежние active-модели как archived — чтобы оставалась одна активная на figi."""
+    try:
+        cur.execute(
+            "UPDATE ml_models SET status='archived' WHERE figi=? AND strategy_id=? AND status IN ('active','learning')",
+            (figi, strategy_id)
+        )
+    except Exception as e:
+        log.debug("archive models %s: %s", figi, e)
 
 
 def get_all_labeled_features() -> Tuple[list, list]:
@@ -61,26 +97,8 @@ def train_universal_model() -> Optional[Dict]:
     if len(set(y_train)) < 2:
         return None
 
-    # Oversample minority class (wins) до уровня majority (losses)
-    from random import Random as _Rng
-    _rng = _Rng(42)
-    _win_X  = [X_train[i] for i, y in enumerate(y_train) if y == 1]
-    _loss_X = [X_train[i] for i, y in enumerate(y_train) if y == 0]
-    _win_y  = [1] * len(_win_X)
-    _loss_y = [0] * len(_loss_X)
-    # Дублируем wins чтобы выровнять классы
-    if len(_win_X) < len(_loss_X) and _win_X:
-        _factor = len(_loss_X) // len(_win_X)
-        _extra  = len(_loss_X) % len(_win_X)
-        _win_X = _win_X * _factor + _rng.sample(_win_X, _extra)
-        _win_y = [1] * len(_win_X)
-    X_bal = _win_X + _loss_X
-    y_bal = _win_y + _loss_y
-    # Перемешиваем
-    _idx = list(range(len(X_bal)))
-    _rng.shuffle(_idx)
-    X_bal = [X_bal[i] for i in _idx]
-    y_bal = [y_bal[i] for i in _idx]
+    # Балансировка классов (общий хелпер — единый подход с per-instrument)
+    X_bal, y_bal = _balance_classes(X_train, y_train)
 
     base_model = GradientBoostingClassifier(
         n_estimators=150, learning_rate=0.08, max_depth=3,
@@ -91,31 +109,34 @@ def train_universal_model() -> Optional[Dict]:
     model.fit(X_bal, y_bal)
 
     metrics = {"n_train": len(X_train), "n_test": len(X_test), "universal": True}
-    if X_test:
+    if X_test and len(set(y_test)) >= 1:
         y_pred = model.predict(X_test)
         metrics["accuracy"]  = round(accuracy_score(y_test, y_pred), 3)
         metrics["precision"] = round(precision_score(y_test, y_pred, zero_division=0), 3)
         metrics["recall"]    = round(recall_score(y_test, y_pred, zero_division=0), 3)
 
+    # Feature importance из откалиброванной модели (base_model сам не обучается!)
     from app.ml.feature_builder import FEATURE_NAMES
+    importance = {}
     try:
-        importance = dict(zip(FEATURE_NAMES, base_model.estimators_[0][0].feature_importances_))
-    except Exception:
-        importance = {}
+        _inner = model.calibrated_classifiers_[0].estimator
+        importance = dict(zip(FEATURE_NAMES, _inner.feature_importances_))
+    except Exception as e:
+        log.debug("universal importance: %s", e)
     top5 = sorted(importance.items(), key=lambda x: x[1], reverse=True)[:5]
     metrics["top_features"] = [(k, round(v, 3)) for k, v in top5]
 
-    # Сохраняем как "universal" модель (figi=UNIVERSAL, strategy_id=0)
+    # Активируем ТОЛЬКО при адекватной precision — иначе модель в "learning"
+    # (soft-режим: логирует, но не блокирует входы и не закрывает позиции).
     prec = metrics.get("precision", 0)
-    # Активируем как только данных достаточно — precision на хвосте тест-сета
-    # нестабильна при малом числе сделок (тест-сет может содержать только убытки)
-    is_ready = len(X_train) >= MIN_SAMPLES and len(set(y_bal)) == 2
+    is_ready = len(X_train) >= MIN_SAMPLES and prec >= MIN_PRECISION_ACTIVATE
     univ_status = "active" if is_ready else "learning"
     model_bytes = pickle.dumps(model)
     now = datetime.now(tz=_MSK).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
     try:
         from app.db import db_cursor
         with db_cursor() as cur:
+            _archive_active_models(cur, "UNIVERSAL", 0)  # старые → archived
             cur.execute("""
                 INSERT INTO ml_models(figi, ticker, strategy_id, trained_at,
                     model_data, feature_importance, accuracy, precision_,
@@ -145,11 +166,11 @@ def _notify_universal_ready(n: int, prec: float, metrics: dict) -> None:
         top = metrics.get("top_features", [])
         top_str = "\n".join(f"  {i+1}. {name}: {val:.3f}" for i, (name, val) in enumerate(top[:3]))
         notify(
-            f"🧠 *Универсальная ML-модель готова*\n"
+            f"🧠 Универсальная ML-модель готова\n"
             f"Обучена на {n} сделках (все инструменты)\n"
             f"Precision: {prec:.0%} | Accuracy: {metrics.get('accuracy', 0):.0%}\n"
             f"\nТоп-признаки:\n{top_str}\n"
-            f"\n✅ *Начинаю влиять на ВСЕ инструменты*"
+            f"\n✅ Начинаю влиять на ВСЕ инструменты"
         )
     except Exception:
         pass
@@ -203,10 +224,8 @@ def train_model(figi: str, ticker: str, strategy_id: int) -> Optional[Dict]:
         log.warning("%s: только один класс в обучающей выборке", ticker)
         return None
 
-    from collections import Counter
-    _cnt = Counter(y_train)
-    _total = len(y_train)
-    _sample_weight = [_total / (_cnt[yi] * len(_cnt)) for yi in y_train]
+    # Балансировка классов — единый подход с универсальной моделью (oversample)
+    X_bal, y_bal = _balance_classes(X_train, y_train)
 
     base_model = GradientBoostingClassifier(
         n_estimators=100,
@@ -218,7 +237,7 @@ def train_model(figi: str, ticker: str, strategy_id: int) -> Optional[Dict]:
     )
     # Platt calibration — единая шкала вероятностей с универсальной моделью
     model = CalibratedClassifierCV(base_model, method='sigmoid', cv=3)
-    model.fit(X_train, y_train, sample_weight=_sample_weight)
+    model.fit(X_bal, y_bal)
 
     # Метрики
     metrics = {"n_train": len(X_train), "n_test": len(X_test)}
@@ -249,6 +268,7 @@ def train_model(figi: str, ticker: str, strategy_id: int) -> Optional[Dict]:
     try:
         from app.db import db_cursor
         with db_cursor() as cur:
+            _archive_active_models(cur, figi, strategy_id)  # старые → archived
             cur.execute("""
                 INSERT INTO ml_models(figi, ticker, strategy_id, trained_at,
                     model_data, feature_importance, accuracy, precision_,
@@ -282,11 +302,11 @@ def _notify_model_ready(ticker: str, n_samples: int, precision: float, metrics: 
         top = metrics.get("top_features", [])
         top_str = "\n".join(f"  {i+1}. {name}: {val:.3f}" for i, (name, val) in enumerate(top[:3]))
         msg = (
-            f"🧠 *ML-модель готова: {ticker}*\n"
+            f"🧠 ML-модель готова: {ticker}\n"
             f"Обучена на {n_samples} сделках\n"
             f"Precision: {precision:.0%} | Accuracy: {metrics.get('accuracy', 0):.0%}\n"
             f"\nТоп-признаки:\n{top_str}\n"
-            f"\n✅ *Начинаю автономно влиять на сделки {ticker}*"
+            f"\n✅ Начинаю автономно влиять на сделки {ticker}"
         )
         notify(msg)
     except Exception as e:

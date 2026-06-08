@@ -31,8 +31,9 @@ def on_trade_closed(figi: str, pnl: float = 0.0) -> None:
 
 def run_daily_rebalance() -> None:
     """
-    Глубокий анализ — запускается ночью (02:00 МСК).
-    Обновляет параметры всех активных инструментов.
+    Глубокий анализ — запускается при смене торгового дня (00:00 МСК) из
+    maybe_reset_daily, а также вручную из дашборда. Переобучает универсальную
+    модель, оптимизирует параметры, проверяет дрейф качества.
     """
     log.info("[ML] Запуск ежедневного ребаланса")
     try:
@@ -364,14 +365,16 @@ def _get_strategy_id(figi: str) -> Optional[int]:
 
 def _check_concept_drift() -> None:
     """
-    Drift detection: если rolling accuracy (последние 20 сделок) < 48% →
-    принудительное переобучение + Telegram предупреждение.
-    Проверяет только сделки ПОСЛЕ первой активации модели (не бэкфил).
+    Мониторинг просадки качества: считает WIN-RATE последних 20 размеченных
+    сделок (после активации модели). Если < порога — алерт + сброс кеша
+    (модель уже переобучена в run_daily_rebalance выше).
+    Порог низкий (35%) — скальпинг-стратегии часто имеют win-rate < 50% при
+    положительном R:R, поэтому 48% давал ложные тревоги.
     """
+    DRIFT_WINRATE = 0.35
     try:
         from app.db import db_cursor
         with db_cursor() as cur:
-            # Берём только сделки после первой активации модели
             cur.execute("SELECT MIN(trained_at) FROM ml_models WHERE status='active'")
             row = cur.fetchone()
             activation_date = (row[0] if row and row[0] else None)
@@ -382,19 +385,19 @@ def _check_concept_drift() -> None:
                 WHERE label IS NOT NULL AND timestamp >= ?
                 ORDER BY id DESC LIMIT 20
             """, (activation_date,))
-            labels = [row[0] for row in cur.fetchall()]
+            labels = [r[0] for r in cur.fetchall()]
         if len(labels) < 10:
             return
-        rolling_acc = sum(labels) / len(labels)
-        if rolling_acc < 0.48:
-            log.warning("[ML drift] Rolling accuracy=%.1f%% < 48%% — переобучаем", rolling_acc * 100)
+        win_rate = sum(labels) / len(labels)
+        if win_rate < DRIFT_WINRATE:
+            log.warning("[ML drift] win-rate=%.0f%% < %.0f%% (последние %d сделок) — сброс кеша моделей",
+                        win_rate * 100, DRIFT_WINRATE * 100, len(labels))
             try:
                 from main import notify
-                notify(f"⚠️ ML: точность упала до {rolling_acc:.0%} (последние {len(labels)} сделок)\n"
-                       f"Запускаю переобучение всех моделей…")
+                notify(f"⚠️ ML: win-rate {win_rate:.0%} за последние {len(labels)} сделок "
+                       f"(ниже {DRIFT_WINRATE:.0%}). Модель переобучена, кеш сброшен.")
             except Exception:
                 pass
-            # Сбрасываем кеш моделей чтобы форсировать переобучение
             from app.ml.model_predictor import _model_cache
             _model_cache.clear()
     except Exception as e:

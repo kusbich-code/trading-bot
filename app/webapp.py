@@ -3066,10 +3066,14 @@ def api_ml_summary():
         # Добавляем данные Phase 2: модели и решения
         from app.db import db_cursor as _dbc_ml
         with _dbc_ml() as _c:
+            # Только последняя модель на каждый figi (иначе дубли archived/active)
             _c.execute("""
-                SELECT figi, ticker, trained_at, accuracy, precision_, recall,
-                       n_training_samples, status, feature_importance
-                FROM ml_models ORDER BY id DESC LIMIT 50
+                SELECT m.figi, m.ticker, m.trained_at, m.accuracy, m.precision_, m.recall,
+                       m.n_training_samples, m.status, m.feature_importance
+                FROM ml_models m
+                JOIN (SELECT figi, MAX(id) AS mid FROM ml_models GROUP BY figi) latest
+                  ON m.id = latest.mid
+                ORDER BY m.id DESC LIMIT 50
             """)
             _cols = [d[0] for d in _c.description]
             data["trained_models"] = [dict(zip(_cols, r)) for r in _c.fetchall()]

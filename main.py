@@ -2269,18 +2269,19 @@ def process_instrument(client, item,
                           ticker=ticker)
             lot = _auto
 
-    # ── Проверка баланса перед ордером ───────────────────────────────────────
-    if sig == "BUY":
-        _auto_lots_on = int(item.get("auto_lots", 0) or 0)
+    # ── Проверка баланса перед ордером (для BUY и SHORT) ─────────────────────
+    if sig in ("BUY", "SELL"):
         lot_size = item.get("lot", 1)
         commission_pct = Decimal(_cfg("estimated_commission_pct", "0.0004"))
-        required = Decimal(str(lot)) * Decimal(str(lot_size)) * price * (1 + commission_pct)
-        # Сравниваем с реальным доступным cash — нельзя купить больше чем есть денег
+        # Запас на проскальзывание рыночного ордера (исполнение по ask/bid)
+        _slippage = Decimal("0.002")  # 0.2%
+        required = Decimal(str(lot)) * Decimal(str(lot_size)) * price * (1 + commission_pct + _slippage)
+        # Для SHORT тоже нужна маржа ≈ стоимость позиции (sandbox/T-Bank требует обеспечение)
         available = Decimal(str(state.session_balance_current or state.session_total_assets))
         if available < required:
-            _reason = f"Недостаточно средств: нужно {float(required):.0f} ₽, доступно {float(available):.0f} ₽"
-            log_event("BALANCE_WARNING",
-                      f"{ticker}: {_reason} — пропуск", ticker=ticker)
+            _reason = (f"Недостаточно средств для {'шорта' if sig=='SELL' else 'покупки'}: "
+                       f"нужно {float(required):.0f} ₽, доступно {float(available):.0f} ₽")
+            log_event("BALANCE_WARNING", f"{ticker}: {_reason} — пропуск", ticker=ticker)
             _save_signal(skip_reason=_reason, skip_filter="balance")
             return
 
@@ -2323,6 +2324,13 @@ def process_instrument(client, item,
             return
         _ep = float(order_result["executed_price"])
         _qty_filled = int(order_result["lots_executed"])
+        # Локально уменьшаем доступный cash — чтобы параллельные воркеры
+        # не пересчитывали лоты от устаревшего баланса до следующего синка
+        try:
+            _used = _ep * _qty_filled * int(item.get("lot", 1))
+            state.session_balance_current = max(0.0, state.session_balance_current - _used)
+        except Exception:
+            pass
         # Нативные стоп-ордера на бирже — сработают даже при зависании бота
         _stop_ids = _place_native_stops(
             client, ticker, figi, instrument_uid, "BUY", _qty_filled,
@@ -2427,6 +2435,12 @@ def process_instrument(client, item,
             return
         _ep = float(order_result["executed_price"])
         _qty_filled = int(order_result["lots_executed"])
+        # Локально резервируем маржу под шорт (см. BUY-ветку)
+        try:
+            _used = _ep * _qty_filled * int(item.get("lot", 1))
+            state.session_balance_current = max(0.0, state.session_balance_current - _used)
+        except Exception:
+            pass
         _stop_ids = _place_native_stops(
             client, ticker, figi, instrument_uid, "SELL", _qty_filled,
             Decimal(str(_ep)), stop_loss_pct, take_profit_pct,
