@@ -1256,12 +1256,26 @@ def place_order_checked(client, ticker: str, figi: str, lots: int, raw_price: De
             _mmap = get_instrument_market_state_map()
             _ms = next((v for v in _mmap.values() if v.get("ticker") == ticker), None)
             if _ms and _ms.get("figi"):
-                from app.db import list_active_strategy_instruments as _lasi
-                _instr_row = next((i for i in _lasi() if i["figi"] == figi), None)
+                # lot_size ищем по figi во ВСЕХ стратегиях (не только активной) —
+                # иначе для параллельных инструментов lot=1 и позиция запишет акции вместо лотов
+                _lot_fb, _step_fb = 1, "0.01"
+                try:
+                    from app.db import db_cursor as _dbc_fb
+                    with _dbc_fb() as _c_fb:
+                        _c_fb.execute(
+                            "SELECT lot, min_price_increment FROM strategy_instruments WHERE figi=? AND lot>0 LIMIT 1",
+                            (figi,)
+                        )
+                        _row_fb = _c_fb.fetchone()
+                        if _row_fb:
+                            _lot_fb = int(_row_fb[0])
+                            _step_fb = str(_row_fb[1]) if _row_fb[1] else "0.01"
+                except Exception:
+                    pass
                 meta = {
                     "figi": figi, "instrument_uid": _ms.get("instrument_uid", ""),
-                    "ticker": ticker, "lot": int(_instr_row["lot"]) if _instr_row else 1,
-                    "min_price_increment": str(_instr_row["min_price_increment"]) if _instr_row else "0.01",
+                    "ticker": ticker, "lot": _lot_fb,
+                    "min_price_increment": _step_fb,
                     "class_code": "", "instrument_type": "share",
                 }
                 state.instrument_meta[ticker] = meta
@@ -2226,10 +2240,15 @@ def process_instrument(client, item,
         _comm_v     = Decimal(_cfg("estimated_commission_pct", "0.0004"))
         _cost_1lot  = Decimal(str(_lot_size_v)) * price * (1 + _comm_v)
         if _cost_1lot > 0:
-            # Используем доступные средства (cash), а не total_assets —
-            # это автоматически учитывает уже открытые позиции других стратегий
-            _total  = Decimal(str(state.session_balance_current or state.session_total_assets))
-            _auto   = max(1, int(_total / _cost_1lot))
+            # Делим капитал на max_open_positions — каждая позиция получает равную долю
+            # портфеля, а не "первая съедает всё". Ограничиваем доступным cash.
+            _max_pos_al = max(1, int(_cfg("max_open_positions", "2")))
+            _assets = Decimal(str(state.session_total_assets or state.session_balance_current))
+            _cash   = Decimal(str(state.session_balance_current or state.session_total_assets))
+            _budget = _assets / Decimal(str(_max_pos_al))   # доля портфеля на 1 позицию
+            if _budget > _cash:                              # но не больше реального cash
+                _budget = _cash
+            _auto   = max(1, int(_budget / _cost_1lot))
             # ML confidence-based scaling: только когда модель уверена выше порога входа.
             # Если P < ENTRY_THRESHOLD — мета-стратегия уже переопределила ML (score+trend),
             # поэтому скейлинг не применяем — используем полный auto_lots.
@@ -2256,11 +2275,8 @@ def process_instrument(client, item,
         lot_size = item.get("lot", 1)
         commission_pct = Decimal(_cfg("estimated_commission_pct", "0.0004"))
         required = Decimal(str(lot)) * Decimal(str(lot_size)) * price * (1 + commission_pct)
-        # В авто-режиме сравниваем с итого портфелем (та же база что и при расчёте лотов)
-        if _auto_lots_on and state.session_total_assets > 0:
-            available = Decimal(str(state.session_total_assets))
-        else:
-            available = Decimal(str(state.session_balance_current))
+        # Сравниваем с реальным доступным cash — нельзя купить больше чем есть денег
+        available = Decimal(str(state.session_balance_current or state.session_total_assets))
         if available < required:
             _reason = f"Недостаточно средств: нужно {float(required):.0f} ₽, доступно {float(available):.0f} ₽"
             log_event("BALANCE_WARNING",

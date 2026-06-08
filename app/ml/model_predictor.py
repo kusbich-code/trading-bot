@@ -10,8 +10,10 @@ log = logging.getLogger("ml.predictor")
 
 # Пороги уверенности
 ENTRY_THRESHOLD     = 0.60  # P > 60% → входим
-EXIT_THRESHOLD      = 0.40  # P < 40% → закрываем досрочно
+EXIT_THRESHOLD      = 0.30  # P < 30% → закрываем досрочно (только убыточные)
 RANK_MIN_THRESHOLD  = 0.45  # ниже → временно отключаем инструмент
+MIN_EXIT_PRECISION  = 0.55  # точность модели ниже → early-exit в soft-режиме (не закрываем)
+MIN_HOLD_MINUTES    = 20    # минимум держим позицию перед early-exit
 
 # Кеш загруженных моделей: figi_sid → (model, meta)
 _model_cache: Dict[str, tuple] = {}
@@ -21,6 +23,31 @@ _exit_decided: Dict[str, float] = {}
 
 # Дедупликация entry_allowed/entry_soft_allow: не логируем одно решение чаще раз в 60 сек
 _entry_log_ts: Dict[str, float] = {}  # figi → monotonic timestamp последнего лога
+
+# Кеш точности универсальной модели (precision), обновляется раз в 5 мин
+_univ_precision_cache: dict = {"ts": 0.0, "value": 0.0}
+
+
+def _universal_model_precision() -> float:
+    """Precision активной универсальной модели (кеш 5 мин)."""
+    import time as _t
+    if _t.monotonic() - _univ_precision_cache["ts"] < 300:
+        return _univ_precision_cache["value"]
+    prec = 0.0
+    try:
+        from app.db import db_cursor
+        with db_cursor() as cur:
+            cur.execute("""SELECT precision_ FROM ml_models
+                           WHERE figi='UNIVERSAL' AND status='active'
+                           ORDER BY id DESC LIMIT 1""")
+            row = cur.fetchone()
+            if row and row[0] is not None:
+                prec = float(row[0])
+    except Exception:
+        pass
+    _univ_precision_cache["ts"] = _t.monotonic()
+    _univ_precision_cache["value"] = prec
+    return prec
 
 
 def is_active(figi: str, strategy_id: int) -> bool:
@@ -216,7 +243,7 @@ def should_exit_early(figi: str, ticker: str, strategy_id: int, features: Dict,
     Soft mode: логирует но не закрывает.
     Hard mode: закрывает при P < EXIT_THRESHOLD.
     """
-    if position_minutes < 15:
+    if position_minutes < MIN_HOLD_MINUTES:
         return False, None
 
     # Guard: не выдавать повторное решение exit в течение 5 минут
@@ -230,23 +257,29 @@ def should_exit_early(figi: str, ticker: str, strategy_id: int, features: Dict,
     if p is None:
         return False, None
 
-    active = is_active(figi, strategy_id) or _get_universal_model()[0] is not None
+    # Текущий PnL позиции в %
+    pnl_pct = (current_price - entry_price) / entry_price * 100
+    if direction == "SELL":
+        pnl_pct = -pnl_pct
 
-    if p < EXIT_THRESHOLD:
-        pnl_pct = (current_price - entry_price) / entry_price * 100
-        if direction == "SELL":
-            pnl_pct = -pnl_pct
+    # Hard-режим только если модель достаточно точная. Иначе — soft (лог, не закрываем).
+    model_prec = _universal_model_precision()
+    hard_mode = (is_active(figi, strategy_id) or _get_universal_model()[0] is not None) \
+                and model_prec >= MIN_EXIT_PRECISION
+
+    # Закрываем досрочно ТОЛЬКО убыточные позиции при низком P.
+    # Прибыльные не трогаем — пусть идут до TP (не режем выигрыши).
+    if p < EXIT_THRESHOLD and pnl_pct < 0:
         reason = _format_exit_reason(features, p, pnl_pct)
-        if active:
-            _exit_decided[figi] = _now_ts  # ставим guard на 5 минут
+        if hard_mode:
+            _exit_decided[figi] = _now_ts
             _send_ml_decision_tg(ticker, direction, "досрочное закрытие", p, reason)
             log_decision(figi, ticker, "early_exit", p, EXIT_THRESHOLD, True,
-                         f"P={p:.3f} < {EXIT_THRESHOLD}", features)
+                         f"P={p:.3f}<{EXIT_THRESHOLD} pnl={pnl_pct:.2f}% prec={model_prec:.2f}", features)
             return True, p
         else:
-            # Soft mode — только логируем
             log_decision(figi, ticker, "early_exit_soft", p, EXIT_THRESHOLD, False,
-                         f"soft mode P={p:.3f}", features)
+                         f"soft P={p:.3f} pnl={pnl_pct:.2f}% prec={model_prec:.2f}", features)
             return False, p
 
     return False, p
