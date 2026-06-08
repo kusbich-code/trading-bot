@@ -1400,6 +1400,7 @@ def api_dashboard_settings(profile_id: Optional[int] = None):
                 "tinvestusesandbox": ps("tinvestusesandbox", "true"),
                 "parallel_trading_enabled": ps("parallel_trading_enabled", "0"),
                 "trade_only_session": ps("trade_only_session", "1"),
+                "max_open_positions": ps("max_open_positions", "3"),
             },
         },
         "view_strategy": {
@@ -2346,14 +2347,20 @@ def api_profiles_save_settings(
     auto_reload_settings: str = Form("1"),
     runtime_mode: str = Form("sandbox"),
     trade_only_session: str = Form("1"),
+    max_open_positions: str = Form("3"),
 ):
     use_sandbox = "true" if runtime_mode == "sandbox" else "false"
+    try:
+        _mop = max(1, min(12, int(max_open_positions or 3)))
+    except Exception:
+        _mop = 3
     update_profile_settings(profile_id, {
         "bot_enabled": bool01(bot_enabled),
         "telegram_errors_only": bool01(telegram_errors_only),
         "auto_reload_settings": bool01(auto_reload_settings),
         "tinvestusesandbox": use_sandbox,
         "trade_only_session": bool01(trade_only_session),
+        "max_open_positions": str(_mop),
     })
     return JSONResponse({"ok": True})
 

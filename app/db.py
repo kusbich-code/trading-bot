@@ -10,7 +10,7 @@ def _now_msk() -> str:
     return datetime.now(tz=_MSK).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
 
 
-PROFILE_SETTING_KEYS = {"bot_enabled", "telegram_errors_only", "auto_reload_settings", "tinvestusesandbox", "parallel_trading_enabled", "trade_only_session"}
+PROFILE_SETTING_KEYS = {"bot_enabled", "telegram_errors_only", "auto_reload_settings", "tinvestusesandbox", "parallel_trading_enabled", "trade_only_session", "max_open_positions"}
 
 STRATEGY_SETTING_KEYS = {
     "max_trades_per_day", "max_daily_loss_rub", "max_open_positions", "check_interval_sec",
@@ -540,6 +540,16 @@ def init_db():
                     cur.execute(
                         "INSERT INTO profile_settings(profile_id, key, value) VALUES(?,?,?)",
                         (pid, "trade_only_session", "1")
+                    )
+                # max_open_positions на уровне профиля (по умолчанию 3)
+                cur.execute(
+                    "SELECT 1 FROM profile_settings WHERE profile_id=? AND key='max_open_positions'",
+                    (pid,)
+                )
+                if not cur.fetchone():
+                    cur.execute(
+                        "INSERT INTO profile_settings(profile_id, key, value) VALUES(?,?,?)",
+                        (pid, "max_open_positions", "3")
                     )
         except Exception:
             pass

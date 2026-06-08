@@ -1226,6 +1226,11 @@ async function renderSettingsTab() {
             <option value="0" ${profSettings.trade_only_session !== "1" ? "selected" : ""}>Нет — торговать всегда</option>
           </select>
         </label>
+        <label>Макс. открытых позиций
+          <input class="field" type="number" min="1" max="12" name="max_open_positions"
+                 value="${esc(profSettings.max_open_positions || "3")}">
+          <span class="note" style="font-size:11px">Капитал делится поровну: при 3 и балансе 60к → 3 позиции по 20к</span>
+        </label>
         <div class="row-buttons">
           <button type="button" class="btn btn-primary" id="btnSaveProfileSettings">Сохранить</button>
         </div>

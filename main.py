@@ -138,7 +138,7 @@ class _ParallelCoord:
         with self._lock:
             if sid in self._owners:
                 return False  # этот поток уже держит позицию
-            max_pos = int(get_setting("max_open_positions", "3"))
+            max_pos = get_max_open_positions()
             if len(self._owners) >= max_pos:
                 return False  # достигнут лимит позиций
             self._owners[sid] = figi
@@ -920,6 +920,22 @@ def get_trading_status(client, instrument_id: str):
 
 
 MSK_TZ = timezone(timedelta(hours=3))
+
+
+def get_max_open_positions() -> int:
+    """
+    Макс. число одновременно открытых позиций — из настроек активного профиля
+    (по умолчанию 3). Капитал делится на это число: каждая позиция получает
+    равную долю портфеля.
+    """
+    try:
+        _pid = get_setting("active_profile_id", "").strip()
+        if _pid:
+            from app.db import get_profile_setting as _gps
+            return max(1, int(_gps(int(_pid), "max_open_positions", "3") or 3))
+    except Exception:
+        pass
+    return 3
 
 
 def is_moex_session_open() -> bool:
@@ -2152,10 +2168,9 @@ def process_instrument(client, item,
 
     if _coord is not None:
         # Параллельный режим: пропускаем если лимит позиций достигнут и этот поток не владелец
-        _max_pos = int(_cfg("max_open_positions", "3"))
-        if _coord.owner_count >= _max_pos and not _coord.is_owner(_strategy_id):
+        if _coord.owner_count >= get_max_open_positions() and not _coord.is_owner(_strategy_id):
             return
-    elif len(positions) >= int(_cfg("max_open_positions", "2")):
+    elif len(positions) >= get_max_open_positions():
         return
 
     # Защита от реверса: после закрытия позиции не входим снова 60 сек
@@ -2242,7 +2257,7 @@ def process_instrument(client, item,
         if _cost_1lot > 0:
             # Делим капитал на max_open_positions — каждая позиция получает равную долю
             # портфеля, а не "первая съедает всё". Ограничиваем доступным cash.
-            _max_pos_al = max(1, int(_cfg("max_open_positions", "2")))
+            _max_pos_al = get_max_open_positions()
             _assets = Decimal(str(state.session_total_assets or state.session_balance_current))
             _cash   = Decimal(str(state.session_balance_current or state.session_total_assets))
             _budget = _assets / Decimal(str(_max_pos_al))   # доля портфеля на 1 позицию
@@ -2613,8 +2628,7 @@ def _parallel_strategy_worker(strategy_id: int, strat_name: str, stop_ev: thread
 
             # Если нет открытых позиций и координатор занят — обновляем сигналы/цены,
             # но не открываем позиции (process_instrument сам проверяет _coord.try_claim)
-            _max_pos_w = int(get_setting("max_open_positions", "3"))
-            if not positions and _parallel_coord.owner_count >= _max_pos_w and not _parallel_coord.is_owner(strategy_id):
+            if not positions and _parallel_coord.owner_count >= get_max_open_positions() and not _parallel_coord.is_owner(strategy_id):
                 _pset(strategy_id, "ожидание — лимит позиций достигнут")
 
             if get_setting("bot_enabled", "1") != "1":
@@ -2681,7 +2695,7 @@ def _parallel_strategy_worker(strategy_id: int, strat_name: str, stop_ev: thread
             if positions:
                 status = "в позиции"
                 ticker = list(positions.keys())[0]
-            elif _parallel_coord.owner_count >= int(get_setting("max_open_positions", "3")) and not _parallel_coord.is_owner(strategy_id):
+            elif _parallel_coord.owner_count >= get_max_open_positions() and not _parallel_coord.is_owner(strategy_id):
                 status = "лимит позиций достигнут"
                 ticker = ""
             elif not is_moex_session_open():
