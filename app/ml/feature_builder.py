@@ -1,6 +1,6 @@
 """
 Сборщик признаков для ML-модели.
-Вычисляет 31 признак из разных источников данных.
+Вычисляет 30 признаков из разных источников данных.
 """
 import logging
 import math
@@ -35,7 +35,7 @@ def build_features(
     position_minutes: float = 0.0,      # сколько минут открыта позиция
 ) -> Dict[str, float]:
     """
-    Собирает 31 признак. Все числовые, NaN заменяются на 0.
+    Собирает 30 признаков. Все числовые, NaN заменяются на 0.
     """
     from datetime import datetime, timezone, timedelta
     _MSK = timezone(timedelta(hours=3))
@@ -273,7 +273,7 @@ FEATURE_NAMES = [
     "z_score", "sma_gap_pct", "momentum_5", "breakout_dist", "vol_ratio", "atr_pct",
     "z_score_1h", "trend_1h", "volatility_1h",
     "trend_4h", "momentum_4h",
-    "bid_pressure", "spread_pct", "book_depth_ratio",
+    "bid_pressure", "book_depth_ratio",
     "rsi", "macd_diff", "bb_position",
     "signal_dir", "signal_score",
     "hour_sin", "hour_cos", "is_morning", "is_close", "day_of_week",
