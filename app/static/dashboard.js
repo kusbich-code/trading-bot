@@ -3164,8 +3164,7 @@ async function refreshParallelStatus() {
                      : action === "SELL" ? "#ff7b7b"
                      : "#9fb3d8";
       const sigLabel = action === "HOLD" ? "HOLD" : action;
-      const isCoordOwner = coord.owner_figi && coord.owner_figi === i.figi;
-      const tickerCell = isCoordOwner
+      const tickerCell = i.in_position
         ? `<b>${esc(i.ticker)}</b> <span style="color:#f5a623;font-size:10px">&#9679; позиция</span>`
         : `<b>${esc(i.ticker)}</b>`;
       // Ячейка дневного лимита потерь
@@ -3327,12 +3326,22 @@ async function refreshParallelStatus() {
       }
     });
 
-    // ── Заметка о координаторе позиции ────────────────────────────────────────
+    // ── Заметка о числе открытых позиций / лимите ─────────────────────────────
     const coordNote = document.getElementById('_psCoordNote');
     if (coordNote) {
-      coordNote.innerHTML = coord.owner_strategy_id != null
-        ? `<div class="note" style="margin-top:6px;color:#f5a623">&#9679; Открыта позиция по ${esc(coord.owner_ticker || coord.owner_figi || "?")} — новые ордера заблокированы</div>`
-        : "";
+      const openList = (data.instruments || []).filter(x => x.in_position);
+      const maxPos = data.max_open_positions || 0;
+      if (openList.length > 0) {
+        const tickers = openList.map(x => esc(x.ticker)).join(", ");
+        const limitTxt = maxPos ? ` (лимит ${maxPos})` : "";
+        const full = maxPos && openList.length >= maxPos;
+        coordNote.innerHTML = `<div class="note" style="margin-top:6px;color:#f5a623">`
+          + `&#9679; Открыто позиций: ${openList.length}${limitTxt} — ${tickers}`
+          + (full ? " — новые ордера заблокированы" : "")
+          + `</div>`;
+      } else {
+        coordNote.innerHTML = "";
+      }
     }
 
     // ── Live-dot + "обновлено X сек назад" ────────────────────────────────────
@@ -4055,7 +4064,7 @@ function renderHelpTab() {
       "<b>PnL день</b> — прибыль/убыток с 00:00 текущих суток (МСК)",
       "<b>PnL неделя</b> — с понедельника текущей недели",
       "<b>PnL мес.</b> — с 1-го числа текущего месяца",
-      "<b>Стопов мес.</b> — сколько раз срабатывал дневной лимит потерь за 30 дней"
+      "<b>Стопов мес.</b> — число закрытий по стоп-лоссу за текущий месяц"
     ])}
 
     ${h3("Торговые сессии MOEX")}

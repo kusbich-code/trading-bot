@@ -1797,7 +1797,12 @@ def api_parallel_status():
     pid = int(active_profile_id)
     parallel_strats = list_profile_parallel_strategies(pid)
     market_map = get_instrument_market_state_map()
-    open_pos = {p["figi"]: p for p in get_open_positions(source="BOT")}
+    # Открытые позиции из ОБОИХ источников: брокер (PORTFOLIO) — истина,
+    # BOT — для случаев когда синк ещё не прошёл. По figi, брокер в приоритете.
+    open_pos = {}
+    for _src in ("BOT", "PORTFOLIO"):
+        for p in get_open_positions(source=_src):
+            open_pos[p["figi"]] = p  # PORTFOLIO перезапишет BOT (брокер = истина)
 
     # Календарные периоды для статистики
     from datetime import datetime as _dt2, timedelta as _td2
@@ -1807,8 +1812,6 @@ def api_parallel_status():
     _week_str   = (_now2 - _td2(days=_now2.weekday())).strftime("%Y-%m-%d")
     # Начало текущего месяца
     _month_str  = _now2.strftime("%Y-%m-01")
-    # 30 дней назад — для счётчика блокировок
-    _month30_str = (_now2 - _td2(days=30)).strftime("%Y-%m-%d")
 
     # Thread statuses + stats
     result = []
@@ -1827,17 +1830,16 @@ def api_parallel_status():
         }
         for st in stats.values():
             st["pnl_ui"] = fmt_money(st["pnl"])
-        # Количество срабатываний дневного лимита по инструментам стратегии за 30 дней
+        # Число СТОП-ЛОССОВ по инструментам стратегии за текущий месяц
+        # (реальные сделки reason='STOP_LOSS', а не повторяющиеся записи в логах)
         _loss_stops_month = 0
         try:
             from app.db import db_cursor as _dbc4
             with _dbc4() as _c4:
                 _c4.execute(
-                    "SELECT COUNT(*) FROM event_logs e "
-                    "JOIN strategy_instruments si ON si.ticker=e.ticker "
-                    "WHERE e.event_type='BALANCE_WARNING' AND e.message LIKE '%Дневной лимит%' "
-                    "AND si.strategy_id=? AND e.event_time>=?",
-                    (sid, _month30_str)
+                    "SELECT COUNT(*) FROM trades WHERE reason='STOP_LOSS' AND time>=? "
+                    "AND ticker IN (SELECT ticker FROM strategy_instruments WHERE strategy_id=?)",
+                    (_month_str, sid)
                 )
                 _loss_stops_month = int((_c4.fetchone() or [0])[0])
         except Exception:
@@ -1869,11 +1871,10 @@ def api_parallel_status():
             )
             for _r in _cur2.fetchall():
                 _daily_pnl_cache[_r[0]] = float(_r[1])
-            # Блокировки за месяц: event_type=BALANCE_WARNING, skip_filter='instrument_daily_loss'
+            # Стоп-лоссы за текущий месяц по тикерам (реальные сделки)
             _cur2.execute(
-                "SELECT ticker, COUNT(*) FROM event_logs WHERE event_type='BALANCE_WARNING' "
-                "AND message LIKE '%Дневной лимит%' AND event_time>=? GROUP BY ticker",
-                (_month30_str,)
+                "SELECT ticker, COUNT(*) FROM trades WHERE reason='STOP_LOSS' AND time>=? GROUP BY ticker",
+                (_month_str,)
             )
             for _r in _cur2.fetchall():
                 _block_count_cache[_r[0]] = int(_r[1])
@@ -1957,7 +1958,9 @@ def api_parallel_status():
     except Exception:
         coord = {}
 
-    return {"threads": result, "coord": coord, "instruments": all_instrs}
+    _max_pos = int(get_profile_setting(pid, "max_open_positions", "3") or 3)
+    return {"threads": result, "coord": coord, "instruments": all_instrs,
+            "max_open_positions": _max_pos}
 
 
 @app.post("/api/profile/{profile_id}/parallel-toggle")
