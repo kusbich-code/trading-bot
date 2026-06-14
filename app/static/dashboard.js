@@ -4393,7 +4393,11 @@ function _buildLearningHtml(data) {
       balanceBar)}
 
     ${sec(h2("🎓 Этап 3 — Обучение модели","GradientBoosting + калибровка Платта на размеченных данных.") +
-      edu("Модель делит данные: учится на 80%, проверяется на 20% (которые не видела). <b>Precision</b> — главная метрика: из входов, которые модель одобрила, сколько были прибыльны. Модель включается в работу при precision ≥ 50%.") +
+      edu(`<b>Почему «обучено на ${nTrain}», а размечено ${fStat.labeled}?</b> Данные делятся: <b>80% (${nTrain}) — обучение</b>, <b>20% (${(fStat.labeled||0)-nTrain}) — проверка</b> на примерах, которые модель не видела. Это обязательно — иначе модель «зазубрит» и метрики будут ложными. <b>Precision</b> измеряется на проверочной части: из входов, что модель одобрила, сколько были прибыльны. Модель включается при precision ≥ 50%.`) +
+      `<div style="display:flex;height:24px;border-radius:6px;overflow:hidden;margin:8px 0;max-width:420px">
+        <div style="width:80%;background:#9b7ae8;display:flex;align-items:center;justify-content:center;font-size:11px;color:#fff;font-weight:600">обучение ${nTrain}</div>
+        <div style="width:20%;background:#4c8dff;display:flex;align-items:center;justify-content:center;font-size:11px;color:#fff;font-weight:600">тест ${(fStat.labeled||0)-nTrain}</div>
+      </div>` +
       `<div style="display:flex;gap:24px;flex-wrap:wrap;margin:10px 0">
         <div><div class="label" style="font-size:11px">Статус</div><div style="font-weight:700;color:${univActive?'#2fa36b':'#f0c04a'}">${univActive?'✅ Активна':'⏳ Учится'}</div></div>
         <div><div class="label" style="font-size:11px">Обучена на</div><div style="font-size:15px;font-weight:700">${nTrain} примерах</div></div>
@@ -4424,12 +4428,22 @@ function _buildLearningHtml(data) {
       `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">${decCountHtml}</div>` +
       `<div class="table-wrap"><table><thead><tr><th>Время</th><th>Тикер</th><th>Решение</th><th>Увер.</th><th>Причина</th></tr></thead><tbody>${decisionRows}</tbody></table></div>`)}
 
-    ${sec(h2("📊 Этап 5 — Самооптимизация параметров (Phase 1)","Параллельно модель подбирает лучшие SL/TP/режим для каждого инструмента.") +
-      edu("Это отдельный от нейросети механизм. По истории сделок он перебирает комбинации SL/TP/score (<b>Coordinate Descent</b>) и выбирает режим стратегии (<b>Thompson Sampling</b>). <b>Confidence</b> растёт с числом сделок: при 0.5+ меняются SL/TP, при 0.65+ — режим. <b>Quality</b> — ожидаемая прибыль на сделку.") +
-      `<div class="table-wrap"><table><thead><tr><th>Тикер</th><th>Режим</th><th>SL</th><th>TP</th><th>Win%</th><th>Quality</th><th>Уверенность</th></tr></thead><tbody>${instrRows}</tbody></table></div>`)}
+    ${sec(h2("📊 Этап 5 — Самооптимизация параметров (Phase 1)","Отдельный механизм: подбирает лучшие SL/TP/режим для каждого инструмента по истории сделок.") +
+      `<div style="display:flex;gap:24px;flex-wrap:wrap;margin-bottom:8px">
+        <div><div class="label" style="font-size:11px">Последняя оптимизация</div><div style="font-size:14px;font-weight:600">${esc((data.last_rebalance||"никогда")).slice(0,16)}</div></div>
+        <div><div class="label" style="font-size:11px">Инструментов настроено</div><div style="font-size:14px;font-weight:600">${states.length}</div></div>
+        <div><div class="label" style="font-size:11px">Изменений в истории</div><div style="font-size:14px;font-weight:600">${logData.length}</div></div>
+      </div>` +
+      edu("<b>Как это работает (по шагам):</b><br>" +
+          "1. Берётся история сделок инструмента за 90 дней.<br>" +
+          "2. <b>Координатный спуск</b> — поочерёдно пробует ±шаг по SL, TP и min_score (6 вариантов за прогон), считая «ожидаемую прибыль на сделку» (expectancy) для каждого.<br>" +
+          "3. Если вариант реально лучше текущего (на заметную маржу) — параметр меняется, иначе остаётся.<br>" +
+          "4. <b>Thompson Sampling</b> выбирает лучший режим (возврат к средней / пробой / тренд).<br>" +
+          "<b>Уверенность</b> растёт с числом сделок: 0.5+ → меняет SL/TP, 0.65+ → меняет режим. Запускается ночью в 00:00 МСК и по кнопке выше.") +
+      `<div class="table-wrap"><table><thead><tr><th>Тикер</th><th>Режим</th><th>SL</th><th>TP</th><th>Win%</th><th>Ожид. прибыль</th><th>Уверенность</th></tr></thead><tbody>${instrRows}</tbody></table></div>`)}
 
-    ${sec(h2("📜 История изменений параметров") +
-      `<div class="table-wrap"><table><thead><tr><th>Время</th><th>Тикер</th><th>Параметр</th><th>Изменение</th><th>Причина</th></tr></thead><tbody>${logRows}</tbody></table></div>`)}
+    ${sec(h2("📜 История решений оптимизатора","Что, когда и почему было изменено — на русском.") +
+      `<div class="table-wrap"><table><thead><tr><th>Время</th><th>Тикер</th><th>Параметр</th><th>Решение</th><th>Причина (данные · варианты · итог)</th></tr></thead><tbody>${logRows}</tbody></table></div>`)}
   `;
 }
 

@@ -18,6 +18,16 @@ MIN_TRADES_FOR_OPT = 10       # минимум сделок для оптими�
 IMPROVEMENT_THRESHOLD = 0.10  # минимум 10% улучшения для применения
 
 
+def _is_improvement(q: float, base: float) -> bool:
+    """
+    Знак-безопасная проверка улучшения. Прежняя q > base*(1+thr) ломалась при
+    отрицательном base (порог опускался, любое значение «проходило»).
+    Требуем превзойти текущее на маржу = thr × |base|, но не меньше 0.01 ₽.
+    """
+    margin = max(0.01, abs(base) * IMPROVEMENT_THRESHOLD)
+    return q > base + margin
+
+
 def _compute_expectancy(contexts: list) -> float:
     """Вычисляет Expectancy (quality score) по списку сделок."""
     if not contexts:
@@ -67,14 +77,16 @@ def suggest_sl_tp(figi: str, strategy_id: int,
             return None
 
         best = {"sl": current_sl, "tp": current_tp, "score": current_score,
-                "quality": base_quality, "improved": False}
+                "quality": base_quality, "improved": False,
+                "n_variants": 0, "n_contexts": len(contexts)}
 
         # Пробуем варианты по SL
         for delta in [-SL_STEP, SL_STEP]:
             new_sl = round(max(SL_RANGE[0], min(SL_RANGE[1], current_sl + delta)), 4)
             filtered = _filter_by_params(contexts, new_sl, current_tp, current_score)
             q = _compute_expectancy(filtered)
-            if len(filtered) >= MIN_TRADES_FOR_OPT and q > best["quality"] * (1 + IMPROVEMENT_THRESHOLD):
+            best["n_variants"] += 1
+            if len(filtered) >= MIN_TRADES_FOR_OPT and _is_improvement(q, best["quality"]):
                 best.update({"sl": new_sl, "quality": q, "improved": True})
 
         # Пробуем варианты по TP
@@ -82,7 +94,8 @@ def suggest_sl_tp(figi: str, strategy_id: int,
             new_tp = round(max(TP_RANGE[0], min(TP_RANGE[1], best["tp"] + delta)), 4)
             filtered = _filter_by_params(contexts, best["sl"], new_tp, current_score)
             q = _compute_expectancy(filtered)
-            if len(filtered) >= MIN_TRADES_FOR_OPT and q > best["quality"] * (1 + IMPROVEMENT_THRESHOLD):
+            best["n_variants"] += 1
+            if len(filtered) >= MIN_TRADES_FOR_OPT and _is_improvement(q, best["quality"]):
                 best.update({"tp": new_tp, "quality": q, "improved": True})
 
         # Пробуем варианты по min_score
@@ -90,7 +103,8 @@ def suggest_sl_tp(figi: str, strategy_id: int,
             new_score = max(SCORE_RANGE[0], min(SCORE_RANGE[1], best["score"] + delta))
             filtered = _filter_by_params(contexts, best["sl"], best["tp"], new_score)
             q = _compute_expectancy(filtered)
-            if len(filtered) >= MIN_TRADES_FOR_OPT and q > best["quality"] * (1 + IMPROVEMENT_THRESHOLD):
+            best["n_variants"] += 1
+            if len(filtered) >= MIN_TRADES_FOR_OPT and _is_improvement(q, best["quality"]):
                 best.update({"score": new_score, "quality": q, "improved": True})
 
         if best["improved"]:

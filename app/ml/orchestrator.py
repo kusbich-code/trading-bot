@@ -203,7 +203,8 @@ def _deep_update(figi: str, ticker: str, strategy_id: int, current_params: Dict)
                      ticker, ml_params["strategy_mode"], best_mode, confidence)
             log_optimization(figi, ticker, strategy_id, "strategy_mode",
                              ml_params["strategy_mode"], best_mode,
-                             f"Thompson Sampling выбрал лучший режим (conf={confidence:.2f})",
+                             f"Выбор режима (Thompson Sampling): по истории сделок режим «{best_mode}» "
+                             f"показал лучший результат. Уверенность {confidence:.0%}",
                              stats["quality_score"], stats["quality_score"])
             ml_params["strategy_mode"] = best_mode
             _apply_strategy_mode(figi, strategy_id, best_mode)
@@ -220,8 +221,9 @@ def _deep_update(figi: str, ticker: str, strategy_id: int, current_params: Dict)
             new_sl    = suggestion["sl"]
             new_tp    = suggestion["tp"]
             new_score = suggestion["score"]
-            reason = (f"Coordinate Descent: expectancy "
-                      f"{stats['quality_score']:.2f}→{suggestion['quality']:.2f}")
+            reason = (f"Координатный спуск: проверено {suggestion.get('n_variants',6)} вариантов "
+                      f"на {suggestion.get('n_contexts',0)} сделках (90 дней). "
+                      f"Ожидаемая прибыль/сделку: {stats['quality_score']:.2f}→{suggestion['quality']:.2f} ₽")
             if new_sl != ml_params["stop_loss_pct"]:
                 log_optimization(figi, ticker, strategy_id, "stop_loss_pct",
                                  ml_params["stop_loss_pct"], new_sl, reason,
