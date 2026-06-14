@@ -1770,7 +1770,10 @@ def process_instrument(client, item,
     allow_short_global = get_setting("allow_short_global", "1") == "1"
 
     tradingmode           = _cfg("tradingmode", "trend")
-    trailing_stop_enabled = _cfg("trailing_stop_enabled", "0") == "1"
+    # Трейлинг-стоп имеет смысл только в режиме пробоя (breakout) — даём прибыли
+    # бежать на импульсе. В mean_reversion/trend он срабатывает слишком часто
+    # на откатах и режет позиции. Активен только при breakout + включённой настройке.
+    trailing_stop_enabled = (_cfg("trailing_stop_enabled", "0") == "1") and (tradingmode == "breakout")
     use_signal_service    = _cfg("use_signal_service", "0") == "1"
     use_api_confirm         = _cfg("use_api_confirm", "0") in ("1", "true", "yes")
     use_order_book_filter   = _cfg("use_order_book_filter", "1") in ("1", "true", "yes")
