@@ -3094,18 +3094,91 @@ def api_ml_summary():
             """)
             _cols2 = [d[0] for d in _c.description]
             data["decisions"] = [dict(zip(_cols2, r)) for r in _c.fetchall()]
-            # Статистика признаков (последние 50 размеченных)
+
+            # Расширенная статистика признаков
             _c.execute("""
                 SELECT COUNT(*) as total,
+                       SUM(CASE WHEN label IS NOT NULL THEN 1 ELSE 0 END) as labeled,
                        SUM(CASE WHEN label=1 THEN 1 ELSE 0 END) as wins,
-                       COUNT(CASE WHEN label IS NOT NULL THEN 1 END) as labeled
+                       SUM(CASE WHEN label=0 THEN 1 ELSE 0 END) as losses,
+                       SUM(CASE WHEN label IS NULL THEN 1 ELSE 0 END) as pending
                 FROM ml_features
             """)
             row = _c.fetchone()
-            data["features_stats"] = {"total": row[0], "wins": row[1], "labeled": row[2]}
+            data["features_stats"] = {
+                "total": row[0] or 0, "labeled": row[1] or 0, "wins": row[2] or 0,
+                "losses": row[3] or 0, "pending": row[4] or 0,
+            }
+
+            # Счётчики решений по типам (за всё время)
+            _c.execute("SELECT decision_type, COUNT(*) FROM ml_decisions GROUP BY decision_type")
+            data["decision_counts"] = {r[0]: r[1] for r in _c.fetchall()}
+
+            # Пример реального вектора признаков (последняя размеченная сделка)
+            from app.ml.feature_builder import FEATURE_NAMES as _FN
+            _cols_sql = ", ".join(_FN)
+            _c.execute(f"""
+                SELECT ticker, timestamp, label, pnl, {_cols_sql}
+                FROM ml_features WHERE label IS NOT NULL ORDER BY id DESC LIMIT 1
+            """)
+            _ex = _c.fetchone()
+            if _ex:
+                data["sample_feature"] = {
+                    "ticker": _ex[0], "timestamp": _ex[1], "label": _ex[2], "pnl": _ex[3],
+                    "values": {name: _ex[4 + i] for i, name in enumerate(_FN)},
+                }
+
+        # Каталог признаков: группа + человекочитаемое описание
+        data["feature_catalog"] = _ml_feature_catalog()
         return JSONResponse(data)
     except Exception as e:
         return JSONResponse({"error": str(e), "states": [], "log": []})
+
+
+def _ml_feature_catalog() -> list:
+    """31 признак модели: имя, группа, описание для обучающей вкладки."""
+    _raw = [
+        # 5-минутный таймфрейм
+        ("z_score", "5-мин", "Отклонение цены от средней за 20 баров (в σ). >2 — перекуплен, <-2 — перепродан"),
+        ("sma_gap_pct", "5-мин", "Разрыв между SMA9 и SMA21 в % — сила краткосрочного тренда"),
+        ("momentum_5", "5-мин", "Импульс: изменение цены за 5 баров в %"),
+        ("breakout_dist", "5-мин", "Близость к пробою 20-барового диапазона"),
+        ("vol_ratio", "5-мин", "Текущий объём / средний за 20 баров — всплеск активности"),
+        ("atr_pct", "5-мин", "Средний истинный диапазон (волатильность) в % от цены"),
+        # 1-часовой контекст
+        ("z_score_1h", "1-час", "Отклонение от средней на часовом графике"),
+        ("trend_1h", "1-час", "Направление часового тренда: +1 бычий, -1 медвежий, 0 флэт"),
+        ("volatility_1h", "1-час", "Волатильность доходностей за час в %"),
+        # 4-часовой макро
+        ("trend_4h", "4-час", "Направление 4-часового тренда (макро-фон)"),
+        ("momentum_4h", "4-час", "Импульс за 4 часа в %"),
+        # Стакан заявок
+        ("bid_pressure", "Стакан", "Доля объёма на покупке: >0.65 покупатели давят, <0.35 продавцы"),
+        ("spread_pct", "Стакан", "Спред между bid/ask в % — ликвидность"),
+        ("book_depth_ratio", "Стакан", "Соотношение глубины bid/ask"),
+        # API-индикаторы T-Bank
+        ("rsi", "Индикаторы", "RSI(14): >70 перекупленность, <30 перепроданность"),
+        ("macd_diff", "Индикаторы", "MACD − сигнальная линия: импульс смены тренда"),
+        ("bb_position", "Индикаторы", "Положение цены в полосах Боллинджера (0 низ, 1 верх)"),
+        # Сигнал стратегии
+        ("signal_dir", "Сигнал", "Направление сигнала стратегии: +1 BUY, -1 SELL"),
+        ("signal_score", "Сигнал", "Сила сигнала стратегии (0–100)"),
+        # Время
+        ("hour_sin", "Время", "Циклическое кодирование часа (синус) — модель учитывает время суток"),
+        ("hour_cos", "Время", "Циклическое кодирование часа (косинус)"),
+        ("is_morning", "Время", "Утренняя сессия 10–12 МСК (1/0)"),
+        ("is_close", "Время", "Закрытие сессии 17–19 МСК (1/0)"),
+        ("day_of_week", "Время", "День недели (0=пн … 4=пт)"),
+        # Позиция
+        ("position_minutes", "Позиция", "Сколько минут открыта позиция (для решения о выходе)"),
+        ("vwap_dev", "Цена", "Отклонение от VWAP (средневзвешенной по объёму) в %"),
+        ("session_phase", "Время", "Фаза сессии: 0 пре, 1 открытие … 5 закрытие"),
+        ("regime", "Рынок", "Режим рынка: 0 флэт, 1 тренд↑, 2 тренд↓, 3 волатильный"),
+        ("sector_corr", "Рынок", "Корреляция с маркерами рынка (SBER/GAZP)"),
+        ("ticker_hash", "Контекст", "Числовой код тикера — модель различает инструменты"),
+        ("short_carry_risk", "Риск", "Риск переноса шорта: 0 норма, 1 нерабочий день, 3 выходные"),
+    ]
+    return [{"name": n, "group": g, "desc": d} for (n, g, d) in _raw]
 
 
 @app.get("/api/ml/instrument/{figi}")

@@ -4188,239 +4188,249 @@ function renderHelpTab() {
 async function renderLearningTab() {
   const host = document.getElementById("view-обучение");
   if (!host) return;
-
   host.innerHTML = `<div style="text-align:center;padding:40px;color:#9fb3d8">Загрузка данных обучения…</div>`;
-
   try {
     const data = await apiGet("/api/ml/summary");
-    const states  = data.states  || [];
-    const logData = data.log     || [];
-    const totalTrades = data.total_trades || 0;
-    const avgConf     = data.avg_confidence || 0;
-    const lastReb     = data.last_rebalance || "никогда";
-
-    const confColor = (c) => c >= 0.65 ? "#2fa36b" : c >= 0.3 ? "#f0c04a" : "#9fb3d8";
-    const fmtQ = (q) => {
-      const c = q >= 0 ? "#2fa36b" : "#ff7b7b";
-      return `<span style="color:${c};font-weight:600">${q >= 0 ? "+" : ""}${Number(q).toFixed(2)}</span>`;
-    };
-
-    const instrRows = states.map(s => {
-      const conf = s.confidence || 0;
-      const wr   = ((s.win_rate || 0) * 100).toFixed(1);
-      const mode = s.ml_strategy_mode || "—";
-      const sl   = s.ml_stop_loss_pct   ? (s.ml_stop_loss_pct   * 100).toFixed(2) + "%" : "—";
-      const tp   = s.ml_take_profit_pct ? (s.ml_take_profit_pct * 100).toFixed(2) + "%" : "—";
-      const sc   = s.ml_min_score || "—";
-      return `<tr>
-        <td><b>${esc(s.ticker)}</b></td>
-        <td class="muted" style="font-size:12px">${esc(mode)}</td>
-        <td style="font-size:12px">${sl}</td>
-        <td style="font-size:12px">${tp}</td>
-        <td class="muted" style="font-size:12px">${sc}</td>
-        <td style="font-size:12px">${wr}% (${s.wins||0}/${s.trades_count||0})</td>
-        <td>${fmtQ(s.quality_score || 0)}</td>
-        <td>
-          <div style="width:80px;height:6px;background:rgba(255,255,255,.1);border-radius:3px">
-            <div style="width:${Math.round(conf*100)}%;height:100%;background:${confColor(conf)};border-radius:3px"></div>
-          </div>
-          <span class="muted" style="font-size:10px">${Math.round(conf*100)}%</span>
-        </td>
-      </tr>`;
-    }).join("") || `<tr><td colspan="8" class="muted" style="text-align:center;padding:20px">Данных пока нет — модель начнёт учиться после первых сделок</td></tr>`;
-
-    const logRows = logData.map(l => `<tr>
-      <td class="muted" style="font-size:11px">${esc((l.timestamp||"").slice(0,16))}</td>
-      <td><b>${esc(l.ticker)}</b></td>
-      <td class="muted" style="font-size:12px">${esc(l.param_changed)}</td>
-      <td style="font-size:12px">${esc(l.value_before)} → <b>${esc(l.value_after)}</b></td>
-      <td class="muted" style="font-size:11px;max-width:300px">${esc(l.reason)}</td>
-      <td style="font-size:12px">${fmtQ(l.quality_before || 0)} → ${fmtQ(l.quality_after || 0)}</td>
-    </tr>`).join("") || `<tr><td colspan="6" class="muted" style="text-align:center;padding:16px">История изменений пуста</td></tr>`;
-
-    // Phase 2 данные
-    const models    = data.trained_models || [];
-    const decisions = data.decisions || [];
-    const fStat     = data.features_stats || {};
-
-    const univModel  = models.find(m => m.figi === "UNIVERSAL" || m.ticker === "ALL");
-    const instrModels = models.filter(m => m.figi !== "UNIVERSAL" && m.ticker !== "ALL");
-    const univActive = univModel?.status === "active";
-    const activeModels = models.filter(m => m.status === "active").length;
-
-    const fmtModel = (m) => {
-      const ready = m.status === "active";
-      let topFeatures = [];
-      try {
-        const imp = typeof m.feature_importance === "string"
-          ? JSON.parse(m.feature_importance) : (m.feature_importance || {});
-        topFeatures = Object.entries(imp)
-          .sort((a, b) => b[1] - a[1]).slice(0, 5)
-          .map(([name, val]) => ({ name, val: Number(val) }));
-      } catch(e) {}
-      const topHtml = topFeatures.length
-        ? `<div style="margin-top:12px">
-            <div class="label" style="font-size:11px;margin-bottom:4px">Топ-признаки</div>
-            <div style="display:flex;flex-wrap:wrap;gap:6px">
-              ${topFeatures.map(f => `
-                <div style="font-size:11px;background:rgba(255,255,255,.06);padding:3px 8px;border-radius:10px">
-                  ${esc(f.name)} <span style="color:#9fb3d8">${(f.val*100).toFixed(1)}%</span>
-                </div>`).join("")}
-            </div>
-          </div>` : "";
-      return `
-        <div style="padding:10px 0">
-          <div style="display:flex;gap:24px;flex-wrap:wrap;align-items:center">
-            <div>
-              <div class="label" style="font-size:11px">Статус</div>
-              <div>${ready
-                ? '<span style="color:#2fa36b;font-weight:700">✅ Активна — влияет на сделки</span>'
-                : '<span style="color:#f0c04a">⏳ Учится — мягкий режим (precision &lt; 55%)</span>'}</div>
-            </div>
-            <div>
-              <div class="label" style="font-size:11px">Обучено на</div>
-              <div style="font-size:14px;font-weight:600">${m.n_training_samples || 0} сделок</div>
-            </div>
-            <div>
-              <div class="label" style="font-size:11px">Precision</div>
-              <div style="font-size:14px;font-weight:600;color:${m.precision_>=0.55?'#2fa36b':'#f0c04a'}">${m.precision_ ? (m.precision_*100).toFixed(1)+"%" : "—"}</div>
-            </div>
-            <div>
-              <div class="label" style="font-size:11px">Accuracy</div>
-              <div style="font-size:14px;font-weight:600">${m.accuracy ? (m.accuracy*100).toFixed(1)+"%" : "—"}</div>
-            </div>
-            <div>
-              <div class="label" style="font-size:11px">Обновлена</div>
-              <div class="muted" style="font-size:12px">${esc((m.trained_at||"").slice(0,16))}</div>
-            </div>
-          </div>
-          ${topHtml}
-        </div>`;
-    };
-
-    const univHtml = univModel
-      ? fmtModel(univModel)
-      : `<div class="muted" style="padding:16px;text-align:center">Нет данных — нужно 30+ сделок суммарно по всем инструментам</div>`;
-
-    const instrModelRows = instrModels.slice(0,10).map(m => {
-      const ready = m.status === "active";
-      return `<tr>
-        <td><b>${esc(m.ticker)}</b></td>
-        <td>${ready
-          ? '<span style="color:#2fa36b;font-weight:700">✅ Активна</span>'
-          : '<span style="color:#f0c04a">⏳ Учится</span>'}</td>
-        <td class="muted" style="font-size:12px">${m.n_training_samples || 0} сделок</td>
-        <td style="font-size:12px">${m.precision_ ? (m.precision_*100).toFixed(1)+"%" : "—"}</td>
-        <td style="font-size:12px">${m.accuracy   ? (m.accuracy   *100).toFixed(1)+"%" : "—"}</td>
-        <td class="muted" style="font-size:11px">${esc((m.trained_at||"").slice(0,16))}</td>
-      </tr>`;
-    }).join("") || `<tr><td colspan="6" class="muted" style="text-align:center;padding:12px">Нет</td></tr>`;
-
-    const decisionRows = decisions.map(d => {
-      const typeColor = d.decision_type.includes("block") ? "#ff7b7b"
-                       : d.decision_type.includes("exit") ? "#f0c04a" : "#2fa36b";
-      const typeLabel = {
-        "entry_blocked":    "🚫 Вход заблокирован",
-        "entry_allowed":    "✅ Вход разрешён",
-        "entry_soft_block": "📊 Мягкий блок (учусь)",
-        "entry_soft_allow": "📊 Мягкий вход (учусь)",
-        "early_exit":       "⚡ Ранний выход",
-        "early_exit_soft":  "📊 Мягкий выход (учусь)",
-      }[d.decision_type] || d.decision_type;
-      return `<tr>
-        <td class="muted" style="font-size:11px">${esc((d.timestamp||"").slice(11,19))}</td>
-        <td><b>${esc(d.ticker)}</b></td>
-        <td style="font-size:12px;color:${typeColor}">${typeLabel}</td>
-        <td style="font-size:12px">${d.model_confidence ? (d.model_confidence*100).toFixed(0)+"%" : "—"}</td>
-        <td class="muted" style="font-size:11px;max-width:250px">${esc(d.reason||"")}</td>
-      </tr>`;
-    }).join("") || `<tr><td colspan="5" class="muted" style="text-align:center;padding:12px">Решений пока нет</td></tr>`;
-
-    host.innerHTML = `
-      <!-- Сводка -->
-      <div class="summary-grid" style="margin-bottom:18px">
-        <div class="card"><div class="label">Признаков собрано</div><div class="value">${fStat.total||0}</div></div>
-        <div class="card"><div class="label">Размечено сделок</div><div class="value">${fStat.labeled||0}</div></div>
-        <div class="card"><div class="label">Универсальная модель</div><div class="value" style="color:${univActive?'#2fa36b':'#f0c04a'};font-size:13px">${univActive?"✅ Активна":"⏳ Учится"}</div></div>
-        <div class="card"><div class="label">Решений принято</div><div class="value">${decisions.length}</div></div>
-      </div>
-
-      <!-- Статус + управление -->
-      <div class="block" style="padding:10px 16px;margin-bottom:12px">
-        <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center">
-          <div style="font-size:13px">
-            ${univActive
-              ? `<span style="color:#2fa36b;font-weight:700">🟢 Модель активна — влияет на сделки</span>`
-              : `<span style="color:#f0c04a">⏳ Накапливаю данные — нужно 30+ сделок суммарно по всем инструментам</span>`}
-          </div>
-          <button class="btn btn-primary" onclick="mlRebalance()">⚡ Запустить ребаланс</button>
-        </div>
-      </div>
-
-      <!-- Универсальная ML-модель -->
-      <section class="block" style="margin-bottom:14px">
-        <h2 style="margin-bottom:6px">🤖 Универсальная ML-модель (GradientBoosting)</h2>
-        <div class="muted" style="font-size:12px;margin-bottom:10px">Одна общая модель, обученная на всех инструментах. При достаточном числе сделок по конкретному тикеру — дополняется специализированной.</div>
-        ${univHtml}
-      </section>
-
-      ${instrModels.length > 0 ? `
-      <!-- Специализированные модели по инструментам -->
-      <section class="block" style="margin-bottom:14px">
-        <h2 style="margin-bottom:10px">📌 Специализированные модели по инструментам</h2>
-        <div class="table-wrap">
-          <table>
-            <thead><tr>
-              <th>Тикер</th><th>Статус</th><th>Обучено</th><th>Precision</th><th>Accuracy</th><th>Обновлена</th>
-            </tr></thead>
-            <tbody>${instrModelRows}</tbody>
-          </table>
-        </div>
-      </section>` : ""}
-
-      <!-- Лог решений -->
-      <section class="block" style="margin-bottom:14px">
-        <h2 style="margin-bottom:10px">📋 Последние решения ML</h2>
-        <div class="table-wrap">
-          <table>
-            <thead><tr>
-              <th>Время</th><th>Тикер</th><th>Решение</th><th>Уверенность</th><th>Причина</th>
-            </tr></thead>
-            <tbody>${decisionRows}</tbody>
-          </table>
-        </div>
-      </section>
-
-      <!-- Выученные параметры (Phase 1) -->
-      <section class="block" style="margin-bottom:14px">
-        <h2 style="margin-bottom:10px">📊 Оптимизированные параметры (Phase 1)</h2>
-        <div class="table-wrap">
-          <table>
-            <thead><tr>
-              <th>Тикер</th><th>Режим</th><th>SL</th><th>TP</th><th>Score</th>
-              <th>Win% (W/T)</th><th>Quality</th><th>Уверенность</th>
-            </tr></thead>
-            <tbody>${instrRows}</tbody>
-          </table>
-        </div>
-      </section>
-
-      <!-- Лог оптимизаций (Phase 1) -->
-      <section class="block">
-        <h2 style="margin-bottom:10px">📜 История параметров</h2>
-        <div class="table-wrap">
-          <table>
-            <thead><tr>
-              <th>Время</th><th>Тикер</th><th>Параметр</th><th>Изменение</th><th>Причина</th><th>Quality</th>
-            </tr></thead>
-            <tbody>${logRows}</tbody>
-          </table>
-        </div>
-      </section>
-    `;
+    host.innerHTML = _buildLearningHtml(data);
   } catch(e) {
     host.innerHTML = `<div class="banner-warning">Ошибка загрузки: ${esc(e.message)}</div>`;
   }
+}
+
+function _buildLearningHtml(data) {
+  // ── helpers ────────────────────────────────────────────────────────────────
+  const edu = (txt) => `<div style="background:rgba(76,141,255,.07);border-left:3px solid #4c8dff;border-radius:0 6px 6px 0;padding:9px 13px;font-size:12.5px;line-height:1.6;color:#a8c4e8;margin:8px 0">${txt}</div>`;
+  const h2 = (t,sub) => `<h2 style="margin:0 0 4px">${t}</h2>${sub?`<div class="muted" style="font-size:12px;margin-bottom:10px">${sub}</div>`:""}`;
+  const sec = (inner) => `<section class="block" style="margin-bottom:14px">${inner}</section>`;
+
+  const fStat = data.features_stats || {};
+  const dCounts = data.decision_counts || {};
+  const models = data.trained_models || [];
+  const decisions = data.decisions || [];
+  const states = data.states || [];
+  const logData = data.log || [];
+  const catalog = data.feature_catalog || [];
+  const sample = data.sample_feature || null;
+
+  const univ = models.find(m => m.figi === "UNIVERSAL" || m.ticker === "ALL");
+  const instrModels = models.filter(m => m.figi !== "UNIVERSAL" && m.ticker !== "ALL");
+  const univActive = univ?.status === "active";
+  const totalDecisions = Object.values(dCounts).reduce((a,b)=>a+b,0);
+  const winRate = fStat.labeled ? (fStat.wins / fStat.labeled * 100) : 0;
+
+  // ── 0. Заголовок + статус готовности ─────────────────────────────────────
+  const prec = univ?.precision_ || 0;
+  const acc  = univ?.accuracy   || 0;
+  const nTrain = univ?.n_training_samples || 0;
+  const readyPct = Math.min(100, Math.round(fStat.labeled / 30 * 100));
+  const statusBanner = univActive
+    ? `<div style="background:rgba(47,163,107,.12);border:1px solid #2fa36b;border-radius:8px;padding:14px 18px">
+         <div style="font-size:16px;font-weight:700;color:#2fa36b">🟢 Модель активна — влияет на реальные сделки</div>
+         <div class="muted" style="font-size:12px;margin-top:4px">Точность достаточна (precision ≥ 50%). Модель фильтрует входы и закрывает убыточные позиции досрочно.</div>
+       </div>`
+    : `<div style="background:rgba(240,192,74,.1);border:1px solid #f0c04a;border-radius:8px;padding:14px 18px">
+         <div style="font-size:16px;font-weight:700;color:#f0c04a">⏳ Модель учится (мягкий режим)</div>
+         <div class="muted" style="font-size:12.5px;margin-top:6px;line-height:1.6">
+           Модель уже собирает данные и предсказывает, но <b>пока не влияет на сделки</b> — её решения только логируются.
+           Она активируется автоматически, когда точность (precision) достигнет <b>50%</b>.
+           Сейчас precision = <b style="color:#f0c04a">${(prec*100).toFixed(0)}%</b> на ${nTrain} примерах.
+         </div>
+       </div>`;
+
+  // ── 1. Пайплайн ──────────────────────────────────────────────────────────
+  const stage = (icon,title,num,sub,color) => `
+    <div style="flex:1;min-width:130px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08);border-radius:10px;padding:12px;text-align:center">
+      <div style="font-size:22px">${icon}</div>
+      <div style="font-size:11px;color:#9fb3d8;margin:4px 0 2px">${title}</div>
+      <div style="font-size:20px;font-weight:700;color:${color}">${num}</div>
+      <div class="muted" style="font-size:10px;margin-top:2px">${sub}</div>
+    </div>`;
+  const arrow = `<div style="display:flex;align-items:center;color:#4c8dff;font-size:20px;flex:0 0 auto">→</div>`;
+  const pipeline = `
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:stretch">
+      ${stage("📥","1. Сбор признаков",fStat.total||0,"снимков рынка","#7ab0e8")}
+      ${arrow}
+      ${stage("🏷️","2. Разметка",fStat.labeled||0,`${fStat.wins||0}✓ / ${fStat.losses||0}✗`,"#c4dcff")}
+      ${arrow}
+      ${stage("🎓","3. Обучение",nTrain,"примеров в модели","#9b7ae8")}
+      ${arrow}
+      ${stage("🔮","4. Предсказание",(prec*100).toFixed(0)+"%","precision",prec>=0.5?"#2fa36b":"#f0c04a")}
+      ${arrow}
+      ${stage("⚖️","5. Решения",totalDecisions,"принято всего","#2fa36b")}
+      ${arrow}
+      ${stage("♻️","6. Дообучение","каждые 10","новых сделок","#7ab0e8")}
+    </div>`;
+
+  // ── 2. Глоссарий ─────────────────────────────────────────────────────────
+  const glossary = [
+    ["Признак (feature)","Одно измеримое свойство рынка в момент сделки — RSI, тренд, объём. Модель видит мир как набор из 31 числа."],
+    ["Вектор признаков","Все 31 признак вместе — это «фотография» рынка в момент входа. Именно её анализирует модель."],
+    ["Метка (label)","Результат сделки: 1 = прибыль, 0 = убыток. Модель учится связывать признаки с результатом."],
+    ["Обучение","Модель ищет закономерности: «при каких признаках сделки были прибыльными»."],
+    ["Precision (точность)","Из сделок, которые модель назвала прибыльными — сколько реально оказались прибыльными. Главная метрика."],
+    ["Accuracy","Доля всех верных предсказаний (и прибыль, и убыток). Может быть обманчива при перекосе классов."],
+    ["Train/Test","Модель учится на 80% данных, проверяется на 20% которых не видела — чтобы не «зубрила»."],
+  ];
+
+  // ── 3. Каталог признаков по группам + пример ──────────────────────────────
+  const groups = {};
+  catalog.forEach(f => { (groups[f.group] = groups[f.group] || []).push(f); });
+  const sampleVals = sample?.values || {};
+  const catalogHtml = Object.entries(groups).map(([grp, feats]) => `
+    <div style="margin-bottom:10px">
+      <div style="font-size:11px;font-weight:700;color:#7ab0e8;text-transform:uppercase;letter-spacing:.05em;margin-bottom:5px">${esc(grp)} <span class="muted" style="font-weight:400">· ${feats.length}</span></div>
+      <div style="display:flex;flex-direction:column;gap:3px">
+        ${feats.map(f => {
+          const v = sampleVals[f.name];
+          const vStr = (v !== undefined && v !== null) ? Number(v).toFixed(3).replace(/\.?0+$/,'') : "";
+          return `<div style="display:flex;gap:8px;font-size:12px;padding:3px 0;border-bottom:1px solid rgba(255,255,255,.04)">
+            <code style="color:#9b7ae8;min-width:120px;font-size:11px">${esc(f.name)}</code>
+            <span class="muted" style="flex:1">${esc(f.desc)}</span>
+            ${vStr!==""?`<span style="color:#c4dcff;font-weight:600;min-width:54px;text-align:right">${vStr}</span>`:""}
+          </div>`;
+        }).join("")}
+      </div>
+    </div>`).join("");
+
+  const sampleHeader = sample
+    ? `<div style="background:rgba(155,122,232,.08);border:1px solid rgba(155,122,232,.25);border-radius:8px;padding:10px 14px;margin-bottom:12px">
+         <div style="font-size:12px;color:#c4b5f0">📸 Пример реального вектора: <b>${esc(sample.ticker)}</b> от ${esc((sample.timestamp||"").slice(0,16))}
+         → итог: ${sample.label===1?'<span style="color:#2fa36b">✓ прибыль</span>':'<span style="color:#ff7b7b">✗ убыток</span>'}
+         (${sample.pnl>=0?'+':''}${Number(sample.pnl||0).toFixed(2)} ₽)</div>
+         <div class="muted" style="font-size:11px;margin-top:3px">Значения ниже — это то, что модель «увидела» в момент входа в эту сделку.</div>
+       </div>`
+    : "";
+
+  // ── 4. Разметка: баланс классов ───────────────────────────────────────────
+  const wPct = fStat.labeled ? (fStat.wins/fStat.labeled*100) : 0;
+  const lPct = fStat.labeled ? (fStat.losses/fStat.labeled*100) : 0;
+  const balanceBar = `
+    <div style="display:flex;height:28px;border-radius:6px;overflow:hidden;margin:8px 0">
+      <div style="width:${wPct}%;background:#2fa36b;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:#fff">${fStat.wins||0} ✓</div>
+      <div style="width:${lPct}%;background:#bf4d5a;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:#fff">${fStat.losses||0} ✗</div>
+    </div>
+    <div class="muted" style="font-size:12px">Win-rate обучающих данных: <b style="color:${wPct>=45?'#2fa36b':'#f0c04a'}">${wPct.toFixed(0)}%</b>
+    · Ожидают исхода (открытые/незакрытые): <b>${fStat.pending||0}</b></div>`;
+
+  // ── 5. Feature importance ──────────────────────────────────────────────────
+  let importance = {};
+  try { importance = typeof univ?.feature_importance === "string" ? JSON.parse(univ.feature_importance) : (univ?.feature_importance||{}); } catch(e){}
+  const impTop = Object.entries(importance).sort((a,b)=>b[1]-a[1]).slice(0,12);
+  const impMax = impTop.length ? impTop[0][1] : 1;
+  const catMap = {}; catalog.forEach(f => catMap[f.name]=f);
+  const impHtml = impTop.length ? impTop.map(([name,val]) => `
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:5px">
+      <code style="min-width:120px;font-size:11px;color:#9b7ae8">${esc(name)}</code>
+      <div style="flex:1;background:rgba(255,255,255,.06);border-radius:3px;height:14px;position:relative">
+        <div style="width:${(val/impMax*100).toFixed(0)}%;height:100%;background:linear-gradient(90deg,#4c8dff,#9b7ae8);border-radius:3px"></div>
+      </div>
+      <span style="font-size:11px;color:#c4dcff;min-width:42px;text-align:right">${(val*100).toFixed(1)}%</span>
+    </div>`).join("") : `<div class="muted">Будет доступно после первого обучения.</div>`;
+
+  // ── 6. Решения: типы + лог ─────────────────────────────────────────────────
+  const decLabel = {
+    "entry_allowed":"✅ Вход разрешён","entry_blocked":"🚫 Вход заблокирован",
+    "entry_soft_allow":"📊 Мягкий вход (учусь)","entry_soft_block":"📊 Мягкий блок (учусь)",
+    "early_exit":"⚡ Ранний выход","early_exit_soft":"📊 Мягкий выход (учусь)",
+  };
+  const decCountHtml = Object.entries(dCounts).sort((a,b)=>b[1]-a[1]).map(([k,v]) =>
+    `<div style="background:rgba(255,255,255,.04);border-radius:6px;padding:6px 12px;font-size:12px">
+       ${decLabel[k]||k}: <b>${v}</b></div>`).join("") || `<span class="muted">Решений пока нет</span>`;
+  const decisionRows = decisions.slice(0,15).map(d => {
+    const c = d.decision_type.includes("block") ? "#ff7b7b" : d.decision_type.includes("exit") ? "#f0c04a" : "#2fa36b";
+    return `<tr>
+      <td class="muted" style="font-size:11px">${esc((d.timestamp||"").slice(11,19))}</td>
+      <td><b>${esc(d.ticker)}</b></td>
+      <td style="font-size:12px;color:${c}">${decLabel[d.decision_type]||d.decision_type}</td>
+      <td style="font-size:12px">${d.model_confidence?(d.model_confidence*100).toFixed(0)+"%":"—"}</td>
+      <td class="muted" style="font-size:11px;max-width:260px">${esc(d.reason||"")}</td>
+    </tr>`;
+  }).join("") || `<tr><td colspan="5" class="muted" style="text-align:center;padding:12px">Решений пока нет</td></tr>`;
+
+  // ── 7. Phase 1 параметры + история ─────────────────────────────────────────
+  const confColor = (c)=> c>=0.65?"#2fa36b":c>=0.3?"#f0c04a":"#9fb3d8";
+  const fmtQ = (q)=>{const c=q>=0?"#2fa36b":"#ff7b7b";return `<span style="color:${c};font-weight:600">${q>=0?"+":""}${Number(q).toFixed(2)}</span>`;};
+  const instrRows = states.map(s=>{
+    const conf=s.confidence||0;
+    return `<tr><td><b>${esc(s.ticker)}</b></td>
+      <td class="muted" style="font-size:12px">${esc(s.ml_strategy_mode||"—")}</td>
+      <td style="font-size:12px">${s.ml_stop_loss_pct?(s.ml_stop_loss_pct*100).toFixed(2)+"%":"—"}</td>
+      <td style="font-size:12px">${s.ml_take_profit_pct?(s.ml_take_profit_pct*100).toFixed(2)+"%":"—"}</td>
+      <td style="font-size:12px">${((s.win_rate||0)*100).toFixed(0)}% (${s.wins||0}/${s.trades_count||0})</td>
+      <td>${fmtQ(s.quality_score||0)}</td>
+      <td><div style="width:70px;height:6px;background:rgba(255,255,255,.1);border-radius:3px"><div style="width:${Math.round(conf*100)}%;height:100%;background:${confColor(conf)};border-radius:3px"></div></div><span class="muted" style="font-size:10px">${Math.round(conf*100)}%</span></td>
+    </tr>`;
+  }).join("") || `<tr><td colspan="7" class="muted" style="text-align:center;padding:16px">Данных пока нет</td></tr>`;
+  const logRows = logData.map(l=>`<tr>
+    <td class="muted" style="font-size:11px">${esc((l.timestamp||"").slice(0,16))}</td>
+    <td><b>${esc(l.ticker)}</b></td><td class="muted" style="font-size:12px">${esc(l.param_changed)}</td>
+    <td style="font-size:12px">${esc(l.value_before)} → <b>${esc(l.value_after)}</b></td>
+    <td class="muted" style="font-size:11px;max-width:280px">${esc(l.reason)}</td>
+  </tr>`).join("") || `<tr><td colspan="5" class="muted" style="text-align:center;padding:12px">История пуста</td></tr>`;
+
+  // ── Сборка ─────────────────────────────────────────────────────────────────
+  return `
+    ${statusBanner}
+    <div style="margin:14px 0 6px"><button class="btn btn-primary" onclick="mlRebalance()">⚡ Переобучить модель сейчас</button>
+      <span class="muted" style="font-size:11px;margin-left:8px">обычно происходит автоматически в 00:00 МСК и каждые 10 новых сделок</span></div>
+
+    ${sec(h2("🔄 Как работает модель — полный цикл","Каждый этап с живыми данными вашей модели. Стрелки показывают поток данных.") + pipeline +
+      edu("💡 <b>Принцип машинного обучения:</b> модель не знает торговых правил. Она смотрит на тысячи примеров «вот так выглядел рынок → вот что вышло» и сама находит закономерности. Чем больше размеченных сделок — тем умнее модель. Это тот же принцип, что и в нейросетях; здесь используется <b>GradientBoosting</b> — ансамбль из 150 решающих деревьев, который часто точнее нейросети на табличных данных."))}
+
+    ${sec(h2("📖 Глоссарий — что означают термины") +
+      `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:8px">
+        ${glossary.map(([t,d])=>`<div style="background:rgba(255,255,255,.03);border-radius:6px;padding:8px 12px">
+          <div style="font-size:12px;font-weight:700;color:#c4dcff;margin-bottom:2px">${t}</div>
+          <div class="muted" style="font-size:11.5px;line-height:1.5">${d}</div></div>`).join("")}
+      </div>`)}
+
+    ${sec(h2("📥 Этап 1 — Сбор признаков","31 число описывают рынок в момент каждого входа. Это «органы чувств» модели.") +
+      edu("При каждом открытии позиции бот делает «снимок» рынка — записывает 31 признак в базу. Собрано уже <b>${fStat.total||0}</b> снимков. Ниже — все признаки по группам с описанием. Справа — значения из реального примера.") +
+      sampleHeader + catalogHtml)}
+
+    ${sec(h2("🏷️ Этап 2 — Разметка результатов","Когда сделка закрывается, ей ставится метка: прибыль или убыток.") +
+      edu("Модель учится только на <b>закрытых</b> сделках — у них известен исход. Из ${fStat.total||0} снимков размечено <b>${fStat.labeled||0}</b>. Баланс классов важен: если убытков сильно больше, модель склонна всё называть убытком — поэтому при обучении мы дублируем прибыльные примеры (oversampling).") +
+      balanceBar)}
+
+    ${sec(h2("🎓 Этап 3 — Обучение модели","GradientBoosting + калибровка Платта на размеченных данных.") +
+      edu("Модель делит данные: учится на 80%, проверяется на 20% (которые не видела). <b>Precision</b> — главная метрика: из входов, которые модель одобрила, сколько были прибыльны. Модель включается в работу при precision ≥ 50%.") +
+      `<div style="display:flex;gap:24px;flex-wrap:wrap;margin:10px 0">
+        <div><div class="label" style="font-size:11px">Статус</div><div style="font-weight:700;color:${univActive?'#2fa36b':'#f0c04a'}">${univActive?'✅ Активна':'⏳ Учится'}</div></div>
+        <div><div class="label" style="font-size:11px">Обучена на</div><div style="font-size:15px;font-weight:700">${nTrain} примерах</div></div>
+        <div><div class="label" style="font-size:11px">Precision</div><div style="font-size:15px;font-weight:700;color:${prec>=0.5?'#2fa36b':'#f0c04a'}">${(prec*100).toFixed(0)}%</div></div>
+        <div><div class="label" style="font-size:11px">Accuracy</div><div style="font-size:15px;font-weight:700">${(acc*100).toFixed(0)}%</div></div>
+        <div><div class="label" style="font-size:11px">Обновлена</div><div class="muted" style="font-size:12px">${esc((univ?.trained_at||"—").slice(0,16))}</div></div>
+      </div>` +
+      `<div style="font-size:12px;font-weight:700;color:#7ab0e8;margin:12px 0 6px">📊 Важность признаков — что модель считает главным</div>` +
+      edu("Модель сама определяет, какие из 31 признака сильнее всего влияют на результат. Чем длиннее полоса — тем важнее признак для предсказания.") +
+      impHtml)}
+
+    ${instrModels.length>0 ? sec(h2("📌 Специализированные модели по инструментам","Когда по тикеру накопится 30+ сделок — обучается отдельная, более точная модель.") +
+      `<div class="table-wrap"><table><thead><tr><th>Тикер</th><th>Статус</th><th>Обучено</th><th>Precision</th><th>Accuracy</th><th>Обновлена</th></tr></thead>
+        <tbody>${instrModels.slice(0,10).map(m=>`<tr><td><b>${esc(m.ticker)}</b></td>
+          <td>${m.status==="active"?'<span style="color:#2fa36b">✅ Активна</span>':'<span style="color:#f0c04a">⏳ Учится</span>'}</td>
+          <td class="muted" style="font-size:12px">${m.n_training_samples||0}</td>
+          <td style="font-size:12px">${m.precision_?(m.precision_*100).toFixed(0)+"%":"—"}</td>
+          <td style="font-size:12px">${m.accuracy?(m.accuracy*100).toFixed(0)+"%":"—"}</td>
+          <td class="muted" style="font-size:11px">${esc((m.trained_at||"").slice(0,16))}</td></tr>`).join("")}</tbody></table></div>`) : ""}
+
+    ${sec(h2("⚖️ Этап 4 — Решения модели","4 способа, которыми модель влияет на торговлю.") +
+      `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:8px;margin-bottom:10px">
+        <div style="background:rgba(255,255,255,.03);border-radius:6px;padding:10px 12px"><div style="font-weight:700;font-size:12.5px;color:#2fa36b">1. Фильтр входа</div><div class="muted" style="font-size:11.5px;line-height:1.5">Мета-стратегия «2 из 3»: сигнал + ML-вероятность ≥ 60% + 1ч-тренд. Слабые входы блокируются.</div></div>
+        <div style="background:rgba(255,255,255,.03);border-radius:6px;padding:10px 12px"><div style="font-weight:700;font-size:12.5px;color:#f0c04a">2. Ранний выход</div><div class="muted" style="font-size:11.5px;line-height:1.5">Если P падает &lt; 30% и позиция в убытке — закрывает досрочно, не дожидаясь стопа.</div></div>
+        <div style="background:rgba(255,255,255,.03);border-radius:6px;padding:10px 12px"><div style="font-weight:700;font-size:12.5px;color:#7ab0e8">3. Размер позиции</div><div class="muted" style="font-size:11.5px;line-height:1.5">Чем выше уверенность — тем больше лотов: P≥90% → 100%, P≥70% → 65%, P≥60% → 35%.</div></div>
+        <div style="background:rgba(255,255,255,.03);border-radius:6px;padding:10px 12px"><div style="font-weight:700;font-size:12.5px;color:#9b7ae8">4. Адаптивные SL/TP</div><div class="muted" style="font-size:11.5px;line-height:1.5">Подстраивает стоп/тейк под волатильность (ATR): шумный рынок — шире, тихий — уже.</div></div>
+      </div>` +
+      `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">${decCountHtml}</div>` +
+      `<div class="table-wrap"><table><thead><tr><th>Время</th><th>Тикер</th><th>Решение</th><th>Увер.</th><th>Причина</th></tr></thead><tbody>${decisionRows}</tbody></table></div>`)}
+
+    ${sec(h2("📊 Этап 5 — Самооптимизация параметров (Phase 1)","Параллельно модель подбирает лучшие SL/TP/режим для каждого инструмента.") +
+      edu("Это отдельный от нейросети механизм. По истории сделок он перебирает комбинации SL/TP/score (<b>Coordinate Descent</b>) и выбирает режим стратегии (<b>Thompson Sampling</b>). <b>Confidence</b> растёт с числом сделок: при 0.5+ меняются SL/TP, при 0.65+ — режим. <b>Quality</b> — ожидаемая прибыль на сделку.") +
+      `<div class="table-wrap"><table><thead><tr><th>Тикер</th><th>Режим</th><th>SL</th><th>TP</th><th>Win%</th><th>Quality</th><th>Уверенность</th></tr></thead><tbody>${instrRows}</tbody></table></div>`)}
+
+    ${sec(h2("📜 История изменений параметров") +
+      `<div class="table-wrap"><table><thead><tr><th>Время</th><th>Тикер</th><th>Параметр</th><th>Изменение</th><th>Причина</th></tr></thead><tbody>${logRows}</tbody></table></div>`)}
+  `;
 }
 
 async function mlRebalance() {
