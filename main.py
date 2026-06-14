@@ -750,6 +750,21 @@ def _handle_manual_close(bp: dict, market_map: dict, client=None):
     })
     close_position(figi, source="BOT")
     log_event("ORDER_CLOSE", f"{ticker} {reason} exit={float(exit_price):.4f} pnl={float(pnl):.2f}", ticker=ticker)
+
+    # ML: размечаем признаки и этой сделки (биржевой стоп/ручное закрытие).
+    # Без этого все закрытия по нативным стопам оставались бы без метки (сироты).
+    try:
+        from app.ml.feature_builder import label_features as _lf_mc
+        from app.ml.orchestrator import on_trade_closed as _otc_mc
+        _feat_id_mc = int(bp.get("ml_feature_id", 0) or 0) or get_position_feature_id(figi)
+        if _feat_id_mc:
+            _inv_mc = abs(float(entry_price) * qty)
+            _q_mc = float(pnl) / max(0.001, _inv_mc)
+            _lf_mc(_feat_id_mc, float(pnl), _q_mc)
+        _otc_mc(figi, float(pnl))
+    except Exception as _mle:
+        log.debug("ML label on manual_close %s: %s", ticker, _mle)
+
     _gross_mc = exit_price * qty  # qty уже в акциях
     notify(
         f"{'✅' if float(pnl) >= 0 else '🔴'} {reason_ui}\n"
