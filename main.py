@@ -1060,6 +1060,10 @@ _MOEX_HOLIDAYS: set = set()  # будет заполнен при первом �
 
 SHORT_CARRY_BLOCK_HOUR = 17  # После этого часа МСК не открываем новые SHORT
 
+# Минимально допустимый стоп-лосс. Стопы теснее этого выбивает рыночным шумом
+# почти сразу после открытия → «черн» (позиция живёт секунды, минус = комиссия).
+MIN_STOP_LOSS_PCT = Decimal("0.005")  # 0.5%
+
 
 def short_carry_risk() -> int:
     """
@@ -1752,8 +1756,11 @@ def process_instrument(client, item,
     if figi in _unavailable_figis:
         return
     lot = item["lots_override"]
-    stop_loss_pct = item["stop_loss_pct"]
-    take_profit_pct = item["take_profit_pct"]
+    # Пол стопа: стоп теснее 0.5% выбивает рыночным шумом/спредом сразу после
+    # открытия (черн — позиция живёт секунды и закрывается «в ноль» по комиссии).
+    # Защищает и от устаревших значений в памяти, и от слишком агрессивного оптимизатора.
+    stop_loss_pct = max(Decimal(str(item["stop_loss_pct"])), MIN_STOP_LOSS_PCT)
+    take_profit_pct = Decimal(str(item["take_profit_pct"]))
     allow_long = int(item.get("allow_long", 1))
     allow_short = int(item.get("allow_short", 1))
 
@@ -2262,6 +2269,8 @@ def process_instrument(client, item,
                 take_profit_pct = Decimal(str(_new_tp))
         except Exception:
             pass
+    # Повторно держим пол стопа — адаптивная корректировка не должна делать его теснее.
+    stop_loss_pct = max(stop_loss_pct, MIN_STOP_LOSS_PCT)
 
     # ── Авто-расчёт лотов от суммы ИТОГО портфеля ────────────────────────────
     _ml_lot_scale = 1.0  # масштаб от ML-уверенности

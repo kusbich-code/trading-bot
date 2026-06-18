@@ -1259,15 +1259,39 @@ def get_money_balance_from_runtime() -> float:
 
 
 def get_instrument_sl_tp(figi: str) -> dict:
-    """Возвращает stop_loss_pct и take_profit_pct для figi из strategy_instruments."""
+    """
+    Возвращает stop_loss_pct и take_profit_pct для figi.
+    Один тикер может присутствовать в нескольких стратегиях (в т.ч. в неактивных
+    «мусорных» с очень тесными стопами). Берём значения ТОЛЬКО из стратегий,
+    реально запущенных в активном профиле (profile_parallel_strategies); если
+    таких несколько — самый широкий стоп (безопаснее для разметки/расчётов).
+    Пол стопа 0.5% — не возвращаем заведомо «черновые» тесные стопы.
+    """
+    _MIN_SL = 0.005
     with db_cursor() as cur:
         cur.execute(
-            "SELECT stop_loss_pct, take_profit_pct FROM strategy_instruments WHERE figi=? LIMIT 1",
+            """
+            SELECT si.stop_loss_pct, si.take_profit_pct
+            FROM strategy_instruments si
+            JOIN profile_parallel_strategies pps ON pps.strategy_id = si.strategy_id
+            WHERE si.figi=? AND si.enabled=1
+            ORDER BY CAST(si.stop_loss_pct AS REAL) DESC
+            LIMIT 1
+            """,
             (figi,),
         )
         row = cur.fetchone()
+        if not row:
+            # Фолбэк: тикера нет в запущенных стратегиях — берём самый широкий из всех
+            cur.execute(
+                "SELECT stop_loss_pct, take_profit_pct FROM strategy_instruments "
+                "WHERE figi=? AND enabled=1 ORDER BY CAST(stop_loss_pct AS REAL) DESC LIMIT 1",
+                (figi,),
+            )
+            row = cur.fetchone()
     if row:
-        return {"sl_pct": float(row["stop_loss_pct"] or 0), "tp_pct": float(row["take_profit_pct"] or 0)}
+        return {"sl_pct": max(float(row["stop_loss_pct"] or 0), _MIN_SL),
+                "tp_pct": float(row["take_profit_pct"] or 0)}
     return {"sl_pct": 0.0, "tp_pct": 0.0}
 
 
