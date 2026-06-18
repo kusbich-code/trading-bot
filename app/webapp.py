@@ -3230,7 +3230,7 @@ def api_ml_instrument(figi: str):
 @app.get("/api/instrument/stats/{figi}")
 def api_instrument_stats(figi: str):
     """Котировки + диапазоны дня/недели/месяца/года для блока позиции."""
-    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+    from datetime import datetime as _dt, timezone as _tz, timedelta
     from app.services.tbank_client import get_candles_range as _gcr
     _msk = _tz(timedelta(hours=3))
 

@@ -526,9 +526,6 @@ async function renderMainShell() {
       </div>
     </section>
 
-    <!-- ── Детали позиций: графики + новости ── -->
-    <div id="positionDetailsBlock"></div>
-
     <!-- ── Сделки ── -->
     <section class="block">
       <div class="row between"><h2>Сделки</h2><div class="note">Сегодня</div></div>
@@ -688,9 +685,6 @@ async function renderMainData() {
 
   refreshParallelStatus();
 
-  // ── Детали позиций: графики + новости ────────────────────────────────────
-  renderPositionDetails(data.positions || []);
-
   // ── Balance check + sandbox ───────────────────────────────────────────────
   try {
     const bc = await apiGet("/api/dashboard/balance-check");
@@ -839,138 +833,6 @@ async function refreshQuotesOnly() {
 
 // ── Position detail panels (chart + news per ticker) ─────────────────────────
 
-let _posDetailFigis  = [];
-let _posChartInterval = "5min";
-let _posChartHours    = 4;
-
-async function renderPositionDetails(positions) {
-  const block = document.getElementById("positionDetailsBlock");
-  if (!block) return;
-  if (!positions || !positions.length) { block.innerHTML = ""; _posDetailFigis = []; return; }
-
-  const figis = positions.map(p => p.figi).filter(Boolean);
-  const key = figis.join(",");
-
-  if (key !== _posDetailFigis.join(",")) {
-    _posDetailFigis = figis;
-    block.innerHTML = `
-      <div class="row" style="gap:8px;margin:8px 0 4px;flex-wrap:wrap">
-        <span class="muted" style="font-size:12px">Позиции — настройки графика:</span>
-        <select id="posChartInterval" class="field" style="width:90px;padding:3px 6px;font-size:12px"
-                onchange="_posChartInterval=this.value;_refreshPosCharts()">
-          <option value="1min">1 мин</option>
-          <option value="5min" selected>5 мин</option>
-          <option value="15min">15 мин</option>
-          <option value="1hour">1 час</option>
-        </select>
-        <select id="posChartHours" class="field" style="width:80px;padding:3px 6px;font-size:12px"
-                onchange="_posChartHours=parseInt(this.value);_refreshPosCharts()">
-          <option value="1">1 ч</option>
-          <option value="2">2 ч</option>
-          <option value="4" selected>4 ч</option>
-          <option value="8">8 ч</option>
-          <option value="24">24 ч</option>
-        </select>
-      </div>
-      ${positions.map(p => `
-      <section class="block" id="pos-detail-${esc(p.figi)}" style="margin-top:6px;padding:12px 16px">
-        <div class="row between" style="margin-bottom:10px;flex-wrap:wrap;gap:6px">
-          <div class="row" style="gap:8px">
-            <h2 style="margin:0">${esc(p.ticker)}</h2>
-            <span class="badge" style="background:${p.direction==='BUY'?'rgba(47,163,107,.2)':'rgba(191,77,90,.2)'};color:${p.direction==='BUY'?'#2fa36b':'#ff7b7b'}">
-              ${p.direction==='BUY'?'Лонг':'Шорт'}
-            </span>
-          </div>
-          <div class="row" style="gap:16px;flex-wrap:wrap">
-            <div><span class="muted" style="font-size:11px">Вход</span><div style="font-size:14px;font-weight:600">${esc(p.entry_price_ui)}</div></div>
-            <div><span class="muted" style="font-size:11px">Текущая</span><div id="pos-cur-${esc(p.figi)}" style="font-size:14px;font-weight:600">—</div></div>
-            <div><span class="muted" style="font-size:11px">Пред. закр.</span><div id="pos-prevc-${esc(p.figi)}" style="font-size:13px">—</div></div>
-            <div><span class="muted" style="font-size:11px">Открытие</span><div id="pos-open-${esc(p.figi)}" style="font-size:13px">—</div></div>
-          </div>
-        </div>
-        <div id="pos-stats-${esc(p.figi)}" style="display:grid;grid-template-columns:repeat(3,1fr);gap:4px 16px;margin-bottom:10px;padding:8px 10px;background:rgba(255,255,255,.03);border-radius:6px;font-size:12px">
-          <div class="muted" style="text-align:center;padding:4px;grid-column:span 3;font-size:11px">Загрузка котировок…</div>
-        </div>
-        <div style="display:grid;grid-template-columns:1fr 340px;gap:14px;align-items:start">
-          <div id="pos-chart-${esc(p.figi)}" style="height:220px;width:100%;min-width:0"></div>
-          <div id="pos-news-${esc(p.figi)}" style="max-height:220px;overflow-y:auto">
-            <div class="muted" style="text-align:center;padding:20px;font-size:12px">Загрузка новостей…</div>
-          </div>
-        </div>
-      </section>`).join("")}`;
-  }
-
-  await _refreshPosCharts();
-  for (const p of positions) {
-    _loadPosStats(p.figi, p.current_price);
-    _loadPosNews(p.figi);
-  }
-}
-
-async function _refreshPosCharts() {
-  if (!_posDetailFigis.length) return;
-  const figis = _posDetailFigis;
-  const figiList = figis.join(",");
-  try {
-    const candlesData = await apiGet(
-      `/api/dashboard/multi-candles?figis=${figiList}&interval=${_posChartInterval}&hours=${_posChartHours}`
-    );
-    for (const figi of figis) {
-      _renderPosChart(figi, candlesData[figi]?.candles || []);
-    }
-  } catch(e) {}
-  // Новости загружаем только если раньше не загружали (один раз при появлении)
-  for (const figi of figis) {
-    const el = document.getElementById(`pos-news-${figi}`);
-    if (el && el.querySelector(".muted")) _loadPosNews(figi);
-  }
-}
-
-function _renderPosChart(figi, candles) {
-  const el = document.getElementById(`pos-chart-${figi}`);
-  if (!el) return;
-  if (!candles || !candles.length) {
-    el.innerHTML = '<div class="muted" style="text-align:center;padding:40px;font-size:12px">Нет данных свечей</div>';
-    return;
-  }
-  const times  = candles.map(c => c.time);
-  const opens  = candles.map(c => parseFloat(c.open));
-  const highs  = candles.map(c => parseFloat(c.high));
-  const lows   = candles.map(c => parseFloat(c.low));
-  const closes = candles.map(c => parseFloat(c.close));
-  const trace = {
-    type: "candlestick", x: times,
-    open: opens, high: highs, low: lows, close: closes,
-    increasing: { line: { color: "#2fa36b", width: 1 }, fillcolor: "rgba(47,163,107,.8)" },
-    decreasing: { line: { color: "#bf4d5a", width: 1 }, fillcolor: "rgba(191,77,90,.8)" },
-    showlegend: false,
-    xhoverformat: "%d.%m %H:%M",
-  };
-  const layout = {
-    paper_bgcolor: "transparent", plot_bgcolor: "transparent",
-    margin: { l: 50, r: 8, t: 6, b: 28 },
-    xaxis: {
-      showgrid: false, color: "#666", type: "date",
-      tickfont: { size: 10, color: "#9fb3d8" },
-      rangeslider: { visible: false },
-    },
-    yaxis: {
-      showgrid: true, gridcolor: "rgba(255,255,255,.07)",
-      color: "#9fb3d8", tickfont: { size: 10 },
-      side: "right",
-    },
-    dragmode: "pan",
-    hovermode: "x unified",
-  };
-  if (window.Plotly) {
-    Plotly.react(el, [trace], layout, {
-      displayModeBar: true,
-      modeBarButtonsToRemove: ["select2d","lasso2d","autoScale2d","toImage"],
-      responsive: true,
-    });
-  }
-}
-
 // ── Signal score popup ────────────────────────────────────────────────────────
 
 let _sigPopup = null;
@@ -1079,65 +941,6 @@ function _showSignalPopup(sigEl, tr) {
     }
   };
   setTimeout(() => document.addEventListener("click", window._sigCloseHandler), 50);
-}
-
-async function _loadPosStats(figi, currentPrice) {
-  const statsEl = document.getElementById(`pos-stats-${figi}`);
-  const curEl   = document.getElementById(`pos-cur-${figi}`);
-  const prevcEl = document.getElementById(`pos-prevc-${figi}`);
-  const openEl  = document.getElementById(`pos-open-${figi}`);
-  if (!statsEl) return;
-  try {
-    const s = await apiGet(`/api/instrument/stats/${figi}`);
-    if (s.error) { statsEl.innerHTML = `<div class="muted" style="grid-column:span 3">Нет данных</div>`; return; }
-
-    const fmt = (v) => v != null ? Number(v).toFixed(2) : '—';
-    const fmtVol = (v) => v ? (v >= 1000000 ? (v/1000000).toFixed(1)+' млн' : v >= 1000 ? (v/1000).toFixed(0)+' тыс' : v) : '—';
-    const fmtCap = (v) => v ? (v >= 1e12 ? (v/1e12).toFixed(1)+' трлн ₽' : v >= 1e9 ? (v/1e9).toFixed(0)+' млрд ₽' : '—') : '—';
-
-    if (curEl && currentPrice) curEl.textContent = fmt(currentPrice) + ' ₽';
-    if (prevcEl) prevcEl.textContent = s.prev_close != null ? fmt(s.prev_close) + ' ₽' : '—';
-    if (openEl)  openEl.textContent  = s.open_today != null ? fmt(s.open_today) + ' ₽' : '—';
-
-    const rows = [
-      ['День',   s.day_low   != null ? fmt(s.day_low)   + ' – ' + fmt(s.day_high)   : '—'],
-      ['Неделя', s.week_low  != null ? fmt(s.week_low)  + ' – ' + fmt(s.week_high)  : '—'],
-      ['Месяц',  s.month_low != null ? fmt(s.month_low) + ' – ' + fmt(s.month_high) : '—'],
-      ['Год',    s.year_low  != null ? fmt(s.year_low)  + ' – ' + fmt(s.year_high)  : '—'],
-      ['Ср. объём', fmtVol(s.avg_vol)],
-      ['Капитализация', fmtCap(s.market_cap)],
-    ];
-    statsEl.innerHTML = rows.map(([label, val]) => `
-      <div>
-        <div class="muted" style="font-size:10px;margin-bottom:1px">${label}</div>
-        <div style="font-size:12px;font-weight:500">${val}</div>
-      </div>`).join('');
-  } catch(e) {
-    if (statsEl) statsEl.innerHTML = `<div class="muted" style="grid-column:span 3;font-size:11px">Ошибка загрузки котировок</div>`;
-  }
-}
-
-async function _loadPosNews(figi) {
-  const el = document.getElementById(`pos-news-${figi}`);
-  if (!el) return;
-  try {
-    const news = await apiGet(`/api/news/ticker?figi=${figi}&hours=24`);
-    if (!news || !news.length) {
-      el.innerHTML = '<div class="muted" style="text-align:center;padding:20px;font-size:12px">Новостей за 4 часа не найдено</div>';
-      return;
-    }
-    el.innerHTML = news.map(n => `
-      <div style="padding:5px 0;border-bottom:1px solid rgba(255,255,255,.05)">
-        <a href="${esc(n.link)}" target="_blank" rel="noopener"
-           style="color:#9fb3d8;text-decoration:none;font-size:12px;line-height:1.4;display:block"
-           onmouseover="this.style.color='#cdd9f0'" onmouseout="this.style.color='#9fb3d8'">
-          ${esc(n.title)}
-        </a>
-        <div style="font-size:10px;color:#555;margin-top:2px">${esc(n.date)}${n.source ? ' · ' + esc(n.source) : ''}</div>
-      </div>`).join("");
-  } catch(e) {
-    el.innerHTML = '<div class="muted" style="font-size:11px;padding:8px">Ошибка загрузки новостей</div>';
-  }
 }
 
 function _fmtSum(v) {
@@ -2993,7 +2796,7 @@ async function sandboxResetBalance() {
     showToast("Сбрасываю счёт...", "info", 3000);
     const res = await apiPostForm("/api/sandbox/reset", { amount });
     showToast(`Новый счёт создан. Баланс: ${Math.round(res.balance).toLocaleString("ru")} ₽. Перезапуск бота...`, "success", 6000);
-    await apiPost("/api/bot/restart");
+    await apiPostJson("/api/bot/restart", {});
     setTimeout(() => { renderSummaryCards(); renderMainData(); }, 4000);
   } catch (e) {
     showToast(`Ошибка сброса: ${e.message}`, "error", 6000);
@@ -4321,7 +4124,7 @@ function _buildLearningHtml(data) {
 async function mlRebalance() {
   try {
     showToast("Запускаю ребаланс…", "info", 2000);
-    await apiPost("/api/ml/rebalance");
+    await apiPostJson("/api/ml/rebalance", {});
     showToast("Ребаланс запущен в фоне. Обновите страницу через 30 секунд.", "success", 5000);
   } catch(e) {
     showToast("Ошибка: " + e.message, "error");
