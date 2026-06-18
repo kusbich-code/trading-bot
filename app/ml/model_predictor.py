@@ -304,16 +304,13 @@ def compute_adaptive_sl_tp(features: Dict, base_sl: float, base_tp: float) -> Tu
     volatility_factor = atr_pct / (base_sl * 100)
 
     if volatility_factor > 1.5:
-        # Рынок шумный — расширяем стопы
+        # Рынок шумный — РАСШИРЯЕМ стопы, чтобы не выбивало шумом
         sl = min(base_sl * 1.5, 0.012)
         tp = min(base_tp * 1.6, 0.035)
         mode = "шумный"
-    elif volatility_factor < 0.5:
-        # Тихий рынок — сужаем
-        sl = max(base_sl * 0.75, 0.002)
-        tp = max(base_tp * 0.85, 0.004)
-        mode = "тихий"
     else:
+        # Тихий/нормальный рынок — НЕ сужаем стоп (сужение давало лишние
+        # выбивания шумом и роняло win-rate). Оставляем базовый уровень.
         return base_sl, base_tp
 
     log.debug("adaptive_sl_tp: ATR=%.3f%% factor=%.2f mode=%s sl=%.3f tp=%.3f",
