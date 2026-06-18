@@ -1852,6 +1852,19 @@ def api_parallel_status():
                 _loss_stops_month = int((_c4.fetchone() or [0])[0])
         except Exception:
             pass
+        # Консистентность с тикерами: если у инструмента стратегии есть открытая
+        # позиция (BOT или у брокера) — статус «в позиции», даже если воркер её
+        # потерял из памяти после рестарта (иначе потоки и тикеры расходятся).
+        try:
+            _strat_figis = {i["figi"] for i in list_strategy_instruments(sid)
+                            if str(i.get("enabled", 1)) in ("1", "true")}
+            _held = _strat_figis & set(open_pos.keys())
+            if _held:
+                info = dict(info)
+                info["status"] = "в позиции"
+                info["ticker"] = open_pos[next(iter(_held))].get("ticker", info.get("ticker", ""))
+        except Exception:
+            pass
         result.append({"strategy_id": sid, "name": name, **info, "stats": stats,
                         "loss_stops_month": _loss_stops_month})
 

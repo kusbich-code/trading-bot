@@ -484,36 +484,40 @@ async function renderMainShell() {
       </div>
     </section>
 
-    <!-- ── Параллельные стратегии ── -->
+    <!-- ── Параллельные стратегии + инструменты + графики (единый блок) ── -->
     <section class="block" id="parallelStatusBlock" style="display:none">
-      <div class="row between" style="margin-bottom:12px">
-        <h2 style="margin:0">Параллельные стратегии</h2>
-        <span class="note">Одна позиция на все потоки</span>
-      </div>
-      <div id="parallelStatusBody"></div>
-    </section>
-
-    <!-- ── Графики инструментов (настройки + сетка) ── -->
-    <section class="block" style="padding:12px 16px;margin-bottom:6px">
-      <div class="row between">
-        <h2 style="margin:0">Графики инструментов</h2>
-        <div class="row" style="gap:6px;flex-wrap:wrap">
-          <select class="field" id="mcInterval" style="width:auto">
+      <div class="row between" style="margin-bottom:10px;flex-wrap:wrap;gap:8px">
+        <div class="row" style="gap:8px;align-items:baseline;flex-wrap:wrap">
+          <h2 style="margin:0">Параллельные стратегии и инструменты</h2>
+          <span class="note" style="font-size:11px">потоки · сигналы · графики</span>
+        </div>
+        <div class="row" style="gap:6px;flex-wrap:wrap;align-items:center">
+          <button class="btn" id="psTablesToggle" style="padding:3px 8px;font-size:12px" onclick="
+            var t=document.getElementById('parallelStatusBody');var h=t.style.display==='none';
+            t.style.display=h?'block':'none';this.textContent=h?'Скрыть таблицы':'Показать таблицы';
+          ">Скрыть таблицы</button>
+          <span class="note" style="font-size:11px;margin-left:6px">Графики:</span>
+          <select class="field" id="mcInterval" style="width:auto;padding:3px 6px;font-size:12px">
             <option value="1min">1 мин</option>
             <option value="5min">5 мин</option>
             <option value="15min">15 мин</option>
             <option value="hour">1 час</option>
           </select>
-          <select class="field" id="mcHours" style="width:auto">
+          <select class="field" id="mcHours" style="width:auto;padding:3px 6px;font-size:12px">
             <option value="1">1 ч</option>
             <option value="4" selected>4 ч</option>
             <option value="8">8 ч</option>
           </select>
-          <button class="btn" onclick="mainChartsApplySettings()">Обновить</button>
+          <button class="btn" style="padding:3px 8px;font-size:12px" onclick="mainChartsApplySettings()">Обновить</button>
+          <button class="btn" id="mcToggle" style="padding:3px 8px;font-size:12px" onclick="
+            var g=document.getElementById('mainChartsGrid');var h=g.style.display==='none';
+            g.style.display=h?'grid':'none';this.textContent=h?'Скрыть графики':'Показать графики';
+          ">Скрыть графики</button>
         </div>
       </div>
+      <div id="parallelStatusBody"></div>
+      <div id="mainChartsGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:6px;margin-top:10px"></div>
     </section>
-    <div id="mainChartsGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:6px;margin-bottom:18px"></div>
 
     <!-- ── Позиции ── -->
     <section class="block">
