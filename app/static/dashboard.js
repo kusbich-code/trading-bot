@@ -492,11 +492,7 @@ async function renderMainShell() {
           <span class="note" style="font-size:11px">потоки · сигналы · графики</span>
         </div>
         <div class="row" style="gap:6px;flex-wrap:wrap;align-items:center">
-          <button class="btn" id="psTablesToggle" style="padding:3px 8px;font-size:12px" onclick="
-            var t=document.getElementById('parallelStatusBody');var h=t.style.display==='none';
-            t.style.display=h?'block':'none';this.textContent=h?'Скрыть таблицы':'Показать таблицы';
-          ">Скрыть таблицы</button>
-          <span class="note" style="font-size:11px;margin-left:6px">Графики:</span>
+          <span class="note" style="font-size:11px">Графики:</span>
           <select class="field" id="mcInterval" style="width:auto;padding:3px 6px;font-size:12px">
             <option value="1min">1 мин</option>
             <option value="5min">5 мин</option>
@@ -510,13 +506,13 @@ async function renderMainShell() {
           </select>
           <button class="btn" style="padding:3px 8px;font-size:12px" onclick="mainChartsApplySettings()">Обновить</button>
           <button class="btn" id="mcToggle" style="padding:3px 8px;font-size:12px" onclick="
-            var g=document.getElementById('mainChartsGrid');var h=g.style.display==='none';
-            g.style.display=h?'grid':'none';this.textContent=h?'Скрыть графики':'Показать графики';
+            var cards=document.getElementById('_psCards'); if(!cards) return;
+            var off=cards.classList.toggle('charts-off');
+            this.textContent=off?'Показать графики':'Скрыть графики';
           ">Скрыть графики</button>
         </div>
       </div>
       <div id="parallelStatusBody"></div>
-      <div id="mainChartsGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:6px;margin-top:10px"></div>
     </section>
 
     <!-- ── Позиции ── -->
@@ -1044,7 +1040,7 @@ function _showSignalPopup(sigEl, tr) {
   const skip    = tr.dataset.sigSkip    || "";
   const filter  = tr.dataset.sigFilter  || "";
   const reasons = (tr.dataset.sigReasons || "").split("||").filter(Boolean);
-  const ticker  = tr.querySelector("td b")?.textContent || "";
+  const ticker  = tr.dataset.ticker || tr.querySelector("b")?.textContent || "";
   const sigColor  = action === "BUY" ? "#2fa36b" : action === "SELL" ? "#ff7b7b" : "#9fb3d8";
   const modeLabel = { trend: "Тренд (SMA9/SMA21)", mean_reversion: "Возврат к средней (Z-score)", breakout: "Пробой (объём+диапазон)" }[mode] || mode;
   const scoreHelp = { trend: "Score = среднее((разрыв SMA)×1000, |моментум|×15), макс 100. Чем больше расхождение SMA и моментум — тем выше.", mean_reversion: "Score = min(|Z-score|×30, 100). Z — отклонение цены от 20-периодной средней в сигмах. Сигнал при |Z|≥1.8.", breakout: "Score = среднее((отрыв от диапазона)×100, коэф.объёма×30), макс 100. Нужен пробой 20-свечного диапазона с объёмом ≥1.2×средний." }[mode] || "Score 0..100";
@@ -3090,278 +3086,153 @@ async function refreshParallelStatus() {
                      "Июль","Август","Сентябрь","Октябрь","Ноябрь","Декабрь"];
     const _monthLabel = _months[_now.getMonth()];                     // Июнь
 
-    // ── Таблица стратегий: сортировка по дневному PnL (убывание) ─────────
-    const sortedThreads = [...threads].sort((a,b) => {
-      const pa = (a.stats?.day?.pnl) || 0;
-      const pb = (b.stats?.day?.pnl) || 0;
-      return pb - pa;
-    });
-    // Считаем итоги по всем стратегиям
-    let totDay = 0, totWeek = 0, totMonth = 0, totCnt = 0, totWins = 0, totStops = 0;
-    sortedThreads.forEach(t => {
-      const s = t.stats || {};
-      totDay   += (s.day?.pnl)   || 0;
-      totWeek  += (s.week?.pnl)  || 0;
-      totMonth += (s.month?.pnl) || 0;
-      totCnt   += (s.month?.trades) || 0;
-      totWins  += Math.round(((s.month?.win_rate||0) / 100) * (s.month?.trades||0));
-      totStops += (t.loss_stops_month) || 0;
-    });
-    const totWR = totCnt > 0 ? Math.round(totWins / totCnt * 100 * 10) / 10 : 0;
-    const fmtTot = (v) => {
-      if (v === 0) return `<span class="muted">—</span>`;
-      const c = v >= 0 ? "#2fa36b" : "#ff7b7b";
-      return `<span style="color:${c};font-weight:700">${v >= 0 ? "+" : ""}${v.toFixed(2)}</span>`;
-    };
+    // ── Объединяем данные потока и тикера ПО ИНСТРУМЕНТУ ─────────────────────
+    const thBySid = {}; threads.forEach(t => { thBySid[t.strategy_id] = t; });
+    const thByTk  = {}; threads.forEach(t => { if (t.ticker) thByTk[t.ticker] = t; });
+    const cards = instruments.map(i => ({ i, th: thBySid[i.strategy_id] || thByTk[i.ticker] || {} }));
+    cards.sort((a,b) => (b.i.signal_score||0) - (a.i.signal_score||0));
 
-    const stratRows = sortedThreads.map(t => {
-      const col  = statusColor[t.status] || "#eef4ff";
-      const tick = t.ticker ? ` · ${esc(t.ticker)}` : "";
-      const s    = t.stats || {};
-      return `<tr>
-        <td><b>${esc(t.name)}</b></td>
-        <td><span style="display:inline-flex;align-items:center;gap:5px">
-          <span style="width:7px;height:7px;border-radius:50%;background:${col};flex-shrink:0"></span>
-          <span style="color:${col};font-size:12px">${esc(t.status)}${tick}</span>
-        </span></td>
-        <td>${fmtStat(s.day,"pnl")}</td><td>${fmtStat(s.week,"pnl")}</td><td>${fmtStat(s.month,"pnl")}</td>
-        <td class="muted">${fmtStat(s.month,"wr")}</td>
-        <td class="muted">${fmtStat(s.month,"cnt")}</td>
-        <td class="muted" style="font-size:12px">${
-          (t.loss_stops_month > 0)
-            ? `<span style="color:#ff7b7b;font-weight:600">${t.loss_stops_month}</span>`
-            : `<span class="muted">0</span>`
-        }</td>
-        <td class="muted" style="font-size:11px">${esc(t.updated_at||"")}</td>
-      </tr>`;
-    }).join("") + `<tr style="border-top:2px solid rgba(255,255,255,.15);background:rgba(255,255,255,.03)">
-      <td colspan="2" style="font-weight:700;font-size:13px;padding:6px 8px">ИТОГО</td>
-      <td>${fmtTot(totDay)}</td>
-      <td>${fmtTot(totWeek)}</td>
-      <td>${fmtTot(totMonth)}</td>
-      <td class="muted">${totCnt > 0 ? totWR + "%" : "—"}</td>
-      <td class="muted">${totCnt || "—"}</td>
-      <td class="muted" style="font-size:12px">${totStops > 0 ? `<span style="color:#ff7b7b;font-weight:600">${totStops}</span>` : "0"}</td>
-      <td></td>
-    </tr>`;
+    // Итоги по всем стратегиям
+    let totDay=0, totWeek=0, totMonth=0, totCnt=0, totWins=0, totStops=0;
+    threads.forEach(t => { const s=t.stats||{};
+      totDay+=(s.day?.pnl)||0; totWeek+=(s.week?.pnl)||0; totMonth+=(s.month?.pnl)||0;
+      totCnt+=(s.month?.trades)||0; totWins+=Math.round(((s.month?.win_rate||0)/100)*(s.month?.trades||0));
+      totStops+=(t.loss_stops_month)||0; });
+    const totWR = totCnt>0 ? Math.round(totWins/totCnt*1000)/10 : 0;
+    const _money=(v)=>{const c=v>=0?"#2fa36b":"#ff7b7b";return `<span style="color:${c};font-weight:700">${v>=0?"+":""}${v.toFixed(0)}</span>`;};
+    const summaryHtml = `<div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center;padding:6px 11px;margin-bottom:8px;background:rgba(255,255,255,.04);border-radius:8px;font-size:12px">
+      <span style="font-weight:700">ИТОГО</span>
+      <span>день ${_money(totDay)}₽</span><span>нед ${_money(totWeek)}₽</span><span>мес ${_money(totMonth)}₽</span>
+      <span class="muted">win ${totCnt?totWR+"%":"—"}</span><span class="muted">сделок ${totCnt||0}</span>
+      <span class="muted">стопов ${totStops>0?`<span style="color:#ff7b7b">${totStops}</span>`:"0"}</span>
+      <span class="muted" style="margin-left:auto;font-size:10px">${_dayLabel} · ${_weekLabel} · ${_monthLabel}</span>
+    </div>`;
 
-    // ── Инструменты: сортировка по score сигнала (выше score → выше в таблице) ─
-    const sorted = [...instruments].sort((a,b) => (b.signal_score || 0) - (a.signal_score || 0));
-    const n      = sorted.length;
+    // Статичная структура карточки (динамика обновляется по id/классам без перерисовки)
+    const cardHtml = ({i, th}) => `<div class="icard" data-figi="${esc(i.figi)}" data-ticker="${esc(i.ticker)}"
+          data-sig-action="${esc(i.signal_action||"—")}" data-sig-score="${i.signal_score||0}"
+          data-sig-skip="${esc(i.signal_skip_reason||"")}" data-sig-filter="${esc(i.signal_skip_filter||"")}"
+          data-sig-mode="${esc(i.signal_mode||"")}" data-sig-reasons="${esc((i.signal_reasons||[]).join("||"))}">
+      <div class="icard-h">
+        <span class="icard-tk"><b>${esc(i.ticker)}</b></span>
+        <span class="icard-st" id="cst-${esc(i.figi)}"></span>
+        <span class="live-sig" data-figi="${esc(i.figi)}" style="margin-left:auto;cursor:pointer" title="Расшифровка сигнала">—</span>
+      </div>
+      <div class="icard-name" id="cnm-${esc(i.figi)}">${esc(th.name||"")}</div>
+      <div class="icard-pr">
+        <span class="live-price" data-figi="${esc(i.figi)}" style="font-size:15px;font-weight:700">—</span>
+        <span class="live-time muted" data-figi="${esc(i.figi)}" style="font-size:10px">—</span>
+        <span style="margin-left:auto;white-space:nowrap;font-size:11px">
+          <span style="color:#ff7b7b">▼${esc(i.sl_pct)}</span><span style="color:#888">/</span><span style="color:#2fa36b">▲${esc(i.tp_pct)}</span>
+        </span>
+      </div>
+      <div class="icard-meta">
+        <span>${esc(i.lots)} лот <span class="muted">(${esc(i.lot_cost_ui||"")})</span></span>
+        <span class="muted">об. <span class="live-vol" data-figi="${esc(i.figi)}">—</span></span>
+      </div>
+      <div id="mc-${esc(i.figi)}" class="icard-chart"></div>
+      <div class="icard-stats" id="cstats-${esc(i.figi)}"></div>
+      <div class="icard-limit" id="clim-${esc(i.figi)}"></div>
+    </div>`;
 
-    // Градиент по score: высокий score (сверху) → зелёный, нулевой (снизу) → нейтральный
-    const maxScore = Math.max(...sorted.map(i => i.signal_score || 0), 1);
-    const rowBg  = (idx) => {
-      const score = sorted[idx]?.signal_score || 0;
-      if (score <= 0 || n < 2) return "";
-      const t = 1 - score / maxScore;  // 0 = top score (green), 1 = lowest score
-      const r = Math.round(47  + (100-47)  * t);
-      const g = Math.round(163 + (120-163) * t);
-      const b = Math.round(107 + (80-107)  * t);
-      return `background:rgba(${r},${g},${b},.09)`;
-    };
-
-    const instrRows = sorted.map((i, idx) => {
-      const action = i.signal_action || "—";
-      const score  = i.signal_score  || 0;
-      const sigColor = action === "BUY"  ? "#2fa36b"
-                     : action === "SELL" ? "#ff7b7b"
-                     : "#9fb3d8";
-      const sigLabel = action === "HOLD" ? "HOLD" : action;
-      const tickerCell = i.in_position
-        ? `<b>${esc(i.ticker)}</b> <span style="color:#f5a623;font-size:10px">&#9679; позиция</span>`
-        : `<b>${esc(i.ticker)}</b>`;
-      // Ячейка дневного лимита потерь
-      const maxLoss = i.max_daily_loss_rub || 0;
-      const dailyPnl = i.daily_pnl || 0;
-      const blocked  = i.is_loss_blocked;
-      const blockCnt = i.loss_block_count_month || 0;
-      const pnlColor = dailyPnl >= 0 ? "#2fa36b" : "#ff7b7b";
-      const pnlFmt   = dailyPnl !== 0 ? (dailyPnl >= 0 ? "+" : "") + dailyPnl.toFixed(0) + " ₽" : "";
-      let lossCell;
-      if (maxLoss > 0) {
-        const limitFmt = maxLoss.toLocaleString("ru-RU");
-        lossCell = `
-          <div style="font-size:11px;line-height:1.5">
-            ${blocked
-              ? `<span style="background:rgba(191,77,90,.2);color:#ff7b7b;border:1px solid #bf4d5a;border-radius:3px;padding:1px 5px;font-size:10px;font-weight:700">⛔ СТОП</span>`
-              : `<span class="muted" style="font-size:10px">Лимит: −${limitFmt} ₽</span>`
-            }
-            ${pnlFmt ? `<div><span style="color:${pnlColor}">${pnlFmt}</span> сегодня</div>` : ""}
-            ${blockCnt > 0 ? `<div class="muted" style="font-size:10px">Стопов: ${blockCnt}×</div>` : ""}
-          </div>`;
-      } else if (pnlFmt) {
-        // Нет лимита, но есть дневной PnL — показываем только его
-        lossCell = `<span style="color:${pnlColor};font-size:11px">${pnlFmt}</span><span class="muted" style="font-size:10px"> сег.</span>`;
-      } else {
-        lossCell = '<span class="muted" style="font-size:11px">—</span>';
-      }
-      // Данные сигнала в data-атрибутах — обновляются отдельно без diffTbody
-      return `<tr data-figi="${esc(i.figi)}"
-                  data-sig-action="${esc(action)}"
-                  data-sig-score="${score}"
-                  data-sig-skip="${esc(i.signal_skip_reason||"")}"
-                  data-sig-filter="${esc(i.signal_skip_filter||"")}"
-                  data-sig-mode="${esc(i.signal_mode||"")}"
-                  data-sig-reasons="${esc((i.signal_reasons||[]).join("||"))}"
-                  style="${rowBg(idx)}${blocked ? ';opacity:.7' : ''}">
-        <td>${tickerCell}</td>
-        <td>${esc(i.lots)} <span class="muted" style="font-size:10px">(${esc(i.lot_cost_ui || "")})</span></td>
-        <td class="muted" style="white-space:nowrap">
-          <span style="color:#ff7b7b;font-size:11px">▼${esc(i.sl_pct)}</span>
-          <span style="color:#888;margin:0 2px">/</span>
-          <span style="color:#2fa36b;font-size:11px">▲${esc(i.tp_pct)}</span>
-        </td>
-        <td class="live-price" data-figi="${esc(i.figi)}" style="font-size:13px;font-weight:600">—</td>
-        <td class="live-time muted" data-figi="${esc(i.figi)}" style="font-size:11px">—</td>
-        <td class="live-vol muted" data-figi="${esc(i.figi)}" style="font-size:12px">—</td>
-        <td>${lossCell}</td>
-        <td class="live-sig" data-figi="${esc(i.figi)}" style="cursor:pointer" title="Нажмите для расшифровки сигнала">—</td>
-      </tr>`;
-    }).join("");
-
-    // ── Инициализация структуры тела (один раз) ──────────────────────────────
-    if (!body.dataset.built) {
-      body.dataset.built = "1";
-      body.innerHTML = `
-        <div class="table-wrap" style="margin-bottom:12px">
-          <table><thead><tr>
-            <th>Стратегия</th><th>Статус</th>
-            <th id="_psThDay">PnL день</th><th id="_psThWeek">PnL нед.</th><th id="_psThMonth">PnL мес.</th>
-            <th id="_psThWrMonth">Win% мес.</th><th id="_psThCntMonth">Сделок мес.</th><th>Стопов мес.</th><th>Обновлено</th>
-          </tr></thead><tbody id="_psStratBody"></tbody></table>
-        </div>
-        <div style="display:flex;align-items:center;gap:8px;margin:6px 0 4px">
-          <span class="live-dot" id="_psLiveDot"></span>
-          <span style="font-size:11px;color:#9fb3d8" id="_psUpdTime"></span>
-        </div>
-        <div class="table-wrap">
-          <table><thead><tr>
-            <th>Тикер</th><th>Лоты (стоимость)</th><th>SL/TP</th>
-            <th>Цена</th><th>Обновлено</th><th>Объём 1м</th><th>Лимит/день</th><th>Сигнал</th>
-          </tr></thead><tbody id="_psInstrBody"></tbody></table>
-        </div>
-        <div id="_psCoordNote"></div>`;
+    // ── CSS сетки карточек (один раз) ────────────────────────────────────────
+    if (!document.getElementById("_icardStyle")) {
+      const st = document.createElement("style"); st.id = "_icardStyle";
+      st.textContent = `
+        .instr-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:8px}
+        .icard{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08);border-radius:10px;padding:9px 11px;min-width:0;overflow:hidden}
+        .icard-h{display:flex;align-items:center;gap:6px}
+        .icard-tk{font-size:14px;white-space:nowrap}
+        .icard-st{font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+        .icard-name{font-size:10.5px;color:#7ab0e8;margin:1px 0 5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+        .icard-pr{display:flex;align-items:baseline;gap:6px}
+        .icard-meta{display:flex;justify-content:space-between;gap:6px;font-size:11px;margin:3px 0 5px;white-space:nowrap}
+        .icard-chart{height:90px;margin-bottom:5px}
+        .icard-stats{display:flex;flex-wrap:wrap;gap:4px 9px;font-size:11px;line-height:1.5}
+        .icard-limit{font-size:10.5px;margin-top:3px;min-height:14px}
+        .charts-off .icard-chart{display:none}`;
+      document.head.appendChild(st);
     }
 
-    // ── Заголовки с датами (обновляются каждый refresh) ──────────────────────
-    const _thDay = document.getElementById('_psThDay');
-    const _thWk  = document.getElementById('_psThWeek');
-    const _thMo  = document.getElementById('_psThMonth');
-    const _thWr  = document.getElementById('_psThWrMonth');
-    const _thCnt = document.getElementById('_psThCntMonth');
-    if (_thDay)  _thDay.innerHTML  = `PnL день<br><span class="muted" style="font-size:10px;font-weight:400">${_dayLabel}</span>`;
-    if (_thWk)   _thWk.innerHTML   = `PnL нед.<br><span class="muted" style="font-size:10px;font-weight:400">${_weekLabel}</span>`;
-    if (_thMo)   _thMo.innerHTML   = `PnL мес.<br><span class="muted" style="font-size:10px;font-weight:400">${_monthLabel}</span>`;
-    if (_thWr)   _thWr.innerHTML   = `Win%<br><span class="muted" style="font-size:10px;font-weight:400">${_monthLabel}</span>`;
-    if (_thCnt)  _thCnt.innerHTML  = `Сделок<br><span class="muted" style="font-size:10px;font-weight:400">${_monthLabel}</span>`;
-
-    // ── Стратегии (diff) ──────────────────────────────────────────────────────
-    diffTbody(document.getElementById('_psStratBody'), stratRows);
-
-    // ── Инструменты: тихий diff, потом обновляем live-ячейки ────────────────
-    const instrTbody = document.getElementById('_psInstrBody');
-    if (instrTbody) {
-      const hadRows = instrTbody.querySelector('tr[data-figi]') !== null;
-      diffTbody(instrTbody, instrRows);
-      // Привязываем клик на .live-sig только для новых строк
-      if (!hadRows) {
-        instrTbody.addEventListener("click", (e) => {
-          const sigEl = e.target.closest(".live-sig");
-          if (!sigEl) return;
-          const tr = sigEl.closest("tr[data-figi]");
-          if (tr) _showSignalPopup(sigEl, tr);
-        });
-      }
-
-      // Восстанавливаем цены из кэша (иначе будут "—" после diffTbody)
-      if (Object.keys(_lastQuotesMap).length) {
-        _applyQuotesToLiveCells(_lastQuotesMap);
-      }
-
-      // Обновляем сигнал и объём из data-атрибутов строки
-      instrTbody.querySelectorAll('tr[data-figi]').forEach(tr => {
-        const figi     = tr.dataset.figi;
-        const instr    = instruments.find(x => x.figi === figi);
-        if (!instr) return;
-
-        // Объём (без flash)
-        const volEl = tr.querySelector('.live-vol');
-        if (volEl) volEl.textContent = instr.volume_ui || "—";
-
-        // Сигнал — обновляем только при реальном изменении action/score/skip
-        const sigEl = tr.querySelector('.live-sig');
-        if (!sigEl) return;
-        const newAction = tr.dataset.sigAction || "—";
-        const newScore  = parseInt(tr.dataset.sigScore  || "0") || 0;
-        const newSkip   = tr.dataset.sigSkip   || "";
-        const newFilter = tr.dataset.sigFilter  || "";
-        const prevScore  = parseInt(sigEl.dataset.score  !== undefined ? sigEl.dataset.score  : "-999");
-        const prevAction = sigEl.dataset.action || "";
-        const firstRender = sigEl.dataset.score === undefined;
-        // Пропускаем если ничего не изменилось — НЕТ flash, НЕТ обновления DOM
-        if (!firstRender && prevScore === newScore && prevAction === newAction && sigEl.dataset.skip === newSkip) return;
-        const sigC = newAction === "BUY" ? "#2fa36b" : newAction === "SELL" ? "#ff7b7b" : "#9fb3d8";
-        // Всё в одну строку — никаких div, высота строки не меняется
-        sigEl.innerHTML = `<span style="color:${sigC};font-weight:700;font-size:12px">${esc(newAction)}</span>`
-          + (newScore ? ` <span class="muted" style="font-size:11px">${newScore > 0 ? "+" : ""}${newScore}</span>` : "")
-          + (newSkip  ? ` <span style="color:#f0a500;font-size:11px" title="${esc(newSkip)}">⚠</span>` : "");
-        sigEl.dataset.score  = String(newScore);
-        sigEl.dataset.action = newAction;
-        sigEl.dataset.skip   = newSkip;
-        // Flash только при значимых изменениях (не при первом рендере)
-        if (!firstRender && newScore !== prevScore && newScore !== 0) {
-          _flashCell(sigEl, newScore > prevScore ? 'up' : 'down');
-        } else if (!firstRender && prevAction !== newAction && (newAction === "BUY" || newAction === "SELL")) {
-          _flashCell(sigEl, newAction === "BUY" ? 'up' : 'down');
-        }
+    // ── Перестраиваем сетку только при смене набора инструментов ─────────────
+    const figiKey = cards.map(c => c.i.figi).join(",");
+    let cardsRebuilt = false;
+    if (body.dataset.figiKey !== figiKey) {
+      body.dataset.figiKey = figiKey;
+      body.innerHTML = `<div id="_psSummary"></div>
+        <div class="instr-grid" id="_psCards">${cards.map(cardHtml).join("")}</div>
+        <div id="_psCoordNote"></div>`;
+      cardsRebuilt = true;
+      const cont = document.getElementById("_psCards");
+      cont.addEventListener("click", (e) => {
+        const sigEl = e.target.closest(".live-sig"); if (!sigEl) return;
+        const card = sigEl.closest(".icard[data-figi]"); if (card) _showSignalPopup(sigEl, card);
       });
     }
+    document.getElementById("_psSummary").innerHTML = summaryHtml;
 
-    // ── Синяя волна строки при смене action BUY/SELL ────────────────────────
-    instruments.forEach(i => {
-      const prev = _prevSignals[i.figi];
-      const newAction = i.signal_action || "—";
-      const actionChanged = prev && prev.action !== newAction && newAction !== "HOLD" && newAction !== "—";
-      _prevSignals[i.figi] = { action: newAction };
-      if (actionChanged && instrTbody) {
-        const tr = instrTbody.querySelector(`tr[data-figi="${i.figi}"]`);
-        if (tr) { tr.classList.remove('sig-flash'); void tr.offsetWidth; tr.classList.add('sig-flash'); }
-      }
+    // ── Динамика карточек: статус, имя, статистика, лимит ─────────────────────
+    const _stPnl = (st)=>{ if(!st||!st.trades) return '<span class="muted">—</span>';
+      const v=st.pnl||0,c=v>=0?"#2fa36b":"#ff7b7b"; return `<span style="color:${c}">${v>=0?"+":""}${esc(st.pnl_ui)}</span>`; };
+    const _stTxt = (st,k)=> (!st||!st.trades) ? '<span class="muted">—</span>' : (k==="wr"?`${st.win_rate??0}%`:`${st.trades}`);
+    cards.forEach(({i, th}) => {
+      const f = i.figi, s = th.stats || {};
+      const col = statusColor[th.status] || "#9fb3d8";
+      const stEl = document.getElementById(`cst-${f}`);
+      if (stEl) stEl.innerHTML = `<span style="color:${col}">● ${esc(th.status||"—")}</span>`;
+      const nmEl = document.getElementById(`cnm-${f}`); if (nmEl && th.name && nmEl.textContent !== th.name) nmEl.textContent = th.name;
+      const stats = document.getElementById(`cstats-${f}`);
+      if (stats) stats.innerHTML =
+        `<span>д ${_stPnl(s.day)}</span><span>н ${_stPnl(s.week)}</span><span>м ${_stPnl(s.month)}</span>`
+        + `<span class="muted">win ${_stTxt(s.month,"wr")}</span><span class="muted">сд ${_stTxt(s.month,"cnt")}</span>`
+        + `<span class="muted">стоп ${(th.loss_stops_month>0)?`<span style="color:#ff7b7b">${th.loss_stops_month}</span>`:"0"}</span>`;
+      const lim = document.getElementById(`clim-${f}`);
+      if (lim) { const maxLoss=i.max_daily_loss_rub||0, dp=i.daily_pnl||0, pc=dp>=0?"#2fa36b":"#ff7b7b";
+        const pf = dp!==0 ? `<span style="color:${pc}">${dp>=0?"+":""}${dp.toFixed(0)}₽</span> сег.` : "";
+        if (i.is_loss_blocked) lim.innerHTML = `<span style="background:rgba(191,77,90,.2);color:#ff7b7b;border:1px solid #bf4d5a;border-radius:3px;padding:1px 5px">⛔ СТОП дня</span> ${pf}`;
+        else if (maxLoss>0) lim.innerHTML = `<span class="muted">лимит −${maxLoss.toLocaleString("ru-RU")}₽</span> ${pf}`+(i.loss_block_count_month>0?` <span class="muted">· стопов ${i.loss_block_count_month}×</span>`:"");
+        else lim.innerHTML = pf || '<span class="muted">—</span>'; }
     });
 
-    // ── Заметка о числе открытых позиций / лимите ─────────────────────────────
+    // ── Live-цены из кэша ─────────────────────────────────────────────────────
+    if (Object.keys(_lastQuotesMap).length) _applyQuotesToLiveCells(_lastQuotesMap);
+
+    // ── Объём + сигнал по карточкам (точечно, без перерисовки) ───────────────
+    const cardsCont = document.getElementById("_psCards");
+    if (cardsCont) cardsCont.querySelectorAll(".icard[data-figi]").forEach(card => {
+      const figi = card.dataset.figi, instr = instruments.find(x => x.figi === figi); if (!instr) return;
+      const volEl = card.querySelector(".live-vol"); if (volEl) volEl.textContent = instr.volume_ui || "—";
+      card.dataset.sigAction = instr.signal_action||"—"; card.dataset.sigScore = instr.signal_score||0;
+      card.dataset.sigSkip = instr.signal_skip_reason||""; card.dataset.sigFilter = instr.signal_skip_filter||"";
+      card.dataset.sigMode = instr.signal_mode||""; card.dataset.sigReasons = (instr.signal_reasons||[]).join("||");
+      const sigEl = card.querySelector(".live-sig"); if (!sigEl) return;
+      const a = instr.signal_action||"—", sc = instr.signal_score||0, sk = instr.signal_skip_reason||"";
+      const pa = sigEl.dataset.action||"", psc = parseInt(sigEl.dataset.score!==undefined?sigEl.dataset.score:"-999");
+      const first = sigEl.dataset.score === undefined;
+      if (!first && pa===a && psc===sc && sigEl.dataset.skip===sk) return;
+      const c = a==="BUY"?"#2fa36b":a==="SELL"?"#ff7b7b":"#9fb3d8";
+      sigEl.innerHTML = `<span style="color:${c};font-weight:700;font-size:12px">${esc(a)}</span>`
+        + (sc?` <span class="muted" style="font-size:11px">${sc>0?"+":""}${sc}</span>`:"")
+        + (sk?` <span style="color:#f0a500;font-size:11px" title="${esc(sk)}">⚠</span>`:"");
+      sigEl.dataset.action=a; sigEl.dataset.score=String(sc); sigEl.dataset.skip=sk;
+      if (!first && sc!==psc && sc!==0) _flashCell(sigEl, sc>psc?'up':'down');
+    });
+
+    // ── Заметка о числе открытых позиций ──────────────────────────────────────
     const coordNote = document.getElementById('_psCoordNote');
     if (coordNote) {
-      const openList = (data.instruments || []).filter(x => x.in_position);
+      const openList = instruments.filter(x => x.in_position);
       const maxPos = data.max_open_positions || 0;
-      if (openList.length > 0) {
-        const tickers = openList.map(x => esc(x.ticker)).join(", ");
-        const limitTxt = maxPos ? ` (лимит ${maxPos})` : "";
-        const full = maxPos && openList.length >= maxPos;
-        coordNote.innerHTML = `<div class="note" style="margin-top:6px;color:#f5a623">`
-          + `&#9679; Открыто позиций: ${openList.length}${limitTxt} — ${tickers}`
-          + (full ? " — новые ордера заблокированы" : "")
-          + `</div>`;
-      } else {
-        coordNote.innerHTML = "";
-      }
+      coordNote.innerHTML = openList.length
+        ? `<div class="note" style="margin-top:8px;color:#f5a623">&#9679; Открыто позиций: ${openList.length}${maxPos?` (лимит ${maxPos})`:""} — ${openList.map(x=>esc(x.ticker)).join(", ")}${maxPos&&openList.length>=maxPos?" — новые ордера заблокированы":""}</div>`
+        : "";
     }
 
-    // ── Live-dot + "обновлено X сек назад" ────────────────────────────────────
-    const now = Date.now();
-    _psLastUpdate = now;
-    const dot = document.getElementById('_psLiveDot');
-    if (dot) { dot.classList.remove('stale'); }
-
-    // ── Графики: только если список инструментов изменился ────────────────────
-    const newFigis = instruments.map(i => i.figi).join(',');
-    if (newFigis !== (_psLastFigis || "")) {
-      _psLastFigis = newFigis;
-      _mainChartFigis = instruments.map(i => ({figi: i.figi, ticker: i.ticker}));
+    // ── Графики в карточки: при смене набора или интервала ────────────────────
+    _mainChartFigis = cards.map(c => ({figi: c.i.figi, ticker: c.i.ticker}));
+    if (cardsRebuilt || figiKey !== (_psLastFigis || "")) {
+      _psLastFigis = figiKey;
       await _renderMainCharts();
-    } else {
-      _mainChartFigis = instruments.map(i => ({figi: i.figi, ticker: i.ticker}));
     }
   } catch (e) { console.error("refreshParallelStatus:", e); }
 }
@@ -3373,22 +3244,10 @@ async function mainChartsApplySettings() {
 }
 
 async function _renderMainCharts() {
-  const grid = document.getElementById("mainChartsGrid");
-  if (!grid || !window.Plotly || !_mainChartFigis.length) {
-    if (grid) grid.innerHTML = "";
-    return;
-  }
-  const figis = _mainChartFigis; // показываем ВСЕ, без ограничения в 10
-
-  // Плейсхолдеры
-  grid.innerHTML = figis.map(f => `
-    <div class="block" style="padding:8px;margin-bottom:0">
-      <div class="row between" style="margin-bottom:4px">
-        <span style="font-size:12px;font-weight:700">${esc(f.ticker)}</span>
-        <span class="note" style="font-size:10px" id="mc-price-${f.figi}"></span>
-      </div>
-      <div id="mc-${f.figi}" style="height:120px"></div>
-    </div>`).join("");
+  // Графики рисуются в контейнеры mc-{figi} ВНУТРИ карточек инструментов
+  // (создаются в refreshParallelStatus). Отдельной сетки больше нет.
+  if (!window.Plotly || !_mainChartFigis.length) return;
+  const figis = _mainChartFigis;
 
   try {
     const url = `/api/dashboard/multi-candles?figis=${figis.map(f=>f.figi).join(",")}&interval=${_mainChartInterval}&hours=${_mainChartHours}`;
