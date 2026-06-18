@@ -244,6 +244,14 @@ def _deep_update(figi: str, ticker: str, strategy_id: int, current_params: Dict)
     # 4. Сохраняем состояние
     upsert_instrument_state(figi, ticker, strategy_id, stats, ml_params)
     if changed:
+        # Переименовываем стратегию под новые настройки (режим/SL/TP)
+        try:
+            from app.db import rebuild_strategy_name
+            new_name = rebuild_strategy_name(strategy_id)
+            if new_name:
+                log.info("[ML] %s стратегия переименована → %s", ticker, new_name)
+        except Exception as e:
+            log.debug("rename strategy %s: %s", ticker, e)
         log.info("[ML] %s параметры обновлены (conf=%.2f, quality=%.4f)",
                  ticker, confidence, stats["quality_score"])
 

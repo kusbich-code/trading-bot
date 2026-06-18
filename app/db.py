@@ -1583,6 +1583,56 @@ def update_profile_settings(profile_id: int, settings_dict: dict):
                     """, (key, str(value)))
 
 
+_MODE_LABELS_RU = {
+    "mean_reversion": "Возврат к средней",
+    "breakout": "Пробой",
+    "trend": "Тренд",
+    "revert": "Возврат к средней",
+    "mean": "Возврат к средней",
+}
+
+
+def _fmt_pct_short(frac) -> str:
+    """0.008 → '0.8', 0.02 → '2', 0.015 → '1.5' (без хвостовых нулей)."""
+    try:
+        s = f"{float(frac) * 100:.2f}".rstrip("0").rstrip(".")
+        return s or "0"
+    except Exception:
+        return "0"
+
+
+def rebuild_strategy_name(strategy_id: int) -> str:
+    """
+    Пересобирает имя параллельной стратегии из текущих настроек:
+    «{ТИКЕР} {Режим} {SL}%/{TP}%». Вызывается после изменения параметров
+    оптимизатором. Возвращает новое имя (или '' если нечего собрать).
+    """
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                "SELECT ticker, stop_loss_pct, take_profit_pct FROM strategy_instruments "
+                "WHERE strategy_id=? ORDER BY id LIMIT 1", (strategy_id,)
+            )
+            row = cur.fetchone()
+            if not row or not row["ticker"]:
+                return ""
+            ticker = row["ticker"]
+            sl = _fmt_pct_short(row["stop_loss_pct"])
+            tp = _fmt_pct_short(row["take_profit_pct"])
+            cur.execute(
+                "SELECT value FROM strategy_settings WHERE strategy_id=? AND key='tradingmode'",
+                (strategy_id,)
+            )
+            m = cur.fetchone()
+            mode = (m["value"] if m else "") or "mean_reversion"
+            mode_label = _MODE_LABELS_RU.get(mode, mode)
+            new_name = f"{ticker} {mode_label} {sl}%/{tp}%"
+            cur.execute("UPDATE strategies SET name=? WHERE id=?", (new_name, strategy_id))
+            return new_name
+    except Exception:
+        return ""
+
+
 def set_profile_strategy(profile_id: int, strategy_id: int):
     with db_cursor() as cur:
         cur.execute("UPDATE profiles SET strategy_id = ? WHERE id = ?", (strategy_id, profile_id))
