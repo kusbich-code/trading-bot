@@ -4393,11 +4393,12 @@ function _buildLearningHtml(data) {
       balanceBar)}
 
     ${sec(h2("🎓 Этап 3 — Обучение модели","GradientBoosting + калибровка Платта на размеченных данных.") +
-      edu(`<b>Почему «обучено на ${nTrain}», а размечено ${fStat.labeled}?</b> Данные делятся: <b>80% (${nTrain}) — обучение</b>, <b>20% (${(fStat.labeled||0)-nTrain}) — проверка</b> на примерах, которые модель не видела. Это обязательно — иначе модель «зазубрит» и метрики будут ложными. <b>Precision</b> измеряется на проверочной части: из входов, что модель одобрила, сколько были прибыльны. Модель включается при precision ≥ 50%.`) +
-      `<div style="display:flex;height:24px;border-radius:6px;overflow:hidden;margin:8px 0;max-width:420px">
+      edu(`<b>Почему «обучено на ${nTrain}», а размечено ${fStat.labeled}?</b> Это деление <u>исторических закрытых сделок</u> (НЕ открытых позиций!). Из ${fStat.labeled} размеченных: <b>80% (${nTrain}) — обучение</b>, <b>20% (${(fStat.labeled||0)-nTrain}) — проверка</b> на примерах, которые модель не видела. Без этого метрики были бы ложными. <b>Precision</b> меряется на проверочной части. Модель включается при precision ≥ 50%.`) +
+      `<div style="display:flex;height:24px;border-radius:6px;overflow:hidden;margin:8px 0;max-width:480px">
         <div style="width:80%;background:#9b7ae8;display:flex;align-items:center;justify-content:center;font-size:11px;color:#fff;font-weight:600">обучение ${nTrain}</div>
-        <div style="width:20%;background:#4c8dff;display:flex;align-items:center;justify-content:center;font-size:11px;color:#fff;font-weight:600">тест ${(fStat.labeled||0)-nTrain}</div>
-      </div>` +
+        <div style="width:20%;background:#4c8dff;display:flex;align-items:center;justify-content:center;font-size:11px;color:#fff;font-weight:600">проверка ${(fStat.labeled||0)-nTrain}</div>
+      </div>
+      <div class="muted" style="font-size:11px;margin-bottom:6px">⚠️ «Проверка ${(fStat.labeled||0)-nTrain}» — это срез истории сделок для валидации, а НЕ открытые позиции.</div>` +
       `<div style="display:flex;gap:24px;flex-wrap:wrap;margin:10px 0">
         <div><div class="label" style="font-size:11px">Статус</div><div style="font-weight:700;color:${univActive?'#2fa36b':'#f0c04a'}">${univActive?'✅ Активна':'⏳ Учится'}</div></div>
         <div><div class="label" style="font-size:11px">Обучена на</div><div style="font-size:15px;font-weight:700">${nTrain} примерах</div></div>
