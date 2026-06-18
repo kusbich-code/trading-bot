@@ -3090,7 +3090,9 @@ async function refreshParallelStatus() {
     const thBySid = {}; threads.forEach(t => { thBySid[t.strategy_id] = t; });
     const thByTk  = {}; threads.forEach(t => { if (t.ticker) thByTk[t.ticker] = t; });
     const cards = instruments.map(i => ({ i, th: thBySid[i.strategy_id] || thByTk[i.ticker] || {} }));
-    cards.sort((a,b) => (b.i.signal_score||0) - (a.i.signal_score||0));
+    // Стабильный порядок по тикеру — чтобы карточки не прыгали и графики
+    // не перерисовывались при каждом изменении score (иначе моргают).
+    cards.sort((a,b) => (a.i.ticker||"").localeCompare(b.i.ticker||""));
 
     // Итоги по всем стратегиям
     let totDay=0, totWeek=0, totMonth=0, totCnt=0, totWins=0, totStops=0;
@@ -3139,7 +3141,10 @@ async function refreshParallelStatus() {
     if (!document.getElementById("_icardStyle")) {
       const st = document.createElement("style"); st.id = "_icardStyle";
       st.textContent = `
-        .instr-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:8px}
+        .instr-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+        @media(max-width:1100px){.instr-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
+        @media(max-width:820px){.instr-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+        @media(max-width:540px){.instr-grid{grid-template-columns:1fr}}
         .icard{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08);border-radius:10px;padding:9px 11px;min-width:0;overflow:hidden}
         .icard-h{display:flex;align-items:center;gap:6px}
         .icard-tk{font-size:14px;white-space:nowrap}
@@ -3155,7 +3160,9 @@ async function refreshParallelStatus() {
     }
 
     // ── Перестраиваем сетку только при смене набора инструментов ─────────────
-    const figiKey = cards.map(c => c.i.figi).join(",");
+    // Ключ набора независим от порядка — пересборка (и перерисовка графиков)
+    // только когда реально добавился/убрался инструмент, а не при смене score.
+    const figiKey = cards.map(c => c.i.figi).slice().sort().join(",");
     let cardsRebuilt = false;
     if (body.dataset.figiKey !== figiKey) {
       body.dataset.figiKey = figiKey;
