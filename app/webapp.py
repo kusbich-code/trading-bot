@@ -905,7 +905,10 @@ def api_dashboard_main():
             pnl_d = (cur_d - avg_d) * calc_qty
         else:
             pnl_d = (avg_d - cur_d) * calc_qty
+        # Движение в пользу позиции (для SELL знак инвертируется)
         pct = ((cur_d - avg_d) / avg_d * 100) if avg_d > 0 else Decimal("0")
+        if direction == "SELL":
+            pct = -pct
         sl_pct, tp_pct = _sl_tp_map.get(figi, (0.0, 0.0))
         if avg_d > 0 and sl_pct > 0:
             sl_price = avg_d * Decimal(str(1 - sl_pct)) if direction == "BUY" else avg_d * Decimal(str(1 + sl_pct))
@@ -984,11 +987,16 @@ def api_dashboard_main():
         pass
 
     def _trade_pnl_pct(t):
+        # Движение цены в пользу позиции (%) — не зависит от lot_size/qty и
+        # прямо показывает достижение SL/TP. Для SELL знак инвертируется.
         entry = float(t.get("entry", 0) or 0)
-        qty   = int(t.get("qty", 0) or 0)
-        pnl   = float(t.get("pnl", 0) or 0)
-        cost  = entry * qty
-        return round(pnl / cost * 100, 2) if cost else 0.0
+        exit_ = float(t.get("exit", 0) or 0)
+        if entry <= 0:
+            return 0.0
+        move = (exit_ - entry) / entry * 100
+        if str(t.get("direction", "")).upper() == "SELL":
+            move = -move
+        return round(move, 2)
 
     db_trades = [{
         **dict(t),

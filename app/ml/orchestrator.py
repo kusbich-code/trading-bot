@@ -195,56 +195,38 @@ def _deep_update(figi: str, ticker: str, strategy_id: int, current_params: Dict)
     }
     changed = False
 
-    # 1. Выбор режима стратегии (если confidence ≥ 0.65)
-    if confidence >= MIN_CONFIDENCE_HARD:
-        best_mode = select_best_strategy_mode(figi, ml_params["strategy_mode"])
-        if best_mode and best_mode != ml_params["strategy_mode"]:
-            log.info("[ML] %s: режим %s → %s (confidence=%.2f)",
-                     ticker, ml_params["strategy_mode"], best_mode, confidence)
-            log_optimization(figi, ticker, strategy_id, "strategy_mode",
-                             ml_params["strategy_mode"], best_mode,
-                             f"Выбор режима (Thompson Sampling): по истории сделок режим «{best_mode}» "
-                             f"показал лучший результат. Уверенность {confidence:.0%}",
-                             stats["quality_score"], stats["quality_score"])
-            ml_params["strategy_mode"] = best_mode
-            _apply_strategy_mode(figi, strategy_id, best_mode)
-            changed = True
-
-    # 2. Оптимизация SL/TP/score (если confidence ≥ 0.5)
-    if confidence >= MIN_CONFIDENCE_MED:
-        suggestion = suggest_sl_tp(
-            figi, strategy_id,
-            ml_params["stop_loss_pct"], ml_params["take_profit_pct"],
-            ml_params["min_score"]
-        )
-        if suggestion and suggestion.get("improved"):
-            new_sl    = suggestion["sl"]
-            new_tp    = suggestion["tp"]
-            new_score = suggestion["score"]
-            reason = (f"Координатный спуск: проверено {suggestion.get('n_variants',6)} вариантов "
-                      f"на {suggestion.get('n_contexts',0)} сделках (90 дней). "
-                      f"Ожидаемая прибыль/сделку: {stats['quality_score']:.2f}→{suggestion['quality']:.2f} ₽")
-            if new_sl != ml_params["stop_loss_pct"]:
+    # 1+2. Бэктест-оптимизация mode×SL×TP на РЕАЛЬНЫХ исторических свечах (90 дней).
+    # Заменяет прежний координатный спуск (его симуляция SL/TP была заглушкой —
+    # pnl не пересчитывался под новый стоп). Здесь движок реально проигрывает свечи.
+    try:
+        from app.ml.backtest_client import optimize_instrument as _bt_opt
+        bt = _bt_opt(figi, ticker, ml_params["strategy_mode"],
+                     ml_params["stop_loss_pct"], ml_params["take_profit_pct"])
+        if bt and bt.get("improved"):
+            reason = (f"Бэктест 90д ({bt['candles']} свечей): перебрано {bt['n_combos']} комбинаций "
+                      f"режим×SL×TP. Лучшая: {bt['mode']}, SL {bt['sl']*100:.2f}%, TP {bt['tp']*100:.2f}% "
+                      f"(win {bt['win_rate']:.0f}%, сделок {bt['trades']}). "
+                      f"Прибыль за 90д: {bt['base_quality']:.0f}→{bt['quality']:.0f} ₽")
+            if bt["mode"] != ml_params["strategy_mode"]:
+                log_optimization(figi, ticker, strategy_id, "strategy_mode",
+                                 ml_params["strategy_mode"], bt["mode"], reason,
+                                 bt["base_quality"], bt["quality"])
+                _apply_strategy_mode(figi, strategy_id, bt["mode"])
+                ml_params["strategy_mode"] = bt["mode"]; changed = True
+            if abs(bt["sl"] - ml_params["stop_loss_pct"]) > 1e-6:
                 log_optimization(figi, ticker, strategy_id, "stop_loss_pct",
-                                 ml_params["stop_loss_pct"], new_sl, reason,
-                                 stats["quality_score"], suggestion["quality"])
-                _apply_param(figi, strategy_id, "stop_loss_pct", new_sl)
-                ml_params["stop_loss_pct"] = new_sl
-                changed = True
-            if new_tp != ml_params["take_profit_pct"]:
+                                 ml_params["stop_loss_pct"], bt["sl"], reason,
+                                 bt["base_quality"], bt["quality"])
+                _apply_param(figi, strategy_id, "stop_loss_pct", bt["sl"])
+                ml_params["stop_loss_pct"] = bt["sl"]; changed = True
+            if abs(bt["tp"] - ml_params["take_profit_pct"]) > 1e-6:
                 log_optimization(figi, ticker, strategy_id, "take_profit_pct",
-                                 ml_params["take_profit_pct"], new_tp, reason,
-                                 stats["quality_score"], suggestion["quality"])
-                _apply_param(figi, strategy_id, "take_profit_pct", new_tp)
-                ml_params["take_profit_pct"] = new_tp
-                changed = True
-            if new_score != ml_params["min_score"]:
-                log_optimization(figi, ticker, strategy_id, "min_score",
-                                 ml_params["min_score"], new_score, reason,
-                                 stats["quality_score"], suggestion["quality"])
-                _apply_strategy_score(strategy_id, new_score)
-                ml_params["min_score"] = new_score
-                changed = True
+                                 ml_params["take_profit_pct"], bt["tp"], reason,
+                                 bt["base_quality"], bt["quality"])
+                _apply_param(figi, strategy_id, "take_profit_pct", bt["tp"])
+                ml_params["take_profit_pct"] = bt["tp"]; changed = True
+    except Exception as e:
+        log.warning("[ML] backtest-opt %s: %s", ticker, e)
 
     # 3. Переобучаем GradientBoosting если накопилось достаточно данных
     try:
