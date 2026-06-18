@@ -50,7 +50,7 @@ def optimize_instrument(figi: str, ticker: str,
     """
     try:
         from app.services.tbank_client import get_candles_range
-        candles = get_candles_range(figi=figi, interval_name="1hour", days=BACKTEST_DAYS)
+        candles = get_candles_range(figi=figi, interval_name="hour", days=BACKTEST_DAYS)
         if len(candles) < 40:
             log.info("[BT-opt] %s: мало свечей (%d) — пропуск", ticker, len(candles))
             return None
