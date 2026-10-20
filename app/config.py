@@ -5,6 +5,22 @@ from app.version import __version__  # noqa: F401  re-exported for convenience
 
 load_dotenv()
 
+# api.telegram.org резолвится в IPv6, а на сервере IPv6-маршрута нет: requests
+# пытается IPv6 и таймаутится. Принудительно используем IPv4 для HTTP-клиентов.
+try:
+    import socket
+    import urllib3.util.connection as _u3_conn
+    _u3_conn.allowed_gai_family = lambda: socket.AF_INET
+except Exception:
+    pass
+
+
+def redact(text) -> str:
+    """Скрывает токен Telegram-бота в тексте (исключения requests содержат полный URL)."""
+    s = str(text)
+    tok = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    return s.replace(tok, "***") if tok else s
+
 
 class Settings:
     TINVEST_TOKEN = os.getenv("TINVEST_TOKEN", "").strip()

@@ -10,7 +10,7 @@ from typing import Optional
 
 import requests
 
-from app.config import settings
+from app.config import settings, redact
 from app.db import (
     get_runtime,
     list_instruments,
@@ -41,7 +41,7 @@ def _api(method: str, **kwargs) -> dict:
         )
         return r.json() if r.ok else {}
     except Exception as e:
-        log.debug("tg_api %s: %s", method, e)
+        log.debug("tg_api %s: %s", method, redact(e))
         return {}
 
 
@@ -271,5 +271,5 @@ def run_telegram_polling():
             time.sleep(1)
 
         except Exception as e:
-            log.debug("telegram polling error: %s", e)
+            log.debug("telegram polling error: %s", redact(e))
             time.sleep(5)

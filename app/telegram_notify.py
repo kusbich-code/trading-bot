@@ -5,7 +5,7 @@ import time
 
 import requests
 
-from app.config import settings
+from app.config import settings, redact
 
 log = logging.getLogger("telegram")
 
@@ -86,10 +86,10 @@ class TelegramNotifier:
                     if attempt < _MAX_RETRIES:
                         time.sleep(_RETRY_DELAY)
                 except requests.exceptions.ProxyError as e:
-                    log.warning("Telegram: ошибка прокси — %s", e)
+                    log.warning("Telegram: ошибка прокси — %s", redact(e))
                     break
                 except Exception as e:
-                    log.warning("Telegram: ошибка — %s (попытка %d/%d)", e, attempt, _MAX_RETRIES)
+                    log.warning("Telegram: ошибка — %s (попытка %d/%d)", redact(e), attempt, _MAX_RETRIES)
                     if attempt < _MAX_RETRIES:
                         time.sleep(_RETRY_DELAY)
 

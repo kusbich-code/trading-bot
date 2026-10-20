@@ -5,6 +5,8 @@ from typing import Dict
 
 import requests
 
+from app.config import redact
+
 
 def _proxies() -> dict | None:
     proxy = os.getenv("TELEGRAM_PROXY", "").strip()
@@ -44,7 +46,7 @@ def send_telegram(text: str) -> Dict:
             ),
         }
     except Exception as e:
-        return {"ok": False, "error": str(e)}
+        return {"ok": False, "error": redact(e)}
 
 
 def health_snapshot(dashboard_ok: bool, broker_ok: bool, target: str, extra: str = "") -> str:

@@ -132,7 +132,7 @@ def _run_optimization_for_session(session_id: int, run_id: str):
 def _send_weekly_report(session_id, stats, balance_pct, bal_now,
                         monday, saturday, notifier=None):
     """Отправляет недельный отчёт + предложения оптимизатора в Telegram с inline-кнопками."""
-    from app.config import settings
+    from app.config import settings, redact
     from app.db import get_session_results, update_session_tg
     import requests
 
@@ -163,7 +163,7 @@ def _send_weekly_report(session_id, stats, balance_pct, bal_now,
             timeout=10, proxies=proxies,
         )
     except Exception as e:
-        log.warning("_send_weekly_report: отчёт: %s", e)
+        log.warning("_send_weekly_report: отчёт: %s", redact(e))
 
     # Предложения оптимизатора
     results = get_session_results(session_id)
@@ -220,7 +220,7 @@ def _send_weekly_report(session_id, stats, balance_pct, bal_now,
             msg_id = str(resp.json().get("result", {}).get("message_id", ""))
             update_session_tg(session_id, msg_id, str(chat_id))
     except Exception as e:
-        log.warning("_send_weekly_report: предложения: %s", e)
+        log.warning("_send_weekly_report: предложения: %s", redact(e))
 
 
 def start_weekly_scheduler(notifier=None):
