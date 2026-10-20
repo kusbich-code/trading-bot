@@ -200,6 +200,19 @@ _last_parallel_sig: tuple = ()
 _last_parallel_check_ts: float = 0.0
 
 
+_skip_log_ts: dict = {}
+
+
+def _log_skip(kind: str, message: str, ticker: str):
+    """SIGNAL_SKIP пишем не чаще раза в 5 минут на (тикер, причина): иначе журнал растёт на сотни тысяч строк."""
+    key = (ticker, kind)
+    now_ts = time.monotonic()
+    if now_ts - _skip_log_ts.get(key, 0) < 300:
+        return
+    _skip_log_ts[key] = now_ts
+    log_event("SIGNAL_SKIP", message, ticker=ticker)
+
+
 def _pset(sid: int, status: str, ticker: str = ""):
     info = {
         "status":     status,
@@ -751,6 +764,13 @@ def _handle_manual_close(bp: dict, market_map: dict, client=None):
     close_position(figi, source="BOT")
     log_event("ORDER_CLOSE", f"{ticker} {reason} exit={float(exit_price):.4f} pnl={float(pnl):.2f}", ticker=ticker)
 
+    # Дневные лимиты должны видеть и закрытия биржевым стопом/вручную (раньше считались только свои закрытия)
+    try:
+        state.daily_pnl += Decimal(str(pnl))
+        state.trades_today += 1
+    except Exception as _dpe:
+        log.debug("daily counters on manual_close %s: %s", ticker, _dpe)
+
     # ML: размечаем признаки и этой сделки (биржевой стоп/ручное закрытие).
     # Без этого все закрытия по нативным стопам оставались бы без метки (сироты).
     try:
@@ -762,6 +782,8 @@ def _handle_manual_close(bp: dict, market_map: dict, client=None):
             _q_mc = float(pnl) / max(0.001, _inv_mc)
             _lf_mc(_feat_id_mc, float(pnl), _q_mc)
         _otc_mc(figi, float(pnl))
+        from app.ml.experience import record_exit as _re_mc
+        _re_mc(figi, float(pnl))   # закрываем контекст сделки в ml_trade_context
     except Exception as _mle:
         log.debug("ML label on manual_close %s: %s", ticker, _mle)
 
@@ -957,6 +979,8 @@ def is_moex_session_open() -> bool:
     """True если MOEX основная (10:00-18:50) или вечерняя (19:05-23:50) сессия открыта по МСК."""
     now = datetime.now(MSK_TZ)
     if now.weekday() >= 5:           # суббота=5, воскресенье=6
+        return False
+    if now.strftime("%Y-%m-%d") in _get_moex_holidays_cached():   # нерабочий праздничный день
         return False
     t = now.hour * 60 + now.minute
     return (600 <= t < 1130) or (1145 <= t < 1430)
@@ -2205,9 +2229,20 @@ def process_instrument(client, item,
     if sig == "HOLD":
         return
 
+    # Общие дневные лимиты. Главный цикл их проверял, а воркеры параллельных стратегий — нет.
+    try:
+        if state.trades_today >= int(get_setting("max_trades_per_day", "15")):
+            _save_signal(skip_reason="Достигнут лимит сделок за день", skip_filter="max_trades_per_day")
+            return
+        if state.daily_pnl <= -Decimal(str(get_setting("max_daily_loss_rub", "200"))):
+            _save_signal(skip_reason="Достигнут дневной лимит убытка", skip_filter="max_daily_loss")
+            return
+    except Exception as _dle:
+        log.debug("daily limits check: %s", _dle)
+
     min_score = int(_cfg("min_signal_score", "0"))
     if min_score > 0 and score < min_score:
-        log_event("SIGNAL_SKIP", f"{ticker}: score={score} < порог={min_score} [{tradingmode}], пропуск", ticker=ticker)
+        _log_skip("min_score", f"{ticker}: score={score} < порог={min_score} [{tradingmode}], пропуск", ticker)
         _save_signal(skip_reason=f"Качество сигнала {score} < порог {min_score}", skip_filter="min_score")
         return
 
@@ -2218,11 +2253,11 @@ def process_instrument(client, item,
         from app.services.tbank_client import get_tbank_signals
         analyst = get_tbank_signals([figi]).get(figi, "NEUTRAL")
         if sig == "BUY" and analyst == "SELL":
-            log_event("SIGNAL_SKIP", f"{ticker} BUY пропущен: аналитики SELL", ticker=ticker)
+            _log_skip("analyst_buy", f"{ticker} BUY пропущен: аналитики SELL", ticker)
             _save_signal(skip_reason="Аналитики T-Bank: SELL против BUY", skip_filter="signal_service")
             return
         if sig == "SELL" and analyst == "BUY":
-            log_event("SIGNAL_SKIP", f"{ticker} SELL пропущен: аналитики BUY", ticker=ticker)
+            _log_skip("analyst_sell", f"{ticker} SELL пропущен: аналитики BUY", ticker)
             _save_signal(skip_reason="Аналитики T-Bank: BUY против SELL", skip_filter="signal_service")
             return
 
@@ -2341,11 +2376,11 @@ def process_instrument(client, item,
         buy_pressure = bid_vol / total_vol   # доля объёма на стороне бид
         sell_pressure = ask_vol / total_vol
         if sig == "BUY" and buy_pressure < 0.40:
-            log_event("SIGNAL_SKIP", f"{ticker} BUY пропущен: давление покупателей {buy_pressure:.0%}", ticker=ticker)
+            _log_skip("ob_buy", f"{ticker} BUY пропущен: давление покупателей {buy_pressure:.0%}", ticker)
             _save_signal(skip_reason=f"Давление покупателей {buy_pressure:.0%} < 40%", skip_filter="order_book")
             return
         if sig == "SELL" and sell_pressure < 0.40:
-            log_event("SIGNAL_SKIP", f"{ticker} SELL пропущен: давление продавцов {sell_pressure:.0%}", ticker=ticker)
+            _log_skip("ob_sell", f"{ticker} SELL пропущен: давление продавцов {sell_pressure:.0%}", ticker)
             _save_signal(skip_reason=f"Давление продавцов {sell_pressure:.0%} < 40%", skip_filter="order_book")
             return
 

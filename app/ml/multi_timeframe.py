@@ -19,8 +19,31 @@ TF_TTL = {
 }
 
 
+def _aggregate(candles: List[Dict], k: int) -> List[Dict]:
+    """Склеивает каждые k подряд идущих свечей в одну (считая с последней), порядок — по времени."""
+    out: List[Dict] = []
+    i = len(candles)
+    while i - k >= 0:
+        grp = candles[i - k:i]
+        out.append({
+            "time":   grp[0].get("time", ""),
+            "open":   grp[0]["open"],
+            "high":   max(c["high"] for c in grp),
+            "low":    min(c["low"] for c in grp),
+            "close":  grp[-1]["close"],
+            "volume": sum(c.get("volume", 0) or 0 for c in grp),
+        })
+        i -= k
+    out.reverse()
+    return out
+
+
 def get_candles_cached(client, figi: str, interval: str, n: int = 30) -> List[Dict]:
-    """Возвращает свечи с кешированием по TTL таймфрейма."""
+    """
+    Свечи 1ч или 4ч с кешированием по TTL таймфрейма.
+    API T-Bank отдаёт часовые свечи (до недели за запрос); 4ч собираем из часовых.
+    Параметр client оставлен для совместимости с вызывающим кодом и не используется.
+    """
     key = f"{figi}_{interval}_{n}"
     now = time.monotonic()
     ttl = TF_TTL.get(interval, 1800)
@@ -31,16 +54,20 @@ def get_candles_cached(client, figi: str, interval: str, n: int = 30) -> List[Di
 
     try:
         from app.services.tbank_client import get_candles as _gc
-        candles = _gc(client, figi, n=n, interval_name=interval)
+        if interval == "4hour":
+            hours = 160                      # ~93 торговых часа → ~23 свечи по 4ч
+            candles = _aggregate(_gc(figi, interval_name="hour", hours=hours), 4)[-n:]
+        else:
+            candles = _gc(figi, interval_name="hour", hours=96)[-n:]
         _cache[key] = (now, candles)
         return candles
     except Exception as e:
-        log.debug("multi_timeframe %s %s: %s", figi, interval, e)
+        log.warning("multi_timeframe %s %s: %s", figi, interval, e)
         return cached[1] if cached else []
 
 
 def get_all_timeframes(client, figi: str) -> Dict[str, List[Dict]]:
-    """Загружает 5мин/1ч/4ч свечи для одного инструмента."""
+    """Загружает 1ч/4ч свечи для одного инструмента."""
     return {
         "1hour": get_candles_cached(client, figi, "1hour", 30),
         "4hour": get_candles_cached(client, figi, "4hour", 20),

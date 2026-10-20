@@ -10,6 +10,7 @@ log = logging.getLogger("ml.predictor")
 
 # Пороги уверенности
 ENTRY_THRESHOLD     = 0.60  # P > 60% → входим
+HARD_VETO_MIN_SAMPLES = 100   # жёсткое вето по P < ENTRY_THRESHOLD включается, когда модель обучена минимум на стольких сделках
 EXIT_THRESHOLD      = 0.30  # P < 30% → закрываем досрочно (только убыточные)
 RANK_MIN_THRESHOLD  = 0.45  # ниже → временно отключаем инструмент
 MIN_EXIT_PRECISION  = 0.55  # точность модели ниже → early-exit в soft-режиме (не закрываем)
@@ -186,6 +187,36 @@ def meta_strategy_check(features: Dict, signal_score: int,
     return score_meta, ", ".join(reasons) if reasons else "ok"
 
 
+_samples_cache: Dict[str, tuple] = {}
+
+
+def _model_samples(figi: str, strategy_id: int) -> int:
+    """Сколько сделок было в обучении активной модели (по бумаге, иначе универсальной). Кеш 5 минут."""
+    import time as _ts
+    key = f"{figi}_{strategy_id}"
+    hit = _samples_cache.get(key)
+    if hit and _ts.monotonic() - hit[0] < 300:
+        return hit[1]
+    n = 0
+    try:
+        from app.db import db_cursor
+        with db_cursor() as cur:
+            cur.execute("""SELECT n_training_samples FROM ml_models
+                           WHERE figi=? AND strategy_id=? AND status='active'
+                           ORDER BY id DESC LIMIT 1""", (figi, strategy_id))
+            row = cur.fetchone()
+            if not row:
+                cur.execute("""SELECT n_training_samples FROM ml_models
+                               WHERE figi='UNIVERSAL' AND status='active'
+                               ORDER BY id DESC LIMIT 1""")
+                row = cur.fetchone()
+            n = int(row[0] or 0) if row else 0
+    except Exception as e:
+        log.debug("_model_samples: %s", e)
+    _samples_cache[key] = (_ts.monotonic(), n)
+    return n
+
+
 def should_enter(figi: str, ticker: str, strategy_id: int, features: Dict,
                  signal_action: str, signal_score: int = 0,
                  min_score: int = 0) -> Tuple[bool, Optional[float], str]:
@@ -208,8 +239,13 @@ def should_enter(figi: str, ticker: str, strategy_id: int, features: Dict,
     # Требуем минимум 2 из 3 условий
     meta_allow = (total_conditions >= 2)
 
-    if active and not meta_allow:
-        block_reason = f"Meta 2/3: {meta_score}/3 условий (ML={cond_ml}) — {meta_reason}"
+    # Жёсткое вето: на достаточной выборке вероятность ниже порога блокирует вход сама по себе
+    # (раньше два других условия из трёх пропускали вход при любом P).
+    hard_veto = active and (not allow) and _model_samples(figi, strategy_id) >= HARD_VETO_MIN_SAMPLES
+
+    if active and (hard_veto or not meta_allow):
+        block_reason = (f"ML-вето: P={p:.2f} < {ENTRY_THRESHOLD}" if hard_veto and meta_allow
+                        else f"Meta 2/3: {meta_score}/3 условий (ML={cond_ml}) — {meta_reason}")
         # Дедуп: Telegram + запись в БД не чаще раз в 60 сек на figi (иначе спам каждые ~5с)
         import time as _tb
         _now_tb = _tb.monotonic()

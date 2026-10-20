@@ -66,19 +66,33 @@ def _answer_callback(callback_id: str, text: str = ""):
 
 # ── Status ────────────────────────────────────────────────────────────────────
 
+def _active_tickers() -> str:
+    """Тикеры реально торгуемых стратегий: параллельные стратегии активного профиля, иначе активная стратегия."""
+    try:
+        from app.db import get_setting, get_profile_setting, list_profile_parallel_strategies, list_active_strategy_instruments
+        pid = int(get_setting("active_profile_id", "0") or 0)
+        if pid and str(get_profile_setting(pid, "parallel_trading_enabled", "0")) == "1":
+            names = [i["ticker"] for st in list_profile_parallel_strategies(pid)
+                     for i in st["instruments"] if i.get("enabled", 1) and i.get("ticker")]
+        else:
+            names = [i["ticker"] for i in list_active_strategy_instruments() if i.get("ticker")]
+        return ", ".join(dict.fromkeys(names)) or "—"
+    except Exception:
+        return "—"
+
+
 def build_status_text() -> str:
+    from app.version import __version__
     status       = get_runtime("status", "UNKNOWN")
     daily_pnl    = get_runtime("daily_pnl", "0")
     trades_today = get_runtime("trades_today", "0")
     last_error   = get_runtime("last_error", "")
-    instruments  = list_instruments(enabled_only=True)
-    tickers      = ", ".join(x["ticker"] for x in instruments) if instruments else "—"
     return (
-        f"🤖 <b>{settings.BOT_NAME}</b>\n"
+        f"🤖 <b>Скальпер v{__version__}</b>\n"
         f"Статус: {status}\n"
         f"PnL за день: {daily_pnl} ₽\n"
         f"Сделок сегодня: {trades_today}\n"
-        f"Инструменты: {tickers}\n"
+        f"Инструменты: {_active_tickers()}\n"
         f"Последняя ошибка: {last_error or '—'}"
     )
 
