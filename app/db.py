@@ -146,6 +146,11 @@ def init_db():
             cur.execute("ALTER TABLE positions ADD COLUMN ml_feature_id INTEGER DEFAULT 0")
         except Exception:
             pass
+        # add_trade() пишет open_time; в исходном CREATE TABLE trades колонки не было
+        try:
+            cur.execute("ALTER TABLE trades ADD COLUMN open_time TEXT DEFAULT ''")
+        except Exception:
+            pass
 
         cur.execute("""
         CREATE TABLE IF NOT EXISTS instrument_market_state (
@@ -873,6 +878,8 @@ def ensure_instruments_columns(cur):
     si_cols = {row[1] for row in cur.fetchall()}
     if "instrument_uid" not in si_cols and si_cols:
         cur.execute("ALTER TABLE strategy_instruments ADD COLUMN instrument_uid TEXT DEFAULT ''")
+    if "max_daily_loss_rub" not in si_cols and si_cols:
+        cur.execute("ALTER TABLE strategy_instruments ADD COLUMN max_daily_loss_rub TEXT DEFAULT '0'")
 
 
 # ── bot_settings ─────────────────────────────────────────────────────────────

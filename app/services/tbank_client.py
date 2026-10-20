@@ -514,13 +514,17 @@ def get_operations_by_cursor(
     if to_dt is None:
         to_dt = now
 
+    from t_tech.invest import GetOperationsByCursorRequest
     with with_client() as client:
+        # SDK t-tech-investments 0.3.x принимает один объект запроса, а не kwargs
         resp = client.operations.get_operations_by_cursor(
-            account_id=_account_id(),
-            from_=from_dt,
-            to=to_dt,
-            limit=limit,
-            cursor=cursor,
+            GetOperationsByCursorRequest(
+                account_id=_account_id(),
+                from_=from_dt,
+                to=to_dt,
+                limit=limit,
+                cursor=cursor,
+            )
         )
         items = []
         for op in getattr(resp, "items", []):

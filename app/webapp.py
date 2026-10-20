@@ -2128,6 +2128,7 @@ async def api_session_apply(session_id: int, request: Request):
     results    = get_session_results(session_id)
     if not result_ids:
         result_ids = [r["id"] for r in results]
+    from app.db import apply_optimization_result
     applied = 0
     errors  = []
     for rid in result_ids:
