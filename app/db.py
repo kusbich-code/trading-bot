@@ -29,8 +29,13 @@ def ensure_dirs():
 
 def get_connection():
     ensure_dirs()
-    conn = sqlite3.connect(settings.DB_PATH, check_same_thread=False)
+    # Бот, веб, ML и аналитик пишут в одну БД из разных процессов: ждём блокировку до 30 с вместо 5 с
+    conn = sqlite3.connect(settings.DB_PATH, timeout=30, check_same_thread=False)
     conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")   # читатели не блокируют писателя; режим сохраняется в файле БД
+    except Exception:
+        pass
     return conn
 
 
