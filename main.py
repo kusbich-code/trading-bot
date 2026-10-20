@@ -753,7 +753,7 @@ def _handle_manual_close(bp: dict, market_map: dict, client=None):
         "direction":        direction,
         "entry":            float(entry_price),
         "exit":             float(exit_price),
-        "qty":              qty,
+        "qty":              qty_lots,   # лоты, как и в основном пути закрытия (в штуках считаются только деньги)
         "gross_amount":     float(exit_price * qty),
         "commission":       float(commission),
         "pnl":              float(pnl),
@@ -2933,6 +2933,19 @@ def main():
         Thread(target=run_telegram_polling, daemon=True).start()
 
     start_weekly_scheduler(notifier=notifier)
+
+    # Дневные счётчики берём из БД: иначе любой рестарт обнуляет лимиты сделок/убытка за день.
+    # Дата — по МСК (как в maybe_reset_daily), иначе вечером по UTC возможен ложный сброс при старте.
+    try:
+        from app.db import get_trade_stats_today as _gts
+        _today_msk = _now().strftime("%Y-%m-%d")
+        _st = _gts(_today_msk)
+        state.current_trade_date = _today_msk
+        state.trades_today = int(_st.get("trades_count") or 0)
+        state.daily_pnl = Decimal(str(_st.get("total_pnl") or 0))
+        log.info("Дневные счётчики восстановлены: сделок=%d, PnL=%.2f", state.trades_today, float(state.daily_pnl))
+    except Exception as _dce:
+        log.warning("Не удалось восстановить дневные счётчики: %s", _dce)
 
     state.status = "PRECHECK"
     state.sync_runtime()
