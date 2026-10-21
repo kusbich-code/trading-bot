@@ -417,8 +417,11 @@ def summary_payload() -> Dict[str, Any]:
             float(p.get("unrealized_pnl", 0) or 0)
             for p in get_open_positions(source="PORTFOLIO")
         )),
-        "cash_rub_ui": fmt_money(portfolio.get("cash", 0)),
-        "positions_value_rub_ui": fmt_money(portfolio.get("positions_value", 0)),
+        # «Деньги» — сколько ещё можно вложить в новые позиции; «Позиции» — сумма модулей (лонги + шорты)
+        "cash_rub_ui": fmt_money(portfolio.get("free_to_open", portfolio.get("cash", 0))),
+        "cash_broker_rub_ui": fmt_money(portfolio.get("cash", 0)),
+        "positions_value_rub_ui": fmt_money(portfolio.get("positions_gross", portfolio.get("positions_value", 0))),
+        "positions_net_rub_ui": fmt_money(portfolio.get("positions_value", 0)),
         "blocked_rub_ui": fmt_money(portfolio.get("blocked", 0)),
         "total_assets_rub_ui": fmt_money(portfolio.get("total_assets", 0)),
         "positions_count": portfolio.get("positions_count", 0),

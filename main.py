@@ -1281,6 +1281,29 @@ def get_money_balance(client) -> float:
     return 0.0
 
 
+def get_assets_and_buying_power(client):
+    """(капитал, свободно для новых позиций) одним вызовом портфеля. Свободно = капитал − позиции по модулю,
+    но не больше денег брокера: наличные включают выручку от шортов и завышают то, что можно вложить."""
+    try:
+        _rate.record("GetPortfolio")
+        pf = client.operations.get_portfolio(account_id=settings.TINVEST_ACCOUNT_ID)
+        assets = float(quotation_to_decimal(pf.total_amount_portfolio))
+        cash = float(quotation_to_decimal(pf.total_amount_currencies)) if getattr(pf, "total_amount_currencies", None) else 0.0
+        gross = 0.0
+        for p in getattr(pf, "positions", []) or []:
+            if "currency" in str(getattr(p, "instrument_type", "") or "").lower():
+                continue
+            qty = getattr(p, "quantity", None)
+            price = getattr(p, "current_price", None)
+            if qty is not None and price is not None:
+                gross += abs(float(quotation_to_decimal(qty)) * float(quotation_to_decimal(price)))
+        free = max(0.0, min(cash, assets - gross)) if cash else max(0.0, assets - gross)
+        return assets, free
+    except Exception as e:
+        log.warning("Не удалось получить капитал/свободные средства: %s", e)
+        return get_total_assets(client), get_money_balance(client)
+
+
 def get_total_assets(client) -> float:
     """Полная стоимость портфеля: кэш + позиции (total_amount_portfolio)."""
     try:
@@ -2700,7 +2723,7 @@ def _parallel_strategy_worker(strategy_id: int, strat_name: str, stop_ev: thread
             from app.services.tbank_client import get_portfolio_snapshot as _gps2
             _prt = _gps2()
             state.session_total_assets = float(Decimal(str(_prt.get("total_assets", 0) or 0)))
-            state.session_balance_current = float(Decimal(str(_prt.get("cash", 0) or 0)))
+            state.session_balance_current = float(Decimal(str(_prt.get("free_to_open", _prt.get("cash", 0)) or 0)))
         except Exception:
             pass
 
@@ -3047,7 +3070,7 @@ def main():
         from app.services.tbank_client import get_portfolio_snapshot as _gps
         _init_port = _gps()
         state.session_total_assets = float(Decimal(str(_init_port.get("total_assets", 0) or 0)))
-        state.session_balance_current = float(Decimal(str(_init_port.get("cash", 0) or 0)))
+        state.session_balance_current = float(Decimal(str(_init_port.get("free_to_open", _init_port.get("cash", 0)) or 0)))
         log.info("Инициализация: total_assets=%.2f cash=%.2f",
                  state.session_total_assets, state.session_balance_current)
     except Exception as _ie:
@@ -3077,9 +3100,8 @@ def main():
         log.warning("Ошибка восстановления позиций из БД: %s", _rpe)
 
     with client_cls(settings.TINVEST_TOKEN) as client:
-        state.session_balance_start = get_money_balance(client)
+        state.session_total_assets, state.session_balance_start = get_assets_and_buying_power(client)
         state.session_balance_current = state.session_balance_start
-        state.session_total_assets = get_total_assets(client)
         state.status = "SCANNING"
         state.sync_runtime()
 
@@ -3137,8 +3159,7 @@ def main():
 
                 sync_portfolio_positions(client)
 
-                state.session_balance_current = get_money_balance(client)
-                state.session_total_assets = get_total_assets(client)
+                state.session_total_assets, state.session_balance_current = get_assets_and_buying_power(client)
                 set_runtime("session_balance", str(state.session_balance_current))
                 set_runtime("session_total_assets", str(state.session_total_assets))
                 state.status = "SCANNING"

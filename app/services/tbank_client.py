@@ -723,8 +723,20 @@ def get_portfolio_snapshot() -> Dict[str, Any]:
 
         # Нереализованный P&L: сумма expected_yield по всем открытым позициям
         unrealized_pnl = Decimal("0")
+        # Валовая стоимость позиций: шорты считаем по модулю (брокер хранит их стоимость отрицательной,
+        # из-за чего total_amount_shares — это НЕТТО лонгов и шортов, а не занятый капитал).
+        positions_gross = Decimal("0")
         for pos in getattr(portfolio, "positions", []):
             unrealized_pnl += quotation_to_decimal_safe(getattr(pos, "expected_yield", None))
+            if "currency" in str(getattr(pos, "instrument_type", "") or "").lower():
+                continue
+            positions_gross += abs(quotation_to_decimal_safe(getattr(pos, "quantity", None))
+                                   * _money_value_to_decimal(getattr(pos, "current_price", None)))
+
+        cash_broker = total_amount_currencies if total_amount_currencies else cash_total
+        # На какую сумму ещё можно открыть позиции: капитал минус занятое позициями по модулю
+        # (для шорта нужно обеспечение ≈ его стоимость), но не больше свободных денег брокера.
+        free_to_open = max(Decimal("0"), min(cash_broker, total_amount_portfolio - positions_gross))
 
         return {
             "total_assets": total_amount_portfolio,
@@ -735,7 +747,9 @@ def get_portfolio_snapshot() -> Dict[str, Any]:
                 + total_amount_futures
                 + total_amount_options
             ),
-            "cash": total_amount_currencies if total_amount_currencies else cash_total,
+            "cash": cash_broker,
+            "free_to_open": free_to_open,
+            "positions_gross": positions_gross,
             "blocked": blocked,
             "shares": total_amount_shares,
             "bonds": total_amount_bonds,

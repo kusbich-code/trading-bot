@@ -220,9 +220,10 @@ function summaryCard(label, value) {
   `;
 }
 
-function _crd(label, value) {
+function _crd(label, value, hint) {
   const cls = summaryValueClass(value);
-  return `<div class="crd"><div class="lbl">${label}</div><div class="val ${cls}" title="${esc(value ?? "—")}">${esc(value ?? "—")}</div></div>`;
+  const tip = hint ? `${hint}` : `${value ?? "—"}`;
+  return `<div class="crd" title="${esc(tip)}"><div class="lbl">${label}</div><div class="val ${cls}" title="${esc(tip)}">${esc(value ?? "—")}</div></div>`;
 }
 
 async function renderSummaryCards() {
@@ -277,8 +278,8 @@ function _buildSummaryHtml(s, hasError) {
     <div class="sgrp">
       <div class="sgrp-lbl">Счёт</div>
       <div class="sgrp-cards">
-        ${_crd("Деньги",  s.cash_rub_ui)}
-        ${_crd("Позиции", s.positions_value_rub_ui)}
+        ${_crd("Свободно", s.cash_rub_ui, `Можно открыть новых позиций на ${s.cash_rub_ui}. Деньги у брокера: ${s.cash_broker_rub_ui} (в них входят средства от продажи шортов)`)}
+        ${_crd("Позиции", s.positions_value_rub_ui, `Сумма модулей лонгов и шортов. Нетто (лонги минус шорты): ${s.positions_net_rub_ui}`)}
         ${_crd("Резерв",  s.blocked_rub_ui)}
         ${_crd("Итого",   s.total_assets_rub_ui)}
       </div>
