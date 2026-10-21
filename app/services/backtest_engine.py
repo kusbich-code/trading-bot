@@ -109,20 +109,25 @@ def run_backtest(
                 else:
                     raw_pnl = (ep - exit_price) * position.qty
                 exit_comm = exit_price * position.qty * commission_pct
-                net_pnl = raw_pnl - exit_comm
+                net_pnl = raw_pnl - exit_comm - position.commission  # position.commission = комиссия входа
                 position.exit_idx = i
                 position.exit_price = round(exit_price, 4)
                 position.exit_reason = exit_reason
                 position.exit_time = bar_time
                 position.commission += exit_comm
                 position.pnl = net_pnl
-                capital += net_pnl
+                capital += raw_pnl - exit_comm  # комиссия входа уже списана с капитала при входе
                 result.trades.append(position)
                 position = None
                 equity_curve.append(capital)
                 continue
 
-        equity_curve.append(capital)
+        if position is not None:  # кривая капитала с учётом нереализованного P&L открытой позиции
+            _unreal = ((bar_close - position.entry_price) if position.direction == "BUY"
+                       else (position.entry_price - bar_close)) * position.qty
+            equity_curve.append(capital + _unreal)
+        else:
+            equity_curve.append(capital)
 
         # ── Открытие новой позиции если нет текущей ──────────────────────────
         if position is None:
@@ -158,10 +163,13 @@ def run_backtest(
             position.exit_price = round(last_close, 4)
             position.exit_reason = "END"
             position.exit_time = candles[-1].get("time", "")
+            net_end = raw_pnl - exit_comm - position.commission  # минус комиссия входа
             position.commission += exit_comm
-            position.pnl = raw_pnl - exit_comm
-            capital += position.pnl
+            position.pnl = net_end
+            capital += raw_pnl - exit_comm
             result.trades.append(position)
+            if equity_curve:
+                equity_curve[-1] = capital  # итог закрытия по концу данных должен попасть в кривую
 
     result.equity_curve = equity_curve
 
@@ -176,9 +184,8 @@ def run_backtest(
         result.win_rate = round(len(wins) / len(trades) * 100, 1)
         result.gross_profit = round(sum(t.pnl for t in wins), 2)
         result.gross_loss = round(abs(sum(t.pnl for t in losses)), 2)
-        result.profit_factor = round(
-            result.gross_profit / max(0.0001, result.gross_loss), 2
-        )
+        # Без убыточных сделок PF не определён: ограничиваем, иначе в рейтинге всплывают значения вида 85400
+        result.profit_factor = round(min(99.0, result.gross_profit / result.gross_loss), 2)             if result.gross_loss > 0 else (99.0 if result.gross_profit > 0 else 0.0)
         result.net_pnl = round(sum(t.pnl for t in trades), 2)
         result.total_commission = round(sum(t.commission for t in trades), 2)
 

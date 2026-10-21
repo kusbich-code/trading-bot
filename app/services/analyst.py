@@ -618,6 +618,15 @@ def save_as_strategy(result_id: int, strategy_name: str) -> int:
                 ON CONFLICT(strategy_id, key) DO UPDATE SET value = excluded.value
                 """, (sid, key, value))
 
+        # Размер лота: из уже настроенных стратегий (там он сверен с брокером), иначе из справочника.
+        # avg_price — цена за акцию, поэтому лоты считаем как бюджет / (цена × акций в лоте).
+        cur.execute("SELECT lot FROM strategy_instruments WHERE figi=? AND lot>0 LIMIT 1", (result["figi"],))
+        _lot_row = cur.fetchone()
+        lot_size = int(_lot_row[0]) if _lot_row else int(
+            next((i["lot"] for i in SEARCH_INSTRUMENTS if i["figi"] == result["figi"]), 1) or 1)
+        if avg_price > 0 and budget_rub > 0:
+            lots = max(1, int((budget_rub * 0.95) // (avg_price * lot_size)))
+
         # Добавляем инструмент с instrument_uid
         uid = result.get("instrument_uid", "") or ""
         cur.execute("""
@@ -625,9 +634,9 @@ def save_as_strategy(result_id: int, strategy_name: str) -> int:
             strategy_id, figi, ticker, name,
             lot, lots_override, stop_loss_pct, take_profit_pct,
             allow_long, allow_short, enabled, priority, instrument_uid
-        ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, 1, 1, 1, 100, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 1, 100, ?)
         """, (sid, result["figi"], result["ticker"], result["instrument_name"],
-              lots, str(sl), str(tp), uid))
+              lot_size, lots, str(sl), str(tp), uid))
 
         # Помечаем результат как сохранённый
         cur.execute(

@@ -842,6 +842,15 @@ def _handle_manual_close(bp: dict, market_map: dict, client=None):
         pass
 
 
+def _ml_indicators(ticker: str, ind=None) -> dict:
+    """RSI/MACD/BB для ML-признаков. Приоритет — свежие API-индикаторы (ind), затем instrument_meta.
+    Отсутствующие значения остаются None: feature_builder подставит нейтральные, а не выдуманные 0/50."""
+    meta = state.instrument_meta.get(ticker, {})
+    src = ind or {}
+    return {k: (src.get(k) if src.get(k) is not None else meta.get(k))
+            for k in ("rsi", "macd", "macd_signal", "bb_upper", "bb_lower")}
+
+
 _mismatch_last_alert: Dict[str, float] = {}
 MISMATCH_ALERT_INTERVAL_SEC = 1800
 
@@ -2131,14 +2140,10 @@ def process_instrument(client, item,
                 from app.ml.multi_timeframe import get_all_timeframes as _gtf_ex
                 _opened_at_str = pos.get("opened_at", _now().strftime("%Y-%m-%d %H:%M:%S"))
                 _pos_min = (_now() - datetime.strptime(_opened_at_str, "%Y-%m-%d %H:%M:%S")).total_seconds() / 60
-                _ind_ex = {"rsi": state.instrument_meta.get(ticker, {}).get("rsi") or 50,
-                           "macd": state.instrument_meta.get(ticker, {}).get("macd") or 0,
-                           "macd_signal": state.instrument_meta.get(ticker, {}).get("macd_signal") or 0,
-                           "bb_upper": state.instrument_meta.get(ticker, {}).get("bb_upper") or 0,
-                           "bb_lower": state.instrument_meta.get(ticker, {}).get("bb_lower") or 0}
+                _ind_ex = _ml_indicators(ticker, locals().get("_ind"))
                 _ob_ex = {"bid_vol": bid_vol, "ask_vol": ask_vol}
                 _tf_ex = _gtf_ex(client, figi)
-                _feat_ex = _bf_ex(figi, ticker, candles_dict, 0, direction, _ind_ex, _ob_ex,
+                _feat_ex = _bf_ex(figi, ticker, candles_dict, int(pos.get("signal_score") or 50), direction, _ind_ex, _ob_ex,
                                   _tf_ex.get("1hour", []), _tf_ex.get("4hour", []),
                                   position_minutes=_pos_min)
                 _early, _p_ex = _ml_early(
@@ -2210,6 +2215,8 @@ def process_instrument(client, item,
                 "close_order_id": order_result["response_order_id"],
                 "execution_status": order_result["execution_status"],
             }
+            # ml_feature_id читаем ДО close_position: после закрытия позиция не OPEN и id не найти
+            _feat_id = pos.get("ml_feature_id", 0) or get_position_feature_id(figi)
             add_trade(trade)
             close_position(figi, source="BOT")
             log_event("ORDER_CLOSE", f"{ticker} pnl={float(pnl):.2f} reason={close_reason}", ticker=ticker)
@@ -2226,7 +2233,6 @@ def process_instrument(client, item,
                 from app.ml.feature_builder import label_features as _lf
                 from app.ml.model_trainer import should_retrain as _sr, train_model as _tm
                 from app.ml.model_predictor import invalidate_cache as _ic
-                _feat_id = pos.get("ml_feature_id", 0) or get_position_feature_id(figi)
                 if _feat_id:
                     _quality = float(pnl) / max(0.001, abs(float(entry_price) * exec_qty_shares))
                     _lf(_feat_id, float(pnl), _quality)
@@ -2329,11 +2335,7 @@ def process_instrument(client, item,
             from app.ml.feature_builder import build_features as _bf_e, store_features as _sf_e
             from app.ml.model_predictor import should_enter as _ml_enter
             from app.ml.multi_timeframe import get_all_timeframes as _gtf_e
-            _ml_ind_e = {"rsi": state.instrument_meta.get(ticker, {}).get("rsi") or 50,
-                         "macd": state.instrument_meta.get(ticker, {}).get("macd") or 0,
-                         "macd_signal": state.instrument_meta.get(ticker, {}).get("macd_signal") or 0,
-                         "bb_upper": state.instrument_meta.get(ticker, {}).get("bb_upper") or 0,
-                         "bb_lower": state.instrument_meta.get(ticker, {}).get("bb_lower") or 0}
+            _ml_ind_e = _ml_indicators(ticker, locals().get("_ind"))
             _ob_e = {"bid_vol": bid_vol, "ask_vol": ask_vol}
             _tf_e = _gtf_e(client, figi)
             _ml_features_for_entry = _bf_e(
@@ -2495,6 +2497,7 @@ def process_instrument(client, item,
             "execution_status": order_result["execution_status"],
             "trailing_stop": _ep * (1 - float(stop_loss_pct)),
             "native_stop_ids": _stop_ids,
+            "signal_score": score,
         }
 
         upsert_position({
@@ -2514,8 +2517,7 @@ def process_instrument(client, item,
         try:
             from app.ml.experience import record_entry as _ml_entry
             _ml_sid = _strategy_id or 0
-            _ml_ind = {k: state.instrument_meta.get(ticker, {}).get(k)
-                       for k in ("rsi", "macd", "macd_signal", "bb_upper", "bb_lower")}
+            _ml_ind = _ml_indicators(ticker, locals().get("_ind"))
             _ml_entry(figi, ticker, _ml_sid, tradingmode, score, _ml_ind,
                       float(stop_loss_pct), float(take_profit_pct))
         except Exception:
@@ -2524,11 +2526,7 @@ def process_instrument(client, item,
         try:
             from app.ml.feature_builder import build_features as _bf2, store_features as _sf2
             from app.ml.multi_timeframe import get_all_timeframes as _gtf2
-            _ml_ind2 = {"rsi": state.instrument_meta.get(ticker, {}).get("rsi") or 50,
-                        "macd": state.instrument_meta.get(ticker, {}).get("macd") or 0,
-                        "macd_signal": state.instrument_meta.get(ticker, {}).get("macd_signal") or 0,
-                        "bb_upper": state.instrument_meta.get(ticker, {}).get("bb_upper") or 0,
-                        "bb_lower": state.instrument_meta.get(ticker, {}).get("bb_lower") or 0}
+            _ml_ind2 = _ml_indicators(ticker, locals().get("_ind"))
             _ob2 = {"bid_vol": bid_vol, "ask_vol": ask_vol}
             _tf2 = _gtf2(client, figi)
             _feat2 = _bf2(figi, ticker, candles_dict, score, "BUY", _ml_ind2, _ob2,
@@ -2604,6 +2602,7 @@ def process_instrument(client, item,
             "execution_status": order_result["execution_status"],
             "trailing_stop": _ep * (1 + float(stop_loss_pct)),
             "native_stop_ids": _stop_ids,
+            "signal_score": score,
         }
 
         upsert_position({
@@ -2622,8 +2621,7 @@ def process_instrument(client, item,
         # ML Phase 1: запись контекста SELL
         try:
             from app.ml.experience import record_entry as _ml_entry_s
-            _ml_ind_s = {k: state.instrument_meta.get(ticker, {}).get(k)
-                         for k in ("rsi", "macd", "macd_signal", "bb_upper", "bb_lower")}
+            _ml_ind_s = _ml_indicators(ticker, locals().get("_ind"))
             _ml_entry_s(figi, ticker, _strategy_id or 0, tradingmode, score, _ml_ind_s,
                         float(stop_loss_pct), float(take_profit_pct))
         except Exception:
@@ -2632,11 +2630,7 @@ def process_instrument(client, item,
         try:
             from app.ml.feature_builder import build_features as _bf_s, store_features as _sf_s
             from app.ml.multi_timeframe import get_all_timeframes as _gtf_s
-            _ml_ind_s2 = {"rsi": state.instrument_meta.get(ticker, {}).get("rsi") or 50,
-                          "macd": state.instrument_meta.get(ticker, {}).get("macd") or 0,
-                          "macd_signal": state.instrument_meta.get(ticker, {}).get("macd_signal") or 0,
-                          "bb_upper": state.instrument_meta.get(ticker, {}).get("bb_upper") or 0,
-                          "bb_lower": state.instrument_meta.get(ticker, {}).get("bb_lower") or 0}
+            _ml_ind_s2 = _ml_indicators(ticker, locals().get("_ind"))
             _ob_s = {"bid_vol": bid_vol, "ask_vol": ask_vol}
             _tf_s = _gtf_s(client, figi)
             _feat_s = _bf_s(figi, ticker, candles_dict, score, "SELL", _ml_ind_s2, _ob_s,

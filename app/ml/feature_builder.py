@@ -126,12 +126,15 @@ def build_features(
     book_depth_ratio = bid_vol / ask_vol if ask_vol > 0 else 1.0
 
     # ── T-Bank API индикаторы ─────────────────────────────────────────────────
-    rsi        = float(ind.get("rsi", 50) or 50)
-    macd       = float(ind.get("macd", 0) or 0)
-    macd_sig   = float(ind.get("macd_signal", 0) or 0)
+    def _num(key, default):
+        v = ind.get(key)  # None — индикатор недоступен; 0 — валидное значение (RSI=0)
+        return default if v is None else float(v)
+    rsi        = _num("rsi", 50.0)
+    macd       = _num("macd", 0.0)
+    macd_sig   = _num("macd_signal", 0.0)
     macd_diff  = macd - macd_sig
-    bb_upper   = float(ind.get("bb_upper", 0) or 0)
-    bb_lower   = float(ind.get("bb_lower", 0) or 0)
+    bb_upper   = _num("bb_upper", 0.0)
+    bb_lower   = _num("bb_lower", 0.0)
     bb_range   = bb_upper - bb_lower
     bb_position = (last_close - bb_lower) / bb_range if bb_range > 0 else 0.5
 
@@ -266,6 +269,10 @@ def build_features(
         "ticker_hash":   get_ticker_code(ticker),
         "short_carry_risk": short_carry_risk,  # 0=норма, 1=1 день, 3=выходные/праздник
     }
+    # NaN/inf (например, из битой свечи) → 0: sklearn на NaN падает, а в ml_features такие значения мусор
+    for _k, _v in features.items():
+        if isinstance(_v, float) and not math.isfinite(_v):
+            features[_k] = 0.0
     return features
 
 

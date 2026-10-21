@@ -333,7 +333,7 @@ def compute_adaptive_sl_tp(features: Dict, base_sl: float, base_tp: float) -> Tu
     """
     atr_pct = features.get("atr_pct", 0)
 
-    if atr_pct <= 0:
+    if atr_pct <= 0 or base_sl <= 0:
         return base_sl, base_tp
 
     # Сравниваем ATR с базовым SL
@@ -341,8 +341,9 @@ def compute_adaptive_sl_tp(features: Dict, base_sl: float, base_tp: float) -> Tu
 
     if volatility_factor > 1.5:
         # Рынок шумный — РАСШИРЯЕМ стопы, чтобы не выбивало шумом
-        sl = min(base_sl * 1.5, 0.012)
-        tp = min(base_tp * 1.6, 0.035)
+        # Только расширяем: потолок не должен делать стоп/тейк уже базового значения
+        sl = max(base_sl, min(base_sl * 1.5, 0.012))
+        tp = max(base_tp, min(base_tp * 1.6, 0.035))
         mode = "шумный"
     else:
         # Тихий/нормальный рынок — НЕ сужаем стоп (сужение давало лишние

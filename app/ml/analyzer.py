@@ -55,6 +55,16 @@ def update_ewa_quality(figi: str, strategy_id: int, new_quality: float) -> float
             row = cur.fetchone()
             old_ewa = float(row[0]) if row else 0.0
             new_ewa = (1 - EWA_ALPHA) * old_ewa + EWA_ALPHA * new_quality
+            if row is None:
+                # Строки состояния ещё нет (её создаёт ночной _deep_update) — создаём,
+                # иначе UPDATE молча ничего не запишет и EWA вечно стартует с нуля.
+                cur.execute("SELECT ticker FROM strategy_instruments WHERE figi=? AND ticker!='' LIMIT 1", (figi,))
+                t_row = cur.fetchone()
+                cur.execute(
+                    "INSERT OR IGNORE INTO ml_instrument_state(figi, ticker, strategy_id, ewa_quality, last_updated) "
+                    "VALUES (?, ?, ?, ?, datetime('now','localtime'))",
+                    (figi, (t_row[0] if t_row else figi), strategy_id, new_ewa),
+                )
             cur.execute("""
                 UPDATE ml_instrument_state SET ewa_quality=? WHERE figi=? AND strategy_id=?
             """, (new_ewa, figi, strategy_id))

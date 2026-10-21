@@ -55,8 +55,16 @@ def optimize_instrument(figi: str, ticker: str,
             log.info("[BT-opt] %s: мало свечей (%d) — пропуск", ticker, len(candles))
             return None
 
+        # Out-of-sample: параметры выбираем на первых 70% свечей, подтверждаем на последних 30%.
+        # Без этого перебор десятков комбинаций «находит улучшение» даже на случайном блуждании.
+        split = int(len(candles) * 0.7)
+        train, test = candles[:split], candles[split - 30:]  # 30 свечей разгона индикаторов перед тестом
+        if len(train) < 40 or len(test) < 40:
+            log.info("[BT-opt] %s: мало свечей для train/test — пропуск", ticker)
+            return None
+
         # База — текущие параметры
-        base_res = _run(candles, current_mode, current_sl, current_tp)
+        base_res = _run(train, current_mode, current_sl, current_tp)
         base_q = _quality(base_res)
 
         best = {"mode": current_mode, "sl": current_sl, "tp": current_tp,
@@ -70,7 +78,7 @@ def optimize_instrument(figi: str, ticker: str,
                     if tp <= sl:
                         continue  # TP должен быть больше SL
                     n_combos += 1
-                    res = _run(candles, mode, sl, tp)
+                    res = _run(train, mode, sl, tp)
                     q = _quality(res)
                     if q > best["quality"]:
                         best = {"mode": mode, "sl": sl, "tp": tp, "quality": q,
@@ -81,13 +89,21 @@ def optimize_instrument(figi: str, ticker: str,
         best["base_quality"] = base_q
         best["candles"] = len(candles)
 
-        # Улучшение засчитываем только если ощутимо лучше базы
+        # Улучшение засчитываем только если ощутимо лучше базы на train И не хуже базы на отложенной выборке
         changed = (best["mode"] != current_mode or
                    abs(best["sl"] - current_sl) > 1e-6 or
                    abs(best["tp"] - current_tp) > 1e-6)
         improved = changed and best["quality"] > 0 and (
             base_q <= 0 or best["quality"] >= base_q * IMPROVE_MARGIN
         )
+        if improved:
+            test_best = _run(test, best["mode"], best["sl"], best["tp"])
+            test_base = _run(test, current_mode, current_sl, current_tp)
+            tb = float(getattr(test_best, "net_pnl", 0) or 0)
+            t0 = float(getattr(test_base, "net_pnl", 0) or 0)
+            best["test_pnl"], best["test_base_pnl"] = tb, t0
+            if tb <= 0 or tb < t0 or int(getattr(test_best, "total_trades", 0) or 0) < MIN_BT_TRADES // 2:
+                improved = False  # не подтвердилось вне выборки — подгонка под шум
         best["improved"] = improved
         return best
     except Exception as e:
