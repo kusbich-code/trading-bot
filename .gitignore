@@ -1,12 +1,43 @@
-.venv/*
-app/__pycache__/*
-services/__pycache__/*
+# Окружение и кэш
+.venv/
+app/__pycache__/
+services/__pycache__/
+__pycache__/
 *.pyc
+
+# Секреты и конфиги окружения
 .env
+.env.*
+*.env
+*.pem
+*.key
+*.p12
+id_rsa*
+id_ed25519*
+certs/
+credentials*.json
+secrets*.json
+
+# Локальные настройки Claude Code (права, токены, пароли) и MCP — только локально
+.claude/
+.mcp.json
+mcp_server/
+CLAUDE.local.md
+
+# Логи, базы, бэкапы
 logs/*
-data/*.json
 !logs/.gitkeep
+*.log
+data/*.json
 !data/.gitkeep
-data/trading_bot.sqlite3
-.vscode/*.claude/
+data/*.sqlite3
+data/*.sqlite3.backup
+data/*.db
+*.sqlite3
+*.db
+bot.db
+backups/
+
+# Редактор и прочее
+.vscode/
 check_js.py
