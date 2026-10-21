@@ -579,40 +579,65 @@ def notify(message: str, is_error: bool = False):
     notifier.send(message)
 
 
-def _get_actual_close_price(client, figi: str, instrument_uid: str, opened_at: str) -> Optional[float]:
+def _get_actual_close_price(client, figi: str, instrument_uid: str, opened_at: str,
+                            direction: str = "") -> Optional[float]:
     """
-    Ищет фактическую цену закрытия позиции через операции брокера.
+    Ищет фактическую цену закрытия позиции в журнале операций брокера.
+    direction — направление ПОЗИЦИИ (BUY=лонг, SELL=шорт): закрывающей считается операция
+    противоположной стороны, выполненная после opened_at. Без direction берётся любая сделка.
     Возвращает float или None если не найдено.
     """
     try:
-        from_dt = datetime.now(timezone.utc) - timedelta(hours=2)
+        now_utc = datetime.now(timezone.utc)
+        opened_dt = None
+        try:
+            # opened_at хранится в локальном (МСК) времени бота
+            _opened_naive = datetime.strptime(opened_at, "%Y-%m-%d %H:%M:%S")
+            age = _now() - _opened_naive
+            lookback = max(timedelta(hours=2), age + timedelta(minutes=10))
+            opened_dt = (now_utc - age).replace(microsecond=0)
+        except Exception:
+            lookback = timedelta(hours=24)
+        lookback = min(lookback, timedelta(days=7))
         ops = client.operations.get_operations(
             account_id=settings.TINVEST_ACCOUNT_ID,
-            from_=from_dt,
-            to=datetime.now(timezone.utc),
+            from_=now_utc - lookback,
+            to=now_utc,
             figi=figi,
         )
-        # Берём последнюю исполненную операцию BUY/SELL для этого figi
-        # T-Bank API: state=1=EXECUTED, operation_type: BUY=1/15/23, SELL=2/22
-        for op in reversed(list(ops.operations)):
-            op_type_raw = getattr(op, "operation_type", 0)
-            op_state_raw = getattr(op, "state", 0)
-            # Принимаем и числовые (1) и строковые ("OPERATION_STATE_EXECUTED") значения
-            is_executed = (op_state_raw == 1 or str(op_state_raw) in ("1", "OPERATION_STATE_EXECUTED"))
-            is_trade = (op_type_raw in (1, 2, 15, 22, 23)
-                        or str(op_type_raw) in ("OPERATION_TYPE_BUY", "OPERATION_TYPE_SELL",
-                                                "OPERATION_TYPE_BUY_CARD",
-                                                "OPERATION_TYPE_SELL_MARGIN",
-                                                "OPERATION_TYPE_BUY_MARGIN"))
-            if not is_executed or not is_trade:
+        buy_types = {"OPERATION_TYPE_BUY", "OPERATION_TYPE_BUY_CARD", "OPERATION_TYPE_BUY_MARGIN"}
+        sell_types = {"OPERATION_TYPE_SELL", "OPERATION_TYPE_SELL_CARD", "OPERATION_TYPE_SELL_MARGIN"}
+        want = None
+        if direction:
+            want = sell_types if str(direction).upper() == "BUY" else buy_types
+
+        candidates = []
+        for op in ops.operations:
+            # state/operation_type приходят как enum (с .name), число или строка
+            op_type = getattr(getattr(op, "operation_type", None), "name", str(getattr(op, "operation_type", "")))
+            op_state = getattr(getattr(op, "state", None), "name", str(getattr(op, "state", "")))
+            if op_state not in ("OPERATION_STATE_EXECUTED", "1"):
+                continue
+            if op_type not in buy_types | sell_types:
+                continue
+            if want is not None and op_type not in want:
                 continue
             price_obj = getattr(op, "price", None)
             if price_obj is None:
                 continue
             price_val = float(quotation_to_decimal(price_obj))
+            op_dt = getattr(op, "date", None)
+            if opened_dt is not None and op_dt is not None and op_dt < opened_dt - timedelta(seconds=5):
+                continue  # сделка до открытия — это не закрытие нашей позиции
             if price_val > 0:
-                log.debug("Actual close price for %s: %.4f (op_type=%s)", figi[:8], price_val, op_type_raw)
-                return price_val
+                candidates.append((op_dt, price_val))
+        if candidates:
+            # Закрытием позиции считаем ПЕРВУЮ встречную сделку после открытия
+            # (последняя могла относиться к уже следующей позиции по той же бумаге).
+            candidates.sort(key=lambda c: c[0] or datetime.max.replace(tzinfo=timezone.utc))
+            price_val = candidates[0][1]
+            log.debug("Actual close price for %s: %.4f", figi[:8], price_val)
+            return price_val
     except Exception as e:
         log.debug("_get_actual_close_price %s: %s", figi[:8], e)
     return None
@@ -662,7 +687,7 @@ def _handle_manual_close(bp: dict, market_map: dict, client=None):
     actual_price = None
     instrument_uid = bp.get("instrument_uid", "") or ""
     if client is not None:
-        actual_price = _get_actual_close_price(client, figi, instrument_uid, opened_at)
+        actual_price = _get_actual_close_price(client, figi, instrument_uid, opened_at, direction)
 
     # 2. Определяем причину закрытия и exit_price
     reason = "MANUAL_CLOSE"
@@ -759,7 +784,9 @@ def _handle_manual_close(bp: dict, market_map: dict, client=None):
         "pnl":              float(pnl),
         "reason":           reason,
         "close_order_id":   "",
-        "execution_status": "exchange" if reason != "MANUAL_CLOSE" else "manual",
+        # estimated — цена выхода не подтверждена операциями брокера (оценка по рынку/уровням SL-TP)
+        "execution_status": ("estimated" if actual_price is None
+                             else ("exchange" if reason != "MANUAL_CLOSE" else "manual")),
     })
     close_position(figi, source="BOT")
     log_event("ORDER_CLOSE", f"{ticker} {reason} exit={float(exit_price):.4f} pnl={float(pnl):.2f}", ticker=ticker)
@@ -815,6 +842,36 @@ def _handle_manual_close(bp: dict, market_map: dict, client=None):
         pass
 
 
+_mismatch_last_alert: Dict[str, float] = {}
+MISMATCH_ALERT_INTERVAL_SEC = 1800
+
+
+def _reconcile_bot_vs_broker(broker_signed: Dict[str, int]):
+    """Сверяет нетто-позицию брокера по каждому figi с суммой открытых BOT-позиций.
+    Брокер ведёт позицию нетто по бумаге, бот — по стратегиям; расхождение значит, что
+    ордер (ручной, close-all, встречный вход другой стратегии) изменил позицию мимо учёта бота.
+    Ничего не торгует и не правит — только пишет POSITION_MISMATCH (не чаще раза в 30 мин на figi)."""
+    bot_signed: Dict[str, int] = {}
+    tickers: Dict[str, str] = {}
+    for bp in get_open_positions(source="BOT"):
+        sign = 1 if str(bp["direction"]).upper() == "BUY" else -1
+        bot_signed[bp["figi"]] = bot_signed.get(bp["figi"], 0) + sign * int(bp["qty"])
+        tickers[bp["figi"]] = bp["ticker"]
+    now_ts = time.time()
+    for figi in set(bot_signed) | set(broker_signed):
+        b_bot, b_brk = bot_signed.get(figi, 0), broker_signed.get(figi, 0)
+        if b_bot == b_brk:
+            _mismatch_last_alert.pop(figi, None)
+            continue
+        if now_ts - _mismatch_last_alert.get(figi, 0) < MISMATCH_ALERT_INTERVAL_SEC:
+            continue
+        _mismatch_last_alert[figi] = now_ts
+        ticker = tickers.get(figi) or figi[:8]
+        msg = f"{ticker}: брокер {b_brk:+d} лот, учёт бота {b_bot:+d} лот — расхождение {b_brk - b_bot:+d}"
+        log_event("POSITION_MISMATCH", msg, ticker=ticker, level="WARNING")
+        notify(f"⚠️ Рассинхрон позиции\n{msg}", is_error=True)
+
+
 def sync_portfolio_positions(client):
     """Синхронизирует позиции PORTFOLIO из API брокера в локальную БД (source=PORTFOLIO).
     Дополнительно детектирует BOT-позиции закрытые вручную и записывает их как MANUAL_CLOSE."""
@@ -832,6 +889,7 @@ def sync_portfolio_positions(client):
         }
 
         broker_figis: set = set()
+        broker_signed: Dict[str, int] = {}  # figi → нетто-позиция в лотах (+лонг / −шорт)
         for p in positions:
             figi = getattr(p, "figi", "") or ""
             instrument_type = str(getattr(p, "instrument_type", "") or "").lower()
@@ -870,6 +928,7 @@ def sync_portfolio_positions(client):
 
             # Согласовано с BOT: BUY = лонг, SELL = шорт
             direction = "SELL" if qty < 0 else "BUY"
+            broker_signed[figi] = qty
 
             # Вычисляем нереализованный PnL если брокер вернул 0 (часто в sandbox)
             if expected_yield == 0.0 and avg_price > 0 and current_price > 0:
@@ -908,6 +967,8 @@ def sync_portfolio_positions(client):
                     continue
                 log.info("Позиция %s не найдена в портфеле — определяем причину закрытия", bp["ticker"])
                 _handle_manual_close(bp, market_map, client=client)
+
+        _reconcile_bot_vs_broker(broker_signed)
 
     except Exception as e:
         log.warning(f"sync_portfolio_positions error: {e}")
@@ -2357,6 +2418,20 @@ def process_instrument(client, item,
                        f"нужно {float(required):.0f} ₽, доступно {float(available):.0f} ₽")
             log_event("BALANCE_WARNING", f"{ticker}: {_reason} — пропуск", ticker=ticker)
             _save_signal(skip_reason=_reason, skip_filter="balance")
+            return
+
+    # ── Защита от неттинга: брокер ведёт позицию нетто по бумаге, встречный вход
+    # закрыл бы (частично) позицию другой стратегии/ручную, а бот посчитал бы её «исчезнувшей».
+    if sig in ("BUY", "SELL"):
+        _opp = [
+            _p for _src in ("BOT", "PORTFOLIO") for _p in get_open_positions(source=_src)
+            if _p["figi"] == figi and str(_p["direction"]).upper() != sig
+        ]
+        if _opp:
+            _reason = (f"Встречная позиция по {ticker} ({_opp[0]['direction']} {_opp[0]['qty']} лот) — "
+                       f"вход {sig} нетто-закрыл бы её")
+            log_event("SIGNAL_SKIP", _reason, ticker=ticker)
+            _save_signal(skip_reason=_reason, skip_filter="netting")
             return
 
     # ── Проверка дневного лимита потерь по инструменту ───────────────────────

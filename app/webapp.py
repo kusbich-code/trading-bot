@@ -2792,9 +2792,36 @@ async def api_instruments_top(limit: int = 20):
 
 # ── positions ─────────────────────────────────────────────────────────────────
 
+def _plan_close_from_broker(figi: str, requested_lots: int) -> dict:
+    """Что реально нужно закрыть по figi по данным брокера.
+    Возвращает {skip, qty, close_direction, full}: skip — причина, по которой ордер слать нельзя
+    (позиции у брокера нет), иначе close_direction/qty рассчитаны по фактической позиции."""
+    try:
+        broker = {p["figi"]: p for p in get_broker_positions()}
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"не удалось получить портфель брокера: {str(e)[:120]}")
+    pos = broker.get(figi)
+    if not pos or int(pos["qty"]) <= 0:
+        return {"skip": "у брокера нет позиции по инструменту — закрывать нечего", "qty": 0,
+                "close_direction": "", "full": False}
+    held = int(pos["qty"])
+    qty = held if requested_lots <= 0 else min(requested_lots, held)
+    return {"skip": "", "qty": qty,
+            "close_direction": "LONG_CLOSE" if pos["direction"] == "BUY" else "SHORT_CLOSE",
+            "full": qty >= held}
+
+
 @app.post("/api/позиции/закрыть")
 def api_close_position(figi: str = Form(...), qty: int = Form(...), direction: str = Form(...)):
-    close_direction = "LONG_CLOSE" if str(direction).upper() == "BUY" else "SHORT_CLOSE"
+    # Брокер — источник истины: направление и количество берём из его портфеля, а не из формы.
+    # Иначе устаревшая/задвоенная строка в UI открывает встречную позицию (закрытие «в ноль» → шорт).
+    plan = _plan_close_from_broker(figi, int(qty))
+    if plan["skip"]:
+        log_event("POSITION_CLOSE", f"close skipped figi={figi}: {plan['skip']}", ticker=figi, level="WARNING")
+        return {"ok": True, "message": plan["skip"], "skipped": True, "cancelled_stops": 0, "order_id": ""}
+    qty = plan["qty"]
+    close_direction = plan["close_direction"]
+    full_close = plan["full"]
     # Берём instrument_uid из нашей БД для этого figi
     mmap = get_instrument_market_state_map()
     uid  = next((v.get("instrument_uid", "") or "" for v in mmap.values() if v.get("figi") == figi), "")
@@ -2809,7 +2836,7 @@ def api_close_position(figi: str = Form(...), qty: int = Form(...), direction: s
     cancelled_stops = 0
     cancelled_orders = 0
     try:
-        active_stops = get_active_stop_orders()
+        active_stops = get_active_stop_orders() if full_close else []
         for s in active_stops:
             if s.get("figi") == figi or (uid and uid in str(s)):
                 try:
@@ -2822,7 +2849,7 @@ def api_close_position(figi: str = Form(...), qty: int = Form(...), direction: s
     except Exception as _e:
         logger.warning("get_active_stop_orders before close: %s", _e)
     try:
-        active_orders = get_active_orders()
+        active_orders = get_active_orders() if full_close else []
         for o in active_orders:
             if o.get("figi") == figi or (uid and o.get("instrument_uid") == uid):
                 try:
@@ -2859,30 +2886,24 @@ def api_clear_local_positions():
 
 @app.post("/api/позиции/закрыть-все")
 def api_close_all_positions():
-    positions = get_open_positions(source="BOT")
-    from app.db import db_cursor as _dbc2
+    """Закрывает все позиции по ПОРТФЕЛЮ БРОКЕРА (не по локальной БД), со снятием стопов/ордеров."""
+    try:
+        broker_positions = get_broker_positions()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"не удалось получить портфель брокера: {str(e)[:120]}")
     closed = 0
     errors = []
-    for p in positions:
+    for p in broker_positions:
+        figi = p.get("figi", "")
+        if not figi or int(p.get("qty", 0)) <= 0:
+            continue
         try:
-            figi      = p.get("figi", "")
-            qty       = int(p.get("qty", 0))
-            direction = str(p.get("direction", "BUY")).upper()
-            if not figi or qty <= 0:
-                continue
-            # instrument_uid из strategy_instruments
-            with _dbc2() as _cur:
-                _cur.execute("SELECT instrument_uid FROM strategy_instruments WHERE figi = ? LIMIT 1", (figi,))
-                row = _cur.fetchone()
-                uid = (row["instrument_uid"] or "") if row else ""
-            close_direction = "LONG_CLOSE" if direction == "BUY" else "SHORT_CLOSE"
-            post_market_close(figi=figi, quantity=qty, direction=close_direction, instrument_uid=uid)
-            log_event("POSITION_CLOSE", f"close-all: figi={figi} qty={qty}", ticker=figi)
+            api_close_position(figi=figi, qty=int(p["qty"]), direction=str(p.get("direction", "BUY")))
             closed += 1
+        except HTTPException as he:
+            errors.append(f"{figi}: {he.detail}")
         except Exception as e:
-            import re as _re2
-            m = _re2.search(r"message='([^']+)'", str(e))
-            errors.append(m.group(1) if m else str(e)[:80])
+            errors.append(f"{figi}: {str(e)[:80]}")
     return JSONResponse({"ok": True, "closed": closed, "errors": errors})
 
 
