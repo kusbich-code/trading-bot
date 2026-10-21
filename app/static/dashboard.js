@@ -1034,6 +1034,11 @@ async function renderSettingsTab() {
                  value="${esc(profSettings.max_open_positions || "3")}">
           <span class="note" style="font-size:11px">Используется без параллельного режима. В параллельном режиме лимит = число активных стратегий, банк делится на них поровну (12 стратегий и 120к → до 12 позиций по 10к)</span>
         </label>
+        <label>Макс. сделок в день
+          <input class="field" type="number" min="1" max="1000" name="max_trades_per_day"
+                 value="${esc(profSettings.max_trades_per_day || "200")}">
+          <span class="note" style="font-size:11px">Общий лимит на все стратегии: после него новые входы блокируются до следующего дня (МСК). Считаются закрытые сделки (полный цикл вход+выход)</span>
+        </label>
         <div class="row-buttons">
           <button type="button" class="btn btn-primary" id="btnSaveProfileSettings">Сохранить</button>
         </div>

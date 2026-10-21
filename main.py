@@ -65,6 +65,7 @@ from app.db import (
     list_profile_parallel_strategies,
     get_profile_setting,
     get_open_positions,
+    get_max_trades_per_day,
     get_instrument_market_state_map,
     save_instrument_uid,
     fix_ticker_by_figi,
@@ -2308,7 +2309,7 @@ def process_instrument(client, item,
 
     # Общие дневные лимиты. Главный цикл их проверял, а воркеры параллельных стратегий — нет.
     try:
-        if state.trades_today >= int(get_setting("max_trades_per_day", "15")):
+        if state.trades_today >= get_max_trades_per_day():
             _save_signal(skip_reason="Достигнут лимит сделок за день", skip_filter="max_trades_per_day")
             return
         if state.daily_pnl <= -Decimal(str(get_setting("max_daily_loss_rub", "200"))):
@@ -3091,7 +3092,7 @@ def main():
                     time.sleep(5)
                     continue
 
-                if state.trades_today >= int(get_setting("max_trades_per_day", "15")):
+                if state.trades_today >= get_max_trades_per_day():
                     state.status = "SESSION_STOPPED_BY_LIMIT"
                     state.sync_runtime()
                     sync_portfolio_positions(client)  # лимит запрещает входы, но учёт позиций/закрытий должен идти

@@ -10,7 +10,7 @@ def _now_msk() -> str:
     return datetime.now(tz=_MSK).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
 
 
-PROFILE_SETTING_KEYS = {"bot_enabled", "telegram_errors_only", "auto_reload_settings", "tinvestusesandbox", "parallel_trading_enabled", "trade_only_session", "max_open_positions"}
+PROFILE_SETTING_KEYS = {"bot_enabled", "telegram_errors_only", "auto_reload_settings", "tinvestusesandbox", "parallel_trading_enabled", "trade_only_session", "max_open_positions", "max_trades_per_day"}
 
 STRATEGY_SETTING_KEYS = {
     "max_trades_per_day", "max_daily_loss_rub", "max_open_positions", "check_interval_sec",
@@ -1741,6 +1741,21 @@ def effective_max_open_positions(profile_id: int | None = None) -> int:
         return max(1, int(get_profile_setting(profile_id, "max_open_positions", "3") or 3))
     except Exception:
         return 3
+
+
+def get_max_trades_per_day() -> int:
+    """Дневной лимит числа сделок. Источник — настройка активного профиля (поле в интерфейсе),
+    запасной — глобальная bot_settings (раньше туда попадало значение последней активированной
+    стратегии, из-за чего лимит «менялся сам»)."""
+    try:
+        pid_str = (get_setting("active_profile_id", "") or "").strip()
+        if pid_str:
+            v = get_profile_setting(int(pid_str), "max_trades_per_day", "")
+            if str(v).strip():
+                return max(1, int(v))
+        return max(1, int(get_setting("max_trades_per_day", "15") or 15))
+    except Exception:
+        return 15
 
 
 def get_unified_open_positions() -> list:

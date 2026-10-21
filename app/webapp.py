@@ -32,6 +32,7 @@ from app.db import (
     add_instrument,
     get_open_positions,
     get_unified_open_positions,
+    get_max_trades_per_day,
     effective_max_open_positions,
     clear_open_positions,
     get_instrument_market_state,
@@ -1348,7 +1349,7 @@ def api_dashboard_bot_explain():
     if cur_pos >= max_pos:
         reasons.append(f"Достигнут лимит открытых позиций ({cur_pos}/{max_pos})")
 
-    max_trades = int(str(settings_map.get("max_trades_per_day", "15")))
+    max_trades = get_max_trades_per_day()
     trades_today_cnt = int(str(settings_map.get("trades_today", "0")))
     if trades_today_cnt >= max_trades:
         reasons.append(f"Достигнут лимит сделок за день ({trades_today_cnt}/{max_trades})")
@@ -1411,6 +1412,7 @@ def api_dashboard_settings(profile_id: Optional[int] = None):
                 "parallel_trading_enabled": ps("parallel_trading_enabled", "0"),
                 "trade_only_session": ps("trade_only_session", "1"),
                 "max_open_positions": ps("max_open_positions", "3"),
+                "max_trades_per_day": ps("max_trades_per_day", str(get_max_trades_per_day())),
             },
         },
         "view_strategy": {
@@ -2377,13 +2379,20 @@ def api_profiles_save_settings(
     runtime_mode: str = Form("sandbox"),
     trade_only_session: str = Form("1"),
     max_open_positions: str = Form("3"),
+    max_trades_per_day: str = Form(""),
 ):
     use_sandbox = "true" if runtime_mode == "sandbox" else "false"
     try:
         _mop = max(1, min(12, int(max_open_positions or 3)))
     except Exception:
         _mop = 3
-    update_profile_settings(profile_id, {
+    extra = {}
+    if str(max_trades_per_day).strip():  # пусто — не менять
+        try:
+            extra["max_trades_per_day"] = str(max(1, min(1000, int(max_trades_per_day))))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Макс. сделок в день должно быть целым числом")
+    update_profile_settings(profile_id, {**extra,
         "bot_enabled": bool01(bot_enabled),
         "telegram_errors_only": bool01(telegram_errors_only),
         "auto_reload_settings": bool01(auto_reload_settings),
