@@ -859,11 +859,56 @@ def _ml_indicators(ticker: str, ind=None) -> dict:
             for k in ("rsi", "macd", "macd_signal", "bb_upper", "bb_lower")}
 
 
+def _broker_net_lots(client, figi: str):
+    """Нетто-позиция брокера по бумаге в лотах (+лонг / −шорт, 0 — нет позиции).
+    None — не удалось получить (вызывающий обязан считать это запретом на сделку)."""
+    try:
+        _rate.record("GetPortfolio")
+        pf = client.operations.get_portfolio(account_id=settings.TINVEST_ACCOUNT_ID)
+        for p in getattr(pf, "positions", []) or []:
+            if getattr(p, "figi", "") == figi:
+                lots = getattr(p, "quantity_lots", None)
+                val = quotation_to_decimal(lots) if lots is not None and quotation_to_decimal(lots) != 0                     else quotation_to_decimal(getattr(p, "quantity", None))
+                return int(val)
+        return 0
+    except Exception as e:
+        log.warning("Не удалось получить позицию брокера по %s: %s", figi, e)
+        return None
+
+
+def _entry_blocked_reason(client, figi: str, ticker: str):
+    """Защита от дублей: вход разрешён, только если по бумаге нет позиции ни у брокера, ни в учёте бота.
+    Возвращает текст причины отказа или None. Ошибка проверки = отказ (лучше пропустить вход, чем задвоить позицию)."""
+    for bp in get_open_positions(source="BOT"):
+        if bp["figi"] == figi:
+            return f"Позиция по {ticker} уже есть в учёте бота ({bp['direction']} {bp['qty']} лот) — вход отменён"
+    net = _broker_net_lots(client, figi)
+    if net is None:
+        return f"Не удалось проверить позицию брокера по {ticker} — вход отменён"
+    if net != 0:
+        return f"У брокера уже есть позиция по {ticker} ({net:+d} лот) — вход отменён"
+    return None
+
+
+def _plan_close(client, figi: str, direction: str, qty_lots: int):
+    """Закрывающий ордер может только УМЕНЬШАТЬ позицию. Сверяем с брокером: нет позиции — не шлём
+    (иначе откроется встречная), позиция другого знака — не шлём, объёма меньше — уменьшаем.
+    Возвращает (количество лотов, причина отказа); количество 0 = ордер слать нельзя."""
+    net = _broker_net_lots(client, figi)
+    if net is None:
+        return 0, "не удалось получить позицию брокера"
+    if net == 0:
+        return 0, "у брокера нет позиции (уже закрыта биржевым стопом или вручную)"
+    if (direction == "BUY" and net < 0) or (direction == "SELL" and net > 0):
+        return 0, f"направление позиции у брокера ({net:+d}) не совпадает с учётом бота ({direction})"
+    return min(int(qty_lots), abs(net)), ""
+
+
 _stops_check_ts = 0.0
 STOPS_CHECK_INTERVAL_SEC = 60
 
 
-def _ensure_native_stops(client):
+def _ensure_native_stops(client, broker_signed: Dict[str, int]):
     """Сторож защиты: у каждой открытой позиции бота должны быть биржевые SL/TP.
     Стопы пропадают при ручных действиях в интерфейсе, сбоях выставления и закрытиях «в ноль»;
     раз в минуту возвращаем недостающие (позиции моложе 90 с пропускаем — стопы ещё ставятся)."""
@@ -874,7 +919,37 @@ def _ensure_native_stops(client):
     _stops_check_ts = now_ts
     try:
         resp = client.stop_orders.get_stop_orders(account_id=settings.TINVEST_ACCOUNT_ID)
-        covered = {getattr(s, "figi", "") for s in getattr(resp, "stop_orders", []) or []}
+        all_stops = list(getattr(resp, "stop_orders", []) or [])
+
+        # Лишние стопы опаснее отсутствующих: два стопа на одну позицию закрывают её и открывают встречную,
+        # а стоп без позиции при срабатывании сам открывает позицию. Суммарный объём каждого типа стопов
+        # не должен превышать позицию брокера; стопы свежее 2 минут не трогаем (позиция ещё может не отразиться).
+        now_utc = datetime.now(timezone.utc)
+        groups: Dict[tuple, list] = {}
+        for st in all_stops:
+            groups.setdefault((getattr(st, "figi", ""), int(getattr(st, "order_type", 0) or 0)), []).append(st)
+        for (g_figi, g_type), lst in groups.items():
+            size = abs(int(broker_signed.get(g_figi, 0)))
+            lst.sort(key=lambda x: getattr(x, "create_date", now_utc))
+            acc = 0
+            for st in lst:
+                created = getattr(st, "create_date", None)
+                if created is not None and (now_utc - created).total_seconds() < 120:
+                    acc += int(getattr(st, "lots_requested", 0) or 0)
+                    continue
+                lots_st = int(getattr(st, "lots_requested", 0) or 0)
+                if acc >= size or acc + lots_st > size:
+                    try:
+                        client.stop_orders.cancel_stop_order(account_id=settings.TINVEST_ACCOUNT_ID,
+                                                             stop_order_id=st.stop_order_id)
+                        log_event("STOP_ORDER", f"{g_figi[:8]}: снят лишний стоп (тип {g_type}, {lots_st} лот, "
+                                  f"позиция {size})", level="WARNING")
+                    except Exception as ce:
+                        log.warning("Не удалось снять лишний стоп %s: %s", st.stop_order_id, ce)
+                else:
+                    acc += lots_st
+
+        covered = {getattr(s, "figi", "") for s in all_stops}
         for bp in get_open_positions(source="BOT"):
             if bp["figi"] in covered or bp["figi"] in _closing_in_progress:
                 continue
@@ -1025,7 +1100,7 @@ def sync_portfolio_positions(client):
                 _handle_manual_close(bp, market_map, client=client)
 
         _reconcile_bot_vs_broker(broker_signed)
-        _ensure_native_stops(client)
+        _ensure_native_stops(client, broker_signed)
 
     except Exception as e:
         log.warning(f"sync_portfolio_positions error: {e}")
@@ -2220,6 +2295,13 @@ def process_instrument(client, item,
             try:
                 close_dir = OrderDirection.ORDER_DIRECTION_SELL if direction == "BUY" else OrderDirection.ORDER_DIRECTION_BUY
                 # Отменяем ВСЕ ордера по figi перед закрытием (нативные стопы + лимитники)
+                _close_qty, _close_why = _plan_close(client, figi, direction, qty)
+                if _close_qty <= 0:
+                    # Закрывать нечего/нельзя: ордер не шлём. Запись о позиции приведёт в порядок sync_portfolio_positions
+                    log_event("POSITION_CLOSE", f"{ticker}: закрытие отменено — {_close_why}", ticker=ticker, level="WARNING")
+                    state.order_cooldowns[figi] = _now()
+                    return
+                qty = _close_qty  # не больше фактической позиции брокера
                 _cancel_all_orders_for_figi(client, figi, ticker)
                 try:
                     order_result = place_order_checked(client, ticker, figi, qty, price, close_dir, market=True)
@@ -2532,6 +2614,13 @@ def process_instrument(client, item,
         if _coord is not None and not _coord.try_claim(_strategy_id, figi, ticker):
             return  # другой поток только что захватил первым
 
+        _block = _entry_blocked_reason(client, figi, ticker)
+        if _block:
+            log_event("SIGNAL_SKIP", _block, ticker=ticker, level="WARNING")
+            _save_signal(skip_reason=_block, skip_filter="duplicate_guard")
+            if _coord is not None:
+                _coord.release(_strategy_id)
+            return
         order_result = place_order_checked(client, ticker, figi, lot, price, OrderDirection.ORDER_DIRECTION_BUY, market=True)
         if not order_result:
             state.order_cooldowns[figi] = _now()
@@ -2643,6 +2732,13 @@ def process_instrument(client, item,
         if _coord is not None and not _coord.try_claim(_strategy_id, figi, ticker):
             return
 
+        _block = _entry_blocked_reason(client, figi, ticker)
+        if _block:
+            log_event("SIGNAL_SKIP", _block, ticker=ticker, level="WARNING")
+            _save_signal(skip_reason=_block, skip_filter="duplicate_guard")
+            if _coord is not None:
+                _coord.release(_strategy_id)
+            return
         order_result = place_order_checked(client, ticker, figi, lot, price, OrderDirection.ORDER_DIRECTION_SELL, market=True)
         if not order_result:
             state.order_cooldowns[figi] = _now()
