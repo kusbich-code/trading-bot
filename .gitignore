@@ -41,3 +41,6 @@ backups/
 # Редактор и прочее
 .vscode/
 check_js.py
+
+# Правила Claude для проекта — только локально
+CLAUDE.md
