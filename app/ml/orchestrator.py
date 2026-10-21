@@ -97,7 +97,7 @@ def _rank_instruments_daily(instruments: list) -> None:
                 pass
     if disabled_count:
         try:
-            from main import notify
+            from app.notify import notify
             notify(f"🧠 ML ранжирование: {disabled_count} инструментов временно отключены (низкий ML score)")
         except Exception:
             pass
@@ -385,7 +385,7 @@ def _check_concept_drift() -> None:
             log.warning("[ML drift] win-rate=%.0f%% < %.0f%% (последние %d сделок) — сброс кеша моделей",
                         win_rate * 100, DRIFT_WINRATE * 100, len(labels))
             try:
-                from main import notify
+                from app.notify import notify
                 notify(f"⚠️ ML: win-rate {win_rate:.0%} за последние {len(labels)} сделок "
                        f"(ниже {DRIFT_WINRATE:.0%}). Модель переобучена, кеш сброшен.")
             except Exception:

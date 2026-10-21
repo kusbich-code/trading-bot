@@ -387,7 +387,7 @@ def _send_ml_decision_tg(ticker: str, direction: str, decision: str,
                           confidence: float, details: str) -> None:
     """Отправляет аналитику решения в Telegram."""
     try:
-        from main import notify
+        from app.notify import notify
         emoji = "🤖"
         conf_bar = "█" * int(confidence * 10) + "░" * (10 - int(confidence * 10))
         msg = (

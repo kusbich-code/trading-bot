@@ -14,6 +14,8 @@ _MSK = timezone(timedelta(hours=3))
 MIN_SAMPLES    = 30   # минимум сделок до начала обучения
 RETRAIN_EVERY  = 10   # переобучаем каждые N новых сделок
 TEST_RATIO     = 0.2  # 20% на тест (последние по времени)
+MIN_TEST_SAMPLES = 10   # precision на меньшей отложенной выборке недостоверна
+MIN_PRED_POSITIVES = 3  # и при меньшем числе предсказанных «прибыльных» тоже
 MIN_PRECISION_ACTIVATE = 0.50  # минимальная precision для активации универсальной модели
 
 
@@ -114,6 +116,7 @@ def train_universal_model() -> Optional[Dict]:
         metrics["accuracy"]  = round(accuracy_score(y_test, y_pred), 3)
         metrics["precision"] = round(precision_score(y_test, y_pred, zero_division=0), 3)
         metrics["recall"]    = round(recall_score(y_test, y_pred, zero_division=0), 3)
+        metrics["pred_pos"]  = int(sum(1 for v in y_pred if v == 1))
 
     # Feature importance из откалиброванной модели (base_model сам не обучается!)
     from app.ml.feature_builder import FEATURE_NAMES
@@ -129,7 +132,8 @@ def train_universal_model() -> Optional[Dict]:
     # Активируем ТОЛЬКО при адекватной precision — иначе модель в "learning"
     # (soft-режим: логирует, но не блокирует входы и не закрывает позиции).
     prec = metrics.get("precision", 0)
-    is_ready = len(X_train) >= MIN_SAMPLES and prec >= MIN_PRECISION_ACTIVATE
+    reliable = metrics.get("n_test", 0) >= MIN_TEST_SAMPLES and metrics.get("pred_pos", 0) >= MIN_PRED_POSITIVES
+    is_ready = len(X_train) >= MIN_SAMPLES and prec >= MIN_PRECISION_ACTIVATE and reliable
     univ_status = "active" if is_ready else "learning"
     model_bytes = pickle.dumps(model)
     now = datetime.now(tz=_MSK).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
@@ -162,7 +166,7 @@ def train_universal_model() -> Optional[Dict]:
 
 def _notify_universal_ready(n: int, prec: float, metrics: dict) -> None:
     try:
-        from main import notify
+        from app.notify import notify
         top = metrics.get("top_features", [])
         top_str = "\n".join(f"  {i+1}. {name}: {val:.3f}" for i, (name, val) in enumerate(top[:3]))
         notify(
@@ -246,6 +250,7 @@ def train_model(figi: str, ticker: str, strategy_id: int) -> Optional[Dict]:
         metrics["accuracy"]  = round(accuracy_score(y_test, y_pred), 3)
         metrics["precision"] = round(precision_score(y_test, y_pred, zero_division=0), 3)
         metrics["recall"]    = round(recall_score(y_test, y_pred, zero_division=0), 3)
+        metrics["pred_pos"]  = int(sum(1 for v in y_pred if v == 1))
 
     # Feature importance из базовой модели внутри calibrated wrapper
     from app.ml.feature_builder import FEATURE_NAMES
@@ -259,7 +264,8 @@ def train_model(figi: str, ticker: str, strategy_id: int) -> Optional[Dict]:
 
     prec = metrics.get("precision", 0)
     n = len(X_train)
-    is_ready = prec >= 0.58 and n >= MIN_SAMPLES
+    reliable = metrics.get("n_test", 0) >= MIN_TEST_SAMPLES and metrics.get("pred_pos", 0) >= MIN_PRED_POSITIVES
+    is_ready = prec >= 0.58 and n >= MIN_SAMPLES and reliable
     instr_status = "active" if is_ready else "learning"
 
     # Сохранение в БД с корректным статусом сразу (без race condition)
@@ -298,7 +304,7 @@ def train_model(figi: str, ticker: str, strategy_id: int) -> Optional[Dict]:
 def _notify_model_ready(ticker: str, n_samples: int, precision: float, metrics: dict) -> None:
     """Отправляет Telegram когда модель достигла порога точности."""
     try:
-        from main import notify
+        from app.notify import notify
         top = metrics.get("top_features", [])
         top_str = "\n".join(f"  {i+1}. {name}: {val:.3f}" for i, (name, val) in enumerate(top[:3]))
         msg = (

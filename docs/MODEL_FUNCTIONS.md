@@ -51,17 +51,17 @@
 
 | Строка | Функция | Аргументы | Назначение | Длина |
 |---|---|---|---|---|
-| 20 | `_balance_classes` | X_train, y_train | Oversample миноритарного класса до уровня мажоритарного (детерминированно). | 22 |
-| 44 | `_archive_active_models` | cur, figi, strategy_id | Помечает прежние active-модели как archived — чтобы оставалась одна активная на figi. | 9 |
-| 55 | `get_all_labeled_features` |  | Загружает ВСЕ размеченные признаки со всех инструментов (для универсальной модели). | 19 |
-| 76 | `train_universal_model` |  | Универсальная модель на ВСЕХ инструментах. | 85 |
-| 163 | `_notify_universal_ready` | n, prec, metrics |  | 14 |
-| 179 | `get_training_data` | figi, strategy_id | Загружает размеченные признаки из ml_features. | 19 |
-| 200 | `train_model` | figi, ticker, strategy_id | Обучает GradientBoostingClassifier + Platt calibration на накопленных данных. | 96 |
-| 298 | `_notify_model_ready` | ticker, n_samples, precision, metrics | Отправляет Telegram когда модель достигла порога точности. | 16 |
-| 316 | `is_model_active` | figi, strategy_id | True если модель обучена и активна. | 11 |
-| 329 | `load_model` | figi, strategy_id | Загружает последнюю активную модель из БД. | 25 |
-| 356 | `should_retrain` | figi, strategy_id | True если с последнего обучения накопилось RETRAIN_EVERY новых сделок. | 19 |
+| 22 | `_balance_classes` | X_train, y_train | Oversample миноритарного класса до уровня мажоритарного (детерминированно). | 22 |
+| 46 | `_archive_active_models` | cur, figi, strategy_id | Помечает прежние active-модели как archived — чтобы оставалась одна активная на figi. | 9 |
+| 57 | `get_all_labeled_features` |  | Загружает ВСЕ размеченные признаки со всех инструментов (для универсальной модели). | 19 |
+| 78 | `train_universal_model` |  | Универсальная модель на ВСЕХ инструментах. | 87 |
+| 167 | `_notify_universal_ready` | n, prec, metrics |  | 14 |
+| 183 | `get_training_data` | figi, strategy_id | Загружает размеченные признаки из ml_features. | 19 |
+| 204 | `train_model` | figi, ticker, strategy_id | Обучает GradientBoostingClassifier + Platt calibration на накопленных данных. | 98 |
+| 304 | `_notify_model_ready` | ticker, n_samples, precision, metrics | Отправляет Telegram когда модель достигла порога точности. | 16 |
+| 322 | `is_model_active` | figi, strategy_id | True если модель обучена и активна. | 11 |
+| 335 | `load_model` | figi, strategy_id | Загружает последнюю активную модель из БД. | 25 |
+| 362 | `should_retrain` | figi, strategy_id | True если с последнего обучения накопилось RETRAIN_EVERY новых сделок. | 19 |
 
 ## app/ml/model_predictor.py (17)
 
@@ -156,17 +156,17 @@
 |---|---|---|---|---|
 | 85 | `_find_optimal_score` | candles, mode, sl, tp, lots, budget_rub | Run backtests at different score thresholds, pick the one that maximizes net_pnl × win_rate × (1-drawdown). | 25 |
 | 114 | `get_state` |  |  | 3 |
-| 119 | `start` | budget_rub, min_win_rate, min_trades, days, interval, min_pnl, exclude_active, _run_id_override |  | 24 |
-| 145 | `stop` |  |  | 3 |
-| 152 | `get_opt_state` |  |  | 3 |
-| 157 | `start_optimize` | budget_rub, days, interval |  | 13 |
-| 172 | `stop_optimize` |  |  | 3 |
-| 179 | `_upd` |  |  | 3 |
-| 184 | `_worker` | budget_rub, min_win_rate, min_trades, days, interval, min_pnl, exclude_active, _run_id_override |  | 159 |
-| 347 | `_opt_upd` |  |  | 3 |
-| 352 | `_optimization_worker` | budget_rub, days, interval |  | 184 |
-| 540 | `get_results` | limit |  | 11 |
-| 553 | `get_result_by_id` | result_id |  | 6 |
-| 561 | `save_as_strategy` | result_id, strategy_name | Создаёт новую стратегию из результата аналитика. Возвращает strategy_id. | 87 |
+| 119 | `start` | budget_rub, min_win_rate, min_trades, days, interval, min_pnl, exclude_active, _run_id_override |  | 25 |
+| 146 | `stop` |  |  | 3 |
+| 153 | `get_opt_state` |  |  | 3 |
+| 158 | `start_optimize` | budget_rub, days, interval |  | 14 |
+| 174 | `stop_optimize` |  |  | 3 |
+| 181 | `_upd` |  |  | 3 |
+| 186 | `_worker` | budget_rub, min_win_rate, min_trades, days, interval, min_pnl, exclude_active, _run_id_override |  | 159 |
+| 349 | `_opt_upd` |  |  | 3 |
+| 354 | `_optimization_worker` | budget_rub, days, interval |  | 184 |
+| 542 | `get_results` | limit |  | 11 |
+| 555 | `get_result_by_id` | result_id |  | 6 |
+| 563 | `save_as_strategy` | result_id, strategy_name | Создаёт новую стратегию из результата аналитика. Возвращает strategy_id. | 87 |
 
 Всего функций: 102

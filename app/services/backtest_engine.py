@@ -131,7 +131,7 @@ def run_backtest(
 
         # ── Открытие новой позиции если нет текущей ──────────────────────────
         if position is None:
-            window = candles[: i + 1]
+            window = candles[max(0, i - 119): i + 1]  # стратегии смотрят не глубже ~30 свечей; полный срез делал бэктест O(n²)
             sig = evaluate_signal(mode, window)
             action = sig.get("action", "HOLD")
             score = sig.get("score", 0)

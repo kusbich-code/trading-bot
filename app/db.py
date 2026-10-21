@@ -1337,11 +1337,13 @@ def get_trade_stats_today(date_prefix: str | None = None):
         date_prefix = datetime.now().strftime("%Y-%m-%d")
     with db_cursor() as cur:
         cur.execute("""
-        SELECT COUNT(*) as trades_count,
+        SELECT COALESCE(SUM(CASE WHEN reason IN ('ORPHAN_CLEANUP','REPAIR_REVERSAL','NETTING_CLOSE') THEN 0 ELSE 1 END), 0) as trades_count,
                COALESCE(SUM(pnl), 0) as total_pnl,
                COALESCE(SUM(commission), 0) as total_commission
         FROM trades WHERE time LIKE ?
         """, (f"{date_prefix}%",))
+        # trades_count — только торговые решения бота: служебные записи ремонта учёта не должны
+        # съедать дневной лимит сделок; PnL считается полностью (деньги реальные).
         row = cur.fetchone()
         return dict(row) if row else {"trades_count": 0, "total_pnl": 0, "total_commission": 0}
 

@@ -130,6 +130,7 @@ def start(
     with _lock:
         if _state["status"] == "running":
             return False, "Аналитик уже запущен"
+        _state["status"] = "running"  # занимаем слот под замком, иначе два быстрых старта запускают два потока
     _stop_event.clear()
     _thread = threading.Thread(
         target=_worker,
@@ -159,6 +160,7 @@ def start_optimize(budget_rub: float, days: int, interval: str) -> tuple[bool, s
     with _opt_lock:
         if _opt_state["status"] == "running":
             return False, "Оптимизация уже запущена"
+        _opt_state["status"] = "running"
     _opt_stop.clear()
     _opt_thread = threading.Thread(
         target=_optimization_worker,

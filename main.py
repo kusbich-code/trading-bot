@@ -579,6 +579,10 @@ def notify(message: str, is_error: bool = False):
     notifier.send(message)
 
 
+from app import notify as _notify_bridge  # noqa: E402
+_notify_bridge.register(notify)
+
+
 def _get_actual_close_price(client, figi: str, instrument_uid: str, opened_at: str,
                             direction: str = "") -> Optional[float]:
     """
@@ -3088,6 +3092,7 @@ def main():
                 if state.trades_today >= int(get_setting("max_trades_per_day", "15")):
                     state.status = "SESSION_STOPPED_BY_LIMIT"
                     state.sync_runtime()
+                    sync_portfolio_positions(client)  # лимит запрещает входы, но учёт позиций/закрытий должен идти
                     time.sleep(60)
                     continue
 
@@ -3107,6 +3112,7 @@ def main():
                 if state.daily_pnl <= -max_loss:
                     state.status = "SESSION_STOPPED_BY_LIMIT"
                     state.sync_runtime()
+                    sync_portfolio_positions(client)  # см. выше: входы запрещены, учёт — нет
                     time.sleep(60)
                     continue
 
