@@ -31,6 +31,8 @@ from app.db import (
     list_instruments,
     add_instrument,
     get_open_positions,
+    get_unified_open_positions,
+    effective_max_open_positions,
     clear_open_positions,
     get_instrument_market_state,
     get_instrument_market_state_map,
@@ -1315,7 +1317,7 @@ def api_dashboard_bot_explain():
     else:
         enabled_instruments_count = 0
 
-    open_positions = get_open_positions(source="BOT")
+    open_positions = get_unified_open_positions()  # брокер важнее учёта бота, без дублей по figi
 
     # trade_only_session теперь на уровне профиля
     trade_only_session = "0"
@@ -1341,7 +1343,7 @@ def api_dashboard_bot_explain():
         if not _session_open:
             reasons.append("Спящий режим — биржа закрыта (торговля только в сессию)")
 
-    max_pos = int(str(settings_map.get("max_open_positions", "2")))
+    max_pos = effective_max_open_positions(active_profile_id)  # = число активных стратегий в параллельном режиме
     cur_pos = len(open_positions)
     if cur_pos >= max_pos:
         reasons.append(f"Достигнут лимит открытых позиций ({cur_pos}/{max_pos})")
@@ -1973,15 +1975,17 @@ def api_parallel_status():
     coord_raw = get_runtime("parallel_coord") or ""
     try:
         coord = json.loads(coord_raw)
-        # Автоочистка устаревшего координатора: если фиги больше нет в открытых позициях
-        if coord.get("owner_figi") and coord["owner_figi"] not in open_pos:
-            coord = {}
+        # Автоочистка устаревшего координатора: владельцы, чьей позиции уже нет у брокера/в учёте
+        owners = {sid: f for sid, f in (coord.get("owners") or {}).items() if f in open_pos}
+        coord = {"owners": owners, "owner_strategy_id": next(iter(owners), None),
+                 "owner_figi": next(iter(owners.values()), None)} if owners else {}
     except Exception:
         coord = {}
 
-    _max_pos = int(get_profile_setting(pid, "max_open_positions", "3") or 3)
+    _max_pos = effective_max_open_positions(pid)
     return {"threads": result, "coord": coord, "instruments": all_instrs,
-            "max_open_positions": _max_pos}
+            "max_open_positions": _max_pos, "open_positions": len(open_pos),
+            "active_strategies": len(parallel_strats)}
 
 
 @app.post("/api/profile/{profile_id}/parallel-toggle")

@@ -1714,6 +1714,45 @@ def get_profile_setting(profile_id: int, key: str, default: str = "") -> str:
         return row["value"] if row else default
 
 
+def effective_max_open_positions(profile_id: int | None = None) -> int:
+    """Единственный источник лимита одновременных позиций и делителя банка.
+
+    Параллельный режим: число активных стратегий профиля (с хотя бы одним включённым
+    инструментом) — банк делится на них поровну, и на каждую приходится по позиции.
+    Иначе — настройка профиля max_open_positions (по умолчанию 3).
+    """
+    try:
+        if profile_id is None:
+            pid_str = (get_setting("active_profile_id", "") or "").strip()
+            profile_id = int(pid_str) if pid_str else None
+        if profile_id is None:
+            return 3
+        if get_profile_setting(profile_id, "parallel_trading_enabled", "0") == "1":
+            with db_cursor() as cur:
+                cur.execute("""
+                SELECT COUNT(*) FROM profile_parallel_strategies pps
+                WHERE pps.profile_id = ? AND EXISTS (
+                    SELECT 1 FROM strategy_instruments si
+                    WHERE si.strategy_id = pps.strategy_id AND si.enabled = 1)
+                """, (profile_id,))
+                n = int(cur.fetchone()[0] or 0)
+            if n > 0:
+                return n
+        return max(1, int(get_profile_setting(profile_id, "max_open_positions", "3") or 3))
+    except Exception:
+        return 3
+
+
+def get_unified_open_positions() -> list:
+    """Открытые позиции по figi без дублей: брокер (PORTFOLIO) важнее учёта бота (BOT).
+    Единый список для карточек, лимитов и пояснений дашборда."""
+    merged: dict = {}
+    for src in ("BOT", "PORTFOLIO"):
+        for p in get_open_positions(source=src):
+            merged[p["figi"]] = p
+    return list(merged.values())
+
+
 def list_profile_parallel_strategies(profile_id: int) -> list:
     """Стратегии, назначенные в список параллельного выполнения профиля, с полной информацией."""
     with db_cursor() as cur:

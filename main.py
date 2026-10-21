@@ -145,6 +145,18 @@ class _ParallelCoord:
             self._persist()
             return True
 
+    def adopt(self, sid: int, figi: str) -> bool:
+        """Принять уже существующую (восстановленную из БД) позицию без проверки лимита.
+        False — позицию по этому figi уже ведёт другая стратегия (одну позицию нельзя считать дважды)."""
+        with self._lock:
+            if sid in self._owners:
+                return self._owners[sid] == figi
+            if figi in self._owners.values():
+                return False
+            self._owners[sid] = figi
+            self._persist()
+            return True
+
     def release(self, sid: int) -> bool:
         with self._lock:
             if sid in self._owners:
@@ -1035,18 +1047,12 @@ MSK_TZ = timezone(timedelta(hours=3))
 
 def get_max_open_positions() -> int:
     """
-    Макс. число одновременно открытых позиций — из настроек активного профиля
-    (по умолчанию 3). Капитал делится на это число: каждая позиция получает
-    равную долю портфеля.
+    Макс. число одновременных позиций и делитель банка. В параллельном режиме равно числу
+    активных стратегий профиля (см. app.db.effective_max_open_positions): банк делится на них
+    поровну, на каждую стратегию — по позиции.
     """
-    try:
-        _pid = get_setting("active_profile_id", "").strip()
-        if _pid:
-            from app.db import get_profile_setting as _gps
-            return max(1, int(_gps(int(_pid), "max_open_positions", "3") or 3))
-    except Exception:
-        pass
-    return 3
+    from app.db import effective_max_open_positions
+    return effective_max_open_positions()
 
 
 def is_moex_session_open() -> bool:
@@ -2701,7 +2707,8 @@ def _parallel_strategy_worker(strategy_id: int, strat_name: str, stop_ev: thread
     try:
         _instr_figis = {i["figi"] for i in _parallel_instruments(strategy_id)}
         for _bp in get_open_positions(source="BOT"):
-            if _bp["figi"] in _instr_figis:
+            # Одна позиция — одна стратегия: если figi есть в нескольких стратегиях, берёт первая успевшая
+            if _bp["figi"] in _instr_figis and not positions and _parallel_coord.adopt(strategy_id, _bp["figi"]):
                 _tk = _bp["ticker"]
                 positions[_tk] = {
                     "figi":       _bp["figi"],
@@ -2711,9 +2718,6 @@ def _parallel_strategy_worker(strategy_id: int, strat_name: str, stop_ev: thread
                     "opened_at":  _bp.get("opened_at", ""),
                     "trailing_stop": 0.0,
                 }
-                # Восстанавливаем координатор если он был свободен
-                if _parallel_coord.is_free:
-                    _parallel_coord.try_claim(strategy_id, _bp["figi"], _tk)
                 log.info("Parallel [%s] восстановлена позиция %s из БД", strat_name, _tk)
     except Exception as _e:
         log.warning("Parallel [%s] ошибка восстановления позиций: %s", strat_name, _e)
@@ -2743,7 +2747,7 @@ def _parallel_strategy_worker(strategy_id: int, strat_name: str, stop_ev: thread
                 for _bp in _db_open_pos:
                     if _bp["figi"] in _instr_figi_set and _bp["figi"] not in {
                         v.get("figi") for v in positions.values()
-                    }:
+                    } and _parallel_coord.adopt(strategy_id, _bp["figi"]):
                         _tk2 = _bp["ticker"]
                         positions[_tk2] = {
                             "figi":         _bp["figi"],
@@ -2754,8 +2758,6 @@ def _parallel_strategy_worker(strategy_id: int, strat_name: str, stop_ev: thread
                             "trailing_stop": 0.0,
                             "ml_feature_id": _bp.get("ml_feature_id", 0),
                         }
-                        if _parallel_coord.is_free:
-                            _parallel_coord.try_claim(strategy_id, _bp["figi"], _tk2)
                         log.info("Parallel [%s] resync: восстановлена позиция %s из БД", strat_name, _tk2)
 
             # Если нет открытых позиций и координатор занят — обновляем сигналы/цены,

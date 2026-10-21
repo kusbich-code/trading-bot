@@ -1032,7 +1032,7 @@ async function renderSettingsTab() {
         <label>Макс. открытых позиций
           <input class="field" type="number" min="1" max="12" name="max_open_positions"
                  value="${esc(profSettings.max_open_positions || "3")}">
-          <span class="note" style="font-size:11px">Капитал делится поровну: при 3 и балансе 60к → 3 позиции по 20к</span>
+          <span class="note" style="font-size:11px">Используется без параллельного режима. В параллельном режиме лимит = число активных стратегий, банк делится на них поровну (12 стратегий и 120к → до 12 позиций по 10к)</span>
         </label>
         <div class="row-buttons">
           <button type="button" class="btn btn-primary" id="btnSaveProfileSettings">Сохранить</button>
