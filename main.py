@@ -66,6 +66,7 @@ from app.db import (
     get_profile_setting,
     get_open_positions,
     get_max_trades_per_day,
+    get_max_daily_loss_rub,
     get_instrument_market_state_map,
     save_instrument_uid,
     fix_ticker_by_figi,
@@ -2312,7 +2313,7 @@ def process_instrument(client, item,
         if state.trades_today >= get_max_trades_per_day():
             _save_signal(skip_reason="Достигнут лимит сделок за день", skip_filter="max_trades_per_day")
             return
-        if state.daily_pnl <= -Decimal(str(get_setting("max_daily_loss_rub", "200"))):
+        if state.daily_pnl <= -get_max_daily_loss_rub():
             _save_signal(skip_reason="Достигнут дневной лимит убытка", skip_filter="max_daily_loss")
             return
     except Exception as _dle:
@@ -3111,7 +3112,7 @@ def main():
                     time.sleep(min(_sl_secs, 600))
                     continue
 
-                max_loss = Decimal(get_setting("max_daily_loss_rub", "200"))
+                max_loss = get_max_daily_loss_rub()
                 if state.daily_pnl <= -max_loss:
                     state.status = "SESSION_STOPPED_BY_LIMIT"
                     state.sync_runtime()

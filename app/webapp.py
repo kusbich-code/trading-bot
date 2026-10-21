@@ -33,6 +33,7 @@ from app.db import (
     get_open_positions,
     get_unified_open_positions,
     get_max_trades_per_day,
+    get_max_daily_loss_rub,
     effective_max_open_positions,
     clear_open_positions,
     get_instrument_market_state,
@@ -1350,9 +1351,16 @@ def api_dashboard_bot_explain():
         reasons.append(f"Достигнут лимит открытых позиций ({cur_pos}/{max_pos})")
 
     max_trades = get_max_trades_per_day()
-    trades_today_cnt = int(str(settings_map.get("trades_today", "0")))
+    trades_today_cnt = int(str(get_runtime("trades_today") or "0"))  # счётчики живут в runtime_state, не в bot_settings
     if trades_today_cnt >= max_trades:
         reasons.append(f"Достигнут лимит сделок за день ({trades_today_cnt}/{max_trades})")
+    try:
+        _loss_lim = get_max_daily_loss_rub()
+        _daily_pnl = Decimal(str(get_runtime("daily_pnl") or "0"))
+        if _daily_pnl <= -_loss_lim:
+            reasons.append(f"Достигнут дневной лимит убытка ({float(_daily_pnl):.2f} ₽ при лимите −{float(_loss_lim):.0f} ₽)")
+    except Exception:
+        pass
 
     # Параллельный координатор — показываем если заблокирован реальной позицией
     if parallel_on:
@@ -1413,6 +1421,7 @@ def api_dashboard_settings(profile_id: Optional[int] = None):
                 "trade_only_session": ps("trade_only_session", "1"),
                 "max_open_positions": ps("max_open_positions", "3"),
                 "max_trades_per_day": ps("max_trades_per_day", str(get_max_trades_per_day())),
+                "max_daily_loss_rub": ps("max_daily_loss_rub", str(get_max_daily_loss_rub())),
             },
         },
         "view_strategy": {
@@ -2380,6 +2389,7 @@ def api_profiles_save_settings(
     trade_only_session: str = Form("1"),
     max_open_positions: str = Form("3"),
     max_trades_per_day: str = Form(""),
+    max_daily_loss_rub: str = Form(""),
 ):
     use_sandbox = "true" if runtime_mode == "sandbox" else "false"
     try:
@@ -2392,6 +2402,14 @@ def api_profiles_save_settings(
             extra["max_trades_per_day"] = str(max(1, min(1000, int(max_trades_per_day))))
         except ValueError:
             raise HTTPException(status_code=400, detail="Макс. сделок в день должно быть целым числом")
+    if str(max_daily_loss_rub).strip():
+        try:
+            _loss = float(str(max_daily_loss_rub).replace(",", "."))
+            if _loss <= 0:
+                raise ValueError
+            extra["max_daily_loss_rub"] = f"{_loss:.2f}"
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Дневной лимит убытка должен быть положительным числом")
     update_profile_settings(profile_id, {**extra,
         "bot_enabled": bool01(bot_enabled),
         "telegram_errors_only": bool01(telegram_errors_only),

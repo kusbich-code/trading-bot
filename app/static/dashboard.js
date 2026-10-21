@@ -1039,6 +1039,11 @@ async function renderSettingsTab() {
                  value="${esc(profSettings.max_trades_per_day || "200")}">
           <span class="note" style="font-size:11px">Общий лимит на все стратегии: после него новые входы блокируются до следующего дня (МСК). Считаются закрытые сделки (полный цикл вход+выход)</span>
         </label>
+        <label>Дневной лимит убытка, ₽
+          <input class="field" type="number" min="1" step="1" name="max_daily_loss_rub"
+                 value="${esc(Math.round(Number(profSettings.max_daily_loss_rub || 500)))}">
+          <span class="note" style="font-size:11px">Если убыток за день (по всем стратегиям) достиг этой суммы, новые входы блокируются до следующего дня (МСК); открытые позиции продолжают сопровождаться стопами</span>
+        </label>
         <div class="row-buttons">
           <button type="button" class="btn btn-primary" id="btnSaveProfileSettings">Сохранить</button>
         </div>

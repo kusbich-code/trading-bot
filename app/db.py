@@ -10,7 +10,7 @@ def _now_msk() -> str:
     return datetime.now(tz=_MSK).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
 
 
-PROFILE_SETTING_KEYS = {"bot_enabled", "telegram_errors_only", "auto_reload_settings", "tinvestusesandbox", "parallel_trading_enabled", "trade_only_session", "max_open_positions", "max_trades_per_day"}
+PROFILE_SETTING_KEYS = {"bot_enabled", "telegram_errors_only", "auto_reload_settings", "tinvestusesandbox", "parallel_trading_enabled", "trade_only_session", "max_open_positions", "max_trades_per_day", "max_daily_loss_rub"}
 
 STRATEGY_SETTING_KEYS = {
     "max_trades_per_day", "max_daily_loss_rub", "max_open_positions", "check_interval_sec",
@@ -1756,6 +1756,21 @@ def get_max_trades_per_day() -> int:
         return max(1, int(get_setting("max_trades_per_day", "15") or 15))
     except Exception:
         return 15
+
+
+def get_max_daily_loss_rub():
+    """Дневной лимит убытка (₽, Decimal): при достижении новые входы блокируются до следующего дня.
+    Источник — настройка активного профиля, запасной — bot_settings (как у get_max_trades_per_day)."""
+    from decimal import Decimal
+    try:
+        pid_str = (get_setting("active_profile_id", "") or "").strip()
+        if pid_str:
+            v = get_profile_setting(int(pid_str), "max_daily_loss_rub", "")
+            if str(v).strip():
+                return Decimal(str(v))
+        return Decimal(str(get_setting("max_daily_loss_rub", "200") or "200"))
+    except Exception:
+        return Decimal("200")
 
 
 def get_unified_open_positions() -> list:
