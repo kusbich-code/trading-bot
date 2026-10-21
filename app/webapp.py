@@ -1362,19 +1362,8 @@ def api_dashboard_bot_explain():
     except Exception:
         pass
 
-    # Параллельный координатор — показываем если заблокирован реальной позицией
-    if parallel_on:
-        coord_raw = get_runtime("parallel_coord") or ""
-        try:
-            coord = json.loads(coord_raw)
-            owner_figi = coord.get("owner_figi")
-            owner_ticker = coord.get("owner_ticker", "?")
-            if owner_figi:
-                pos_map = {p["figi"]: p for p in open_positions}
-                if owner_figi in pos_map:
-                    reasons.append(f"Координатор занят позицией {owner_ticker} — открытие новых заблокировано")
-        except Exception:
-            pass
+    # Прежняя причина «координатор занят позицией X» удалена: координатор давно допускает по позиции на
+    # каждую стратегию, а реальное исчерпание слотов уже показано выше («Достигнут лимит открытых позиций»).
 
     return {"ok": True, "reasons": reasons}
 
