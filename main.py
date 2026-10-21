@@ -140,6 +140,8 @@ class _ParallelCoord:
         with self._lock:
             if sid in self._owners:
                 return False  # этот поток уже держит позицию
+            if figi in self._owners.values():
+                return False  # по инструменту уже есть позиция другой стратегии: брокер ведёт одну нетто-позицию на бумагу
             max_pos = get_max_open_positions()
             if len(self._owners) >= max_pos:
                 return False  # достигнут лимит позиций
@@ -310,6 +312,7 @@ def _orders_stream_worker():
 # читается process_instrument() в основном потоке.
 _md: Dict[str, dict] = {}
 _md_lock = Lock()
+MD_STALE_SEC = 45.0  # цена/стакан из стрима старше этого считаются устаревшими → берём REST
 
 # Инструменты недоступные в текущей среде (sandbox NOT_FOUND) — пропускаем до рестарта
 _unavailable_figis: Set[str] = set()
@@ -451,7 +454,9 @@ def _market_data_stream_worker():
                         price = quotation_to_decimal(getattr(lp, "price", None))
                         if figi and price > 0:
                             with _md_lock:
-                                _md.setdefault(figi, {})["price"] = Decimal(str(price))
+                                _d = _md.setdefault(figi, {})
+                                _d["price"] = Decimal(str(price))
+                                _d["price_ts"] = time.monotonic()  # для проверки свежести
 
                     ob = getattr(resp, "orderbook", None)
                     if ob:
@@ -465,11 +470,13 @@ def _market_data_stream_worker():
                         mid = (bp + ap) / 2
                         spread = (ap - bp) / mid if mid > 0 else Decimal("0")
                         with _md_lock:
-                            _md.setdefault(figi, {})["orderbook"] = {
+                            _d = _md.setdefault(figi, {})
+                            _d["orderbook"] = {
                                 "bid_price": bp, "ask_price": ap,
                                 "bid_vol": bid_vol, "ask_vol": ask_vol,
                                 "spread_pct": spread,
                             }
+                            _d["ob_ts"] = time.monotonic()
 
                     if stop_ev.is_set():
                         break
@@ -852,6 +859,45 @@ def _ml_indicators(ticker: str, ind=None) -> dict:
             for k in ("rsi", "macd", "macd_signal", "bb_upper", "bb_lower")}
 
 
+_stops_check_ts = 0.0
+STOPS_CHECK_INTERVAL_SEC = 60
+
+
+def _ensure_native_stops(client):
+    """Сторож защиты: у каждой открытой позиции бота должны быть биржевые SL/TP.
+    Стопы пропадают при ручных действиях в интерфейсе, сбоях выставления и закрытиях «в ноль»;
+    раз в минуту возвращаем недостающие (позиции моложе 90 с пропускаем — стопы ещё ставятся)."""
+    global _stops_check_ts
+    now_ts = time.time()
+    if now_ts - _stops_check_ts < STOPS_CHECK_INTERVAL_SEC:
+        return
+    _stops_check_ts = now_ts
+    try:
+        resp = client.stop_orders.get_stop_orders(account_id=settings.TINVEST_ACCOUNT_ID)
+        covered = {getattr(s, "figi", "") for s in getattr(resp, "stop_orders", []) or []}
+        for bp in get_open_positions(source="BOT"):
+            if bp["figi"] in covered or bp["figi"] in _closing_in_progress:
+                continue
+            try:
+                age = (_now() - datetime.strptime(bp.get("opened_at", ""), "%Y-%m-%d %H:%M:%S")).total_seconds()
+                if age < 90:
+                    continue
+            except Exception:
+                pass
+            meta = state.instrument_meta.get(bp["ticker"], {})
+            sl_tp = get_instrument_sl_tp(bp["figi"])
+            sl = max(Decimal(str(sl_tp["sl_pct"])), MIN_STOP_LOSS_PCT)
+            ids = _place_native_stops(
+                client, bp["ticker"], bp["figi"], meta.get("instrument_uid", "") or "",
+                "BUY" if str(bp["direction"]).upper() == "BUY" else "SELL",
+                int(bp["qty"]), Decimal(str(bp["entry_price"])), sl, Decimal(str(sl_tp["tp_pct"])))
+            if ids.get("sl_id") or ids.get("tp_id"):
+                log_event("STOP_ORDER", f"{bp['ticker']}: сторож вернул биржевые стопы {ids}",
+                          ticker=bp["ticker"], level="WARNING")
+    except Exception as e:
+        log.warning("_ensure_native_stops: %s", e)
+
+
 _mismatch_last_alert: Dict[str, float] = {}
 MISMATCH_ALERT_INTERVAL_SEC = 1800
 
@@ -979,6 +1025,7 @@ def sync_portfolio_positions(client):
                 _handle_manual_close(bp, market_map, client=client)
 
         _reconcile_bot_vs_broker(broker_signed)
+        _ensure_native_stops(client)
 
     except Exception as e:
         log.warning(f"sync_portfolio_positions error: {e}")
@@ -1906,15 +1953,22 @@ def process_instrument(client, item,
         with _md_lock:
             stream_md = _md.get(figi, {})
         stream_price = stream_md.get("price")
-        price = stream_price if (stream_price and stream_price > 0) else get_last_price(client, figi, instrument_uid=instrument_uid)
+        # Стрим мог оборваться («Stream removed»): без проверки возраста SL/TP и входы шли бы по устаревшей цене
+        _price_fresh = (time.monotonic() - stream_md.get("price_ts", 0.0)) <= MD_STALE_SEC
+        price = stream_price if (stream_price and stream_price > 0 and _price_fresh) else get_last_price(client, figi, instrument_uid=instrument_uid)
 
         # ── Свечи: 50 баров достаточно для всех режимов strategy_engine ──────
         candle_n = 50
         candles = get_candles(client, figi, n=candle_n, instrument_uid=instrument_uid)
+        # Сигнал считаем по ЗАВЕРШЁННЫМ свечам: формирующаяся перерисовывается внутри минуты (ложные пробои,
+        # заниженный объём), а бэктест всегда шёл по закрытым барам. Цена входа/выхода остаётся живой.
+        candles = [c for c in candles if getattr(c, "is_complete", True)]
         last_volume = get_last_candle_volume(candles)
 
         # ── Стакан: стрим depth=10 → REST depth=1 резервный вариант ─────────
         ob_stream = stream_md.get("orderbook", {})
+        if ob_stream and (time.monotonic() - stream_md.get("ob_ts", 0.0)) > MD_STALE_SEC:
+            ob_stream = {}  # стакан устарел — берём REST
         if ob_stream:
             spread_pct = ob_stream["spread_pct"]
             bid_vol: int = ob_stream["bid_vol"]
@@ -2043,6 +2097,10 @@ def process_instrument(client, item,
 
     if ticker in positions:
         pos = positions[ticker]
+        if pos.get("stop_loss_pct"):
+            stop_loss_pct = Decimal(str(pos["stop_loss_pct"]))
+        if pos.get("take_profit_pct"):
+            take_profit_pct = Decimal(str(pos["take_profit_pct"]))
         entry_price = Decimal(str(pos["entry_price"]))
         direction = pos["direction"]
         qty = int(pos["qty"])
@@ -2505,6 +2563,10 @@ def process_instrument(client, item,
             "trailing_stop": _ep * (1 - float(stop_loss_pct)),
             "native_stop_ids": _stop_ids,
             "signal_score": score,
+            # SL/TP, с которыми реально открыта позиция (после ML-адаптации): программные выходы
+            # должны совпадать с биржевыми стопами, а не пересчитываться от текущих настроек
+            "stop_loss_pct": float(stop_loss_pct),
+            "take_profit_pct": float(take_profit_pct),
         }
 
         upsert_position({
@@ -2610,6 +2672,10 @@ def process_instrument(client, item,
             "trailing_stop": _ep * (1 + float(stop_loss_pct)),
             "native_stop_ids": _stop_ids,
             "signal_score": score,
+            # SL/TP, с которыми реально открыта позиция (после ML-адаптации): программные выходы
+            # должны совпадать с биржевыми стопами, а не пересчитываться от текущих настроек
+            "stop_loss_pct": float(stop_loss_pct),
+            "take_profit_pct": float(take_profit_pct),
         }
 
         upsert_position({
