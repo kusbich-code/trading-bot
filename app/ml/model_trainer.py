@@ -140,7 +140,8 @@ def train_universal_model() -> Optional[Dict]:
     try:
         from app.db import db_cursor
         with db_cursor() as cur:
-            _archive_active_models(cur, "UNIVERSAL", 0)  # старые → archived
+            if is_ready:  # слабое переобучение не должно отключать рабочую модель
+                _archive_active_models(cur, "UNIVERSAL", 0)  # старые → archived
             cur.execute("""
                 INSERT INTO ml_models(figi, ticker, strategy_id, trained_at,
                     model_data, feature_importance, accuracy, precision_,
@@ -274,7 +275,8 @@ def train_model(figi: str, ticker: str, strategy_id: int) -> Optional[Dict]:
     try:
         from app.db import db_cursor
         with db_cursor() as cur:
-            _archive_active_models(cur, figi, strategy_id)  # старые → archived
+            if is_ready:  # слабое переобучение не должно отключать рабочую модель
+                _archive_active_models(cur, figi, strategy_id)  # старые → archived
             cur.execute("""
                 INSERT INTO ml_models(figi, ticker, strategy_id, trained_at,
                     model_data, feature_importance, accuracy, precision_,
@@ -324,10 +326,10 @@ def is_model_active(figi: str, strategy_id: int) -> bool:
     try:
         from app.db import db_cursor
         with db_cursor() as cur:
-            cur.execute("SELECT status FROM ml_models WHERE figi=? AND strategy_id=? ORDER BY id DESC LIMIT 1",
+            # Любая активная модель (более свежая «learning» её не отменяет)
+            cur.execute("SELECT 1 FROM ml_models WHERE figi=? AND strategy_id=? AND status='active' LIMIT 1",
                         (figi, strategy_id))
-            row = cur.fetchone()
-            return row and row[0] == "active"
+            return cur.fetchone() is not None
     except Exception:
         return False
 

@@ -479,23 +479,6 @@ def _market_data_stream_worker():
             time.sleep(5)
 
 
-def get_ma_signal(candles, short_period: int = 20, long_period: int = 100):
-    """Пересечение двух скользящих средних. Возвращает 'BUY', 'SELL' или None."""
-    if len(candles) < long_period + 1:
-        return None
-    closes = [float(quotation_to_decimal(c.close)) for c in candles]
-    def _ma(data, n): return sum(data[-n:]) / n
-    short_now  = _ma(closes,       short_period)
-    long_now   = _ma(closes,       long_period)
-    short_prev = _ma(closes[:-1],  short_period)
-    long_prev  = _ma(closes[:-1],  long_period)
-    if short_prev <= long_prev and short_now > long_now:
-        return "BUY"
-    if short_prev >= long_prev and short_now < long_now:
-        return "SELL"
-    return None
-
-
 def quotation_from_decimal(price: Decimal) -> Quotation:
     normalized = price.quantize(Decimal("0.000000001"))
     units = int(normalized)
@@ -1010,21 +993,6 @@ def get_candles(client, figi: str, n=20, instrument_uid: str = ""):
         interval=CandleInterval.CANDLE_INTERVAL_1_MIN,
     )
     return resp.candles
-
-
-def calc_support_resistance(candles):
-    highs = [quotation_to_decimal(c.high) for c in candles]
-    lows = [quotation_to_decimal(c.low) for c in candles]
-    return min(lows), max(highs)
-
-
-def get_signal(price: Decimal, support: Decimal, resistance: Decimal):
-    proximity = Decimal("0.0015")
-    if support > 0 and abs(price - support) / support < proximity:
-        return "BUY"
-    if resistance > 0 and abs(price - resistance) / resistance < proximity:
-        return "SELL"
-    return None
 
 
 def get_trading_status(client, instrument_id: str):
@@ -1678,21 +1646,6 @@ def _place_native_stops(client, ticker: str, figi: str, instrument_uid: str,
     return ids
 
 
-def _cancel_native_stops(client, ticker: str, stop_ids: dict):
-    """Отменяет нативные стоп-ордера при ручном закрытии позиции."""
-    for key, sid in stop_ids.items():
-        if not sid:
-            continue
-        try:
-            client.stop_orders.cancel_stop_order(
-                account_id=settings.TINVEST_ACCOUNT_ID,
-                stop_order_id=sid,
-            )
-            log_event("STOP_ORDER", f"{ticker} cancel {key} id={sid}", ticker=ticker)
-        except Exception as e:
-            log.warning("Не удалось отменить стоп-ордер %s=%s: %s", key, sid, e)
-
-
 def _cancel_all_orders_for_figi(client, figi: str, ticker: str = ""):
     """Отменяет ВСЕ активные ордера (обычные + стоп) для данного figi.
     Вызывается после закрытия позиции чтобы освободить заблокированные средства.
@@ -2210,9 +2163,27 @@ def process_instrument(client, item,
                 close_dir = OrderDirection.ORDER_DIRECTION_SELL if direction == "BUY" else OrderDirection.ORDER_DIRECTION_BUY
                 # Отменяем ВСЕ ордера по figi перед закрытием (нативные стопы + лимитники)
                 _cancel_all_orders_for_figi(client, figi, ticker)
-                order_result = place_order_checked(client, ticker, figi, qty, price, close_dir, market=True)
+                try:
+                    order_result = place_order_checked(client, ticker, figi, qty, price, close_dir, market=True)
+                except Exception:
+                    order_result = None
+                    _close_failed_exc = True
+                else:
+                    _close_failed_exc = False
                 if not order_result:
                     state.order_cooldowns[figi] = _now()
+                    # Биржевые SL/TP сняты ДО отправки рыночного ордера: при сбое ордера позиция осталась бы
+                    # без защиты до следующего цикла — возвращаем стопы.
+                    try:
+                        pos["native_stop_ids"] = _place_native_stops(
+                            client, ticker, figi, instrument_uid, direction, qty,
+                            entry_price, stop_loss_pct, take_profit_pct)
+                        log_event("STOP_ORDER", f"{ticker}: стопы восстановлены после неудачного закрытия",
+                                  ticker=ticker, level="WARNING")
+                    except Exception as _rse:
+                        log.warning("%s: не удалось восстановить стопы после сбоя закрытия: %s", ticker, _rse)
+                    if _close_failed_exc:
+                        raise
                     return
             finally:
                 _closing_in_progress.discard(figi)
@@ -2365,6 +2336,7 @@ def process_instrument(client, item,
 
     # ── ML фильтр входа (Фаза 2: soft/hard mode) ─────────────────────────────
     _ml_features_for_entry = None
+    _ml_conf = None
     if sig in ("BUY", "SELL"):
         try:
             from app.ml.feature_builder import build_features as _bf_e, store_features as _sf_e
@@ -2424,7 +2396,7 @@ def process_instrument(client, item,
             # ML confidence-based scaling: только когда модель уверена выше порога входа.
             # Если P < ENTRY_THRESHOLD — мета-стратегия уже переопределила ML (score+trend),
             # поэтому скейлинг не применяем — используем полный auto_lots.
-            if _ml_features_for_entry and '_ml_conf' in dir() and _ml_conf is not None:
+            if _ml_features_for_entry and _ml_conf is not None:
                 try:
                     from app.ml.model_predictor import compute_lot_scale as _cls, ENTRY_THRESHOLD as _ET
                     if float(_ml_conf) >= _ET:

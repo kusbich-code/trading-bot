@@ -55,6 +55,8 @@ class Settings:
 
     TIMEZONE = os.getenv("TIMEZONE", "Europe/Moscow")
 
+    # Авторизация самого дашборда (в дополнение к nginx): включается DASHBOARD_BASIC_AUTH_ENABLED=1 и своим паролем
+    DASHBOARD_BASIC_AUTH_ENABLED = os.getenv("DASHBOARD_BASIC_AUTH_ENABLED", "0") == "1"
     DASHBOARD_BASIC_AUTH_USER = os.getenv("DASHBOARD_BASIC_AUTH_USER", "botadmin")
     DASHBOARD_BASIC_AUTH_PASSWORD = os.getenv("DASHBOARD_BASIC_AUTH_PASSWORD", "change_me")
 

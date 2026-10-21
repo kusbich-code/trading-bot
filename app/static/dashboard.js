@@ -14,7 +14,8 @@ let viewedProfileId = null;
 const ALLOWED_TABS = new Set(["главное", "портфель", "настройки", "история", "бэктест", "аналитик", "обучение", "справка"]);
 
 function esc(v) {
-  return String(v ?? "");
+  // Экранирование для подстановки в HTML/атрибуты: названия бумаг, новости и тексты ошибок приходят извне
+  return String(v ?? "").replace(/[&<>"']/g, ch => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[ch]));
 }
 
 function yesnoValue(v) {

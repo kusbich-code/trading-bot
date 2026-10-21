@@ -110,6 +110,30 @@ from app.telegram_health import send_telegram, health_snapshot
 
 app = FastAPI(title=f"Trading Bot Dashboard v{BOT_VERSION}")
 
+
+# ── Необязательная Basic-авторизация (если порт дашборда доступен в обход nginx) ──────────────────
+if settings.DASHBOARD_BASIC_AUTH_ENABLED and settings.DASHBOARD_BASIC_AUTH_PASSWORD not in ("", "change_me"):
+    import base64 as _b64
+    import hmac as _hmac
+
+    @app.middleware("http")
+    async def _basic_auth(request, call_next):
+        if request.url.path == "/api/health":
+            return await call_next(request)
+        header = request.headers.get("authorization", "")
+        ok = False
+        if header.lower().startswith("basic "):
+            try:
+                user, _, pwd = _b64.b64decode(header[6:]).decode("utf-8").partition(":")
+                ok = (_hmac.compare_digest(user, settings.DASHBOARD_BASIC_AUTH_USER)
+                      and _hmac.compare_digest(pwd, settings.DASHBOARD_BASIC_AUTH_PASSWORD))
+            except Exception:
+                ok = False
+        if not ok:
+            from fastapi.responses import Response as _Resp
+            return _Resp("Unauthorized", status_code=401, headers={"WWW-Authenticate": 'Basic realm="trading-bot"'})
+        return await call_next(request)
+
 if os.path.isdir("app/static"):
     app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
@@ -684,7 +708,7 @@ def api_news_ticker(figi: str = "", hours: int = 4):
     _now_msk = datetime.now(_msk)
     session_start = _now_msk.replace(hour=10, minute=0, second=0, microsecond=0)
     if _now_msk.hour < 10:
-        session_start = session_start.replace(day=_now_msk.day - 1)
+        session_start = session_start - timedelta(days=1)  # replace(day=day-1) падало 1-го числа месяца
 
     # Граница по времени: берём max охват — либо N часов, либо начало сессии
     cutoff_hours = datetime.now(timezone.utc) - timedelta(hours=hours)
