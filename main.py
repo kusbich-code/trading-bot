@@ -1003,6 +1003,22 @@ def _reconcile_bot_vs_broker(broker_signed: Dict[str, int]):
         notify(f"⚠️ Рассинхрон позиции\n{msg}", is_error=True)
 
 
+def _lot_size_by_figi(figi: str, ticker: str = "") -> int:
+    """Размер лота инструмента (штук в лоте); ищем по figi во всех стратегиях, иначе 1."""
+    try:
+        from app.db import db_cursor as _dbc_lot
+        with _dbc_lot() as _c_lot:
+            _c_lot.execute(
+                "SELECT lot FROM strategy_instruments WHERE figi=? AND lot>0 LIMIT 1", (figi,)
+            )
+            _row_lot = _c_lot.fetchone()
+            if _row_lot:
+                return int(_row_lot[0])
+    except Exception:
+        pass
+    return int(state.instrument_meta.get(ticker, {}).get("lot", 1) or 1)
+
+
 def sync_portfolio_positions(client):
     """Синхронизирует позиции PORTFOLIO из API брокера в локальную БД (source=PORTFOLIO).
     Дополнительно детектирует BOT-позиции закрытые вручную и записывает их как MANUAL_CLOSE."""
@@ -1063,11 +1079,12 @@ def sync_portfolio_positions(client):
 
             # Вычисляем нереализованный PnL если брокер вернул 0 (часто в sandbox)
             if expected_yield == 0.0 and avg_price > 0 and current_price > 0:
-                lots = abs(qty)
+                # Цена за штуку, qty в лотах — переводим в штуки через размер лота
+                shares = abs(qty) * _lot_size_by_figi(figi, ticker)
                 if direction == "BUY":
-                    expected_yield = (current_price - avg_price) * lots
+                    expected_yield = (current_price - avg_price) * shares
                 else:
-                    expected_yield = (avg_price - current_price) * lots
+                    expected_yield = (avg_price - current_price) * shares
 
             upsert_position({
                 "ticker": ticker,
