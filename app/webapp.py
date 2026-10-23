@@ -293,6 +293,19 @@ def _mask_token(token: str) -> str:
     return token[:4] + "****" + token[-4:]
 
 
+def _trade_pnl_pct(t) -> float:
+    """Движение цены в пользу позиции (%) — не зависит от lot_size/qty и
+    прямо показывает достижение SL/TP. Для SELL знак инвертируется."""
+    entry = float(t.get("entry", 0) or 0)
+    exit_ = float(t.get("exit", 0) or 0)
+    if entry <= 0:
+        return 0.0
+    move = (exit_ - entry) / entry * 100
+    if str(t.get("direction", "")).upper() == "SELL":
+        move = -move
+    return round(move, 2)
+
+
 def _fmt_duration(open_time_str: str, close_time_str: str) -> str:
     if not open_time_str or not close_time_str:
         return "—"
@@ -1017,18 +1030,6 @@ def api_dashboard_main():
     except Exception:
         pass
 
-    def _trade_pnl_pct(t):
-        # Движение цены в пользу позиции (%) — не зависит от lot_size/qty и
-        # прямо показывает достижение SL/TP. Для SELL знак инвертируется.
-        entry = float(t.get("entry", 0) or 0)
-        exit_ = float(t.get("exit", 0) or 0)
-        if entry <= 0:
-            return 0.0
-        move = (exit_ - entry) / entry * 100
-        if str(t.get("direction", "")).upper() == "SELL":
-            move = -move
-        return round(move, 2)
-
     db_trades = [{
         **dict(t),
         "entry_ui":   fmt_price(t.get("entry", 0)),
@@ -1516,6 +1517,7 @@ def api_dashboard_history(days: int = 0, date_from: str = "", date_to: str = "")
             "exit_ui": fmt_money(t.get("exit", 0)),
             "commission_ui": fmt_money(t.get("commission", 0)),
             "pnl_ui": fmt_money(t.get("pnl", 0)),
+            "pnl_pct": _trade_pnl_pct(t),
             "time": t.get("time", "") or "",
             "open_time": t.get("open_time", "") or "",
             "duration_ui": _fmt_duration(t.get("open_time", "") or "", t.get("time", "") or ""),

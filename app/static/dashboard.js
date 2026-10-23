@@ -2563,9 +2563,10 @@ function _histRenderTrades(trades) {
       <td>${esc(t.entry_ui)}</td><td>${esc(t.exit_ui)}</td><td>${esc(t.qty)}</td>
       <td class="muted">${esc(t.commission_ui)}</td>
       <td style="font-weight:700;color:${col}">${pnl >= 0 ? "+" : ""}${esc(t.pnl_ui)}</td>
+      <td style="font-size:12px;color:${col};font-weight:600">${t.pnl_pct != null ? (t.pnl_pct >= 0 ? "+" : "") + t.pnl_pct.toFixed(2) + "%" : ""}</td>
       <td class="muted" style="font-size:12px">${esc(t.reason)}</td>
     </tr>`;
-  }).join("") || `<tr><td colspan="9" class="note" style="text-align:center;padding:20px">
+  }).join("") || `<tr><td colspan="12" class="note" style="text-align:center;padding:20px">
     Нет сделок за период</td></tr>`;
   content.innerHTML = `
     <div class="row" style="margin-bottom:10px">
@@ -2576,7 +2577,7 @@ function _histRenderTrades(trades) {
         <thead><tr>
           <th>Открыто</th><th>Закрыто</th><th>Длит.</th><th>Тикер</th><th>Напр.</th>
           <th>Вход</th><th>Выход</th><th>Лоты</th>
-          <th>Комиссия</th><th>PnL</th><th>Причина</th>
+          <th>Комиссия</th><th>PnL</th><th>PnL, %</th><th>Причина</th>
         </tr></thead>
         <tbody>${rows}</tbody>
       </table>
