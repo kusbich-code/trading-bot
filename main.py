@@ -2912,9 +2912,19 @@ def _parallel_strategy_worker(strategy_id: int, strat_name: str, stop_ev: thread
             _db_open_pos = get_open_positions(source="BOT")
             _db_bot_figis = {p["figi"] for p in _db_open_pos}
             if positions:
+                _db_dir_by_figi = {p["figi"]: str(p["direction"]).upper() for p in _db_open_pos}
                 for tk in list(positions.keys()):
-                    if positions[tk].get("figi", "") not in _db_bot_figis:
+                    _mem_figi = positions[tk].get("figi", "")
+                    if _mem_figi not in _db_bot_figis:
                         log.info("Parallel [%s] %s: позиция закрыта снаружи, сбрасываем", strat_name, tk)
+                        del positions[tk]
+                        _parallel_coord.release(strategy_id)
+                    elif str(positions[tk].get("direction", "")).upper() != _db_dir_by_figi.get(_mem_figi):
+                        # Запись в памяти устарела (старая позиция закрыта, по бумаге открыта новая
+                        # в другую сторону): иначе мониторинг следит за чужим направлением и
+                        # отменяет каждое закрытие. Сбрасываем — следующий цикл возьмёт позицию из БД
+                        log.warning("Parallel [%s] %s: направление в памяти (%s) не совпадает с БД (%s), пересоздаём запись",
+                                    strat_name, tk, positions[tk].get("direction"), _db_dir_by_figi.get(_mem_figi))
                         del positions[tk]
                         _parallel_coord.release(strategy_id)
             else:
