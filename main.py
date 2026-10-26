@@ -1293,7 +1293,8 @@ def _sync_legacy_positions():
             why = "позицию ведёт параллельный воркер"
         else:
             continue
-        log.warning("Основной цикл %s: запись позиции сброшена — %s", tk, why)
+        # Передача позиции воркеру — штатная очистка после рестарта; расхождение с БД — предупреждение
+        (log.info if "воркер" in why else log.warning)("Основной цикл %s: запись позиции сброшена — %s", tk, why)
         del state.open_positions[tk]
         if _parallel_coord.owner_figi(None) == f:
             _parallel_coord.release(None)
