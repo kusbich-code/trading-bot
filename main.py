@@ -773,7 +773,7 @@ def _handle_manual_close(bp: dict, market_map: dict, client=None):
     reason_labels = {
         "STOP_LOSS":    "Стоп-лосс (нативный)",
         "TAKE_PROFIT":  "Тейк-профит (нативный)",
-        "MANUAL_CLOSE": "Закрыта вручную",
+        "MANUAL_CLOSE": "Закрыта вне бота (причина не определена)",
     }
     reason_ui = reason_labels.get(reason, reason)
     pnl_sign = "+" if float(pnl) >= 0 else ""
@@ -1517,6 +1517,22 @@ def maybe_reset_daily():
             pass
 
 
+_ORDER_STATUS_BY_CODE = {0: "UNSPECIFIED", 1: "FILL", 2: "REJECTED", 3: "CANCELLED", 4: "NEW", 5: "PARTIALLYFILL"}
+
+
+def _order_status_name(raw) -> str:
+    """Имя статуса исполнения ордера. str() от enum в новых версиях Python даёт просто число
+    («1» вместо FILL), поэтому берём имя члена enum, а число расшифровываем по таблице."""
+    name = getattr(raw, "name", None)
+    if name:
+        return str(name)
+    text = str(raw)
+    try:
+        return _ORDER_STATUS_BY_CODE.get(int(text), text)
+    except ValueError:
+        return text
+
+
 def place_order_checked(client, ticker: str, figi: str, lots: int, raw_price: Decimal, direction: OrderDirection,
                         market: bool = False):
     """market=True → рыночный ордер (для закрытия позиций, гарантирует исполнение)."""
@@ -1623,7 +1639,8 @@ def place_order_checked(client, ticker: str, figi: str, lots: int, raw_price: De
                         account_id=settings.TINVEST_ACCOUNT_ID,
                         order_id=response_order_id,
                     )
-                    execution_report_status = str(getattr(order_state, "execution_report_status", "UNKNOWN"))
+                    execution_report_status = _order_status_name(
+                        getattr(order_state, "execution_report_status", "UNKNOWN"))
                     lots_executed_raw = getattr(order_state, "lots_executed", None)
                     if lots_executed_raw is not None:
                         _le = int(lots_executed_raw)
@@ -1633,6 +1650,10 @@ def place_order_checked(client, ticker: str, figi: str, lots: int, raw_price: De
                             lots_executed = _le // _lot_sz2
                         else:
                             lots_executed = _le
+                    # Полное исполнение без объёма в ответе (бывает в sandbox) — значит, исполнено всё
+                    if execution_report_status.endswith("FILL") and "PARTIALLY" not in execution_report_status \
+                            and lots_executed == 0:
+                        lots_executed = lots
                     executed_order_price = getattr(order_state, "executed_order_price", None)
                     if executed_order_price:
                         _ep = quotation_to_decimal(executed_order_price)
@@ -1669,11 +1690,28 @@ def place_order_checked(client, ticker: str, figi: str, lots: int, raw_price: De
                     )
                 except Exception:
                     pass
-                log_event("ORDER_CANCEL",
-                    f"{ticker} ордер не исполнен ({execution_report_status}) — отменён",
-                    ticker=ticker, level="WARNING")
-                _pending_orders.pop(response_order_id, None)
-                return None
+                # Ордер мог исполниться между последним опросом и отменой — смотрим состояние ещё раз,
+                # иначе у брокера останется позиция, о которой бот не знает
+                try:
+                    _os_last = client.orders.get_order_state(
+                        account_id=settings.TINVEST_ACCOUNT_ID, order_id=response_order_id)
+                    _st_last = _order_status_name(getattr(_os_last, "execution_report_status", "UNKNOWN"))
+                    _le_last = int(getattr(_os_last, "lots_executed", 0) or 0)
+                    if _le_last > 0 and int(meta.get("lot", 1)) > 1:
+                        _le_last //= int(meta.get("lot", 1))
+                    if "FILL" in _st_last:
+                        execution_report_status = _st_last
+                        lots_executed = _le_last or (lots if "PARTIALLY" not in _st_last else 0)
+                        log_event("ORDER_FILL",
+                            f"late fill: {ticker} qty={lots_executed} status={_st_last}", ticker=ticker)
+                except Exception:
+                    pass
+                if lots_executed == 0:
+                    log_event("ORDER_CANCEL",
+                        f"{ticker} ордер не исполнен ({execution_report_status}) — отменён",
+                        ticker=ticker, level="WARNING")
+                    _pending_orders.pop(response_order_id, None)
+                    return None
         finally:
             _pending_orders.pop(response_order_id, None)
 
