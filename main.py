@@ -1198,6 +1198,22 @@ def _reconcile_bot_vs_broker(broker_signed: Dict[str, int]):
         notify(f"⚠️ Рассинхрон позиции\n{msg}", is_error=True)
 
 
+_legacy_skip_logged: Set[str] = set()
+
+
+def _worker_figis() -> Set[str]:
+    """figi инструментов, которые сейчас ведут запущенные параллельные воркеры."""
+    figis: Set[str] = set()
+    sig = _last_parallel_sig
+    if _parallel_threads and sig and len(sig) >= 3 and sig[1] == "1":
+        for sid in sig[2]:
+            try:
+                figis |= {i["figi"] for i in _parallel_instruments(sid)}
+            except Exception as e:
+                log.warning("_worker_figis: стратегия %s: %s", sid, e)
+    return figis
+
+
 def _sync_legacy_positions():
     """Приводит словарь позиций основного цикла (state.open_positions) в соответствие с БД.
     Он восстанавливается из БД при старте и сам по себе не очищается: после закрытия позиции воркером
@@ -2289,8 +2305,9 @@ def process_instrument(client, item,
             "priority":          int(item.get("priority", 100)),
         }
 
-    allow_long_global = get_setting("allow_long_global", "1") == "1"
-    allow_short_global = get_setting("allow_short_global", "1") == "1"
+    # Разрешение лонгов/шортов берём из настроек стратегии (в основном режиме _cfg отдаёт общие)
+    allow_long_global = str(_cfg("allow_long_global", "1")) == "1"
+    allow_short_global = str(_cfg("allow_short_global", "1")) == "1"
 
     tradingmode           = _cfg("tradingmode", "trend")
     trailing_stop_enabled = _cfg("trailing_stop_enabled", "0") == "1"
@@ -3607,6 +3624,15 @@ def main():
 
                 watchlist = load_enabled_instruments(client)
                 _sync_legacy_positions()
+                # В параллельном режиме бумаги ведут воркеры со своими настройками стратегий; основной цикл
+                # обрабатывает только то, что воркерам не отдано (иначе одну бумагу торгуют два движка
+                # с разными режимами и порогами — GAZP входил по «Пробою» при стратегии «Тренд»)
+                _wf = _worker_figis()
+                for _skip in [i for i in watchlist if i["figi"] in _wf]:
+                    if _skip["figi"] not in _legacy_skip_logged:
+                        _legacy_skip_logged.add(_skip["figi"])
+                        log.info("Основной цикл: %s ведёт параллельный воркер — пропускаем", _skip["ticker"])
+                watchlist = [i for i in watchlist if i["figi"] not in _wf]
 
                 for item in watchlist:
                     _rate.throttle_if_needed()
