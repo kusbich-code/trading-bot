@@ -939,14 +939,14 @@ def _broker_net_lots(client, figi: str):
         return None
 
 
-def _reentry_block_reason(figi: str, ticker: str) -> Optional[str]:
+def _reentry_block_reason(figi: str, ticker: str, max_entries: int = 0) -> Optional[str]:
     """Причина, по которой бумагу пока нельзя открывать снова, или None.
-    Настройки (минуты/штуки, 0 отключает): reentry_cooldown_min — пауза после любого закрытия,
-    reentry_cooldown_stop_min — после стоп-лосса, max_entries_per_ticker_day — входов в день."""
+    Настройки (минуты, 0 отключает): reentry_cooldown_min — пауза после любого закрытия,
+    reentry_cooldown_stop_min — после стоп-лосса. max_entries — лимит входов по бумаге за день
+    из поля «Сделок/день» настроек стратегии (0 — без лимита)."""
     try:
         cd_min = int(get_setting("reentry_cooldown_min", "30") or 0)
         cd_stop_min = int(get_setting("reentry_cooldown_stop_min", "60") or 0)
-        max_entries = int(get_setting("max_entries_per_ticker_day", "3") or 0)
         if cd_min > 0 or cd_stop_min > 0:
             last = get_last_closed_trade(figi)
             if last:
@@ -960,7 +960,7 @@ def _reentry_block_reason(figi: str, ticker: str) -> Optional[str]:
             since = _now().strftime("%Y-%m-%d") + " 00:00:00"
             n = count_entries_since(figi, since)
             if n >= max_entries:
-                return f"{ticker}: достигнут лимит входов по бумаге за день ({n} из {max_entries}) — вход пропущен"
+                return f"{ticker}: достигнут лимит сделок/день стратегии ({n} из {max_entries}) — вход пропущен"
     except Exception as e:
         log.warning("_reentry_block_reason %s: %s", ticker, e)  # при сбое проверки торговлю не блокируем
     return None
@@ -2739,10 +2739,17 @@ def process_instrument(client, item,
     if sig == "HOLD":
         return
 
-    # Пауза и лимит повторных входов по бумаге: разворот сразу после закрытия и серии входов
-    # в боковике (ALRS 3 стопа за день, IRAO 5–6 сделок) съедают деньги комиссией и стопами
+    # Пауза после закрытия и лимит «Сделок/день» стратегии: разворот сразу после закрытия и серии
+    # входов в боковике (ALRS 3 стопа за день, IRAO 5–6 сделок) съедают деньги комиссией и стопами.
+    # Лимит берём только из настроек стратегии: в основном режиме _cfg отдаёт общий лимит бота
     if sig in ("BUY", "SELL"):
-        _re_block = _reentry_block_reason(figi, ticker)
+        _strat_max_trades = 0
+        if _strategy_cfg is not None:
+            try:
+                _strat_max_trades = int(_strategy_cfg.get("max_trades_per_day", 0) or 0)
+            except (TypeError, ValueError):
+                _strat_max_trades = 0
+        _re_block = _reentry_block_reason(figi, ticker, _strat_max_trades)
         if _re_block:
             _save_signal(skip_reason=_re_block, skip_filter="reentry_guard")
             return
