@@ -285,6 +285,89 @@ def _write_env(updates: dict) -> None:
         f.writelines(new_lines)
 
 
+def _strategy_settings_view(raw: dict) -> dict:
+    """Настройки стратегии для интерфейса (проценты — в виде «_ui»). Одна функция на оба экрана:
+    раньше два почти одинаковых словаря расходились (в одном не было фильтра стакана)."""
+    def ss(key, default=""):
+        return raw.get(key, default)
+
+    return {
+        "max_trades_per_day": ss("max_trades_per_day", "15"),
+        "max_daily_loss_rub": ss("max_daily_loss_rub", "200"),
+        "max_daily_loss_rub_ui": fmt_money(ss("max_daily_loss_rub", "200")),
+        "max_open_positions": ss("max_open_positions", "2"),
+        "check_interval_sec": ss("check_interval_sec", "5"),
+        "default_stop_loss_pct_ui": fmt_pct_fraction(ss("default_stop_loss_pct", "0.0025")),
+        "default_take_profit_pct_ui": fmt_pct_fraction(ss("default_take_profit_pct", "0.005")),
+        "estimated_commission_pct_ui": fmt_pct_fraction(ss("estimated_commission_pct", "0.0004")),
+        "allow_long_global": ss("allow_long_global", "1"),
+        "allow_short_global": ss("allow_short_global", "1"),
+        "trade_only_session": ss("trade_only_session", "0"),
+        "pause_after_error_sec": ss("pause_after_error_sec", "10"),
+        "tradingmode": ss("tradingmode", "trend"),
+        "errorseriespausecount": ss("errorseriespausecount", "3"),
+        "stopseriespausecount": ss("stopseriespausecount", "3"),
+        "trailing_stop_enabled": ss("trailing_stop_enabled", "0"),
+        "use_signal_service": ss("use_signal_service", "0"),
+        "use_api_confirm": ss("use_api_confirm", "0"),
+        "use_order_book_filter": ss("use_order_book_filter", "1"),
+        "min_signal_score": ss("min_signal_score", "0"),
+        "reentry_cooldown_min": ss("reentry_cooldown_min", "30"),
+        "reentry_cooldown_stop_min": ss("reentry_cooldown_stop_min", "60"),
+        "series_pause_min": ss("series_pause_min", "120"),
+    }
+
+
+def _is_sandbox_mode() -> bool:
+    """Фактический режим бота: из .env (его читает бот при старте). Переключатель в интерфейсе
+    пишет именно сюда, поэтому отдельного второго источника истины нет."""
+    return bool(settings.TINVEST_USE_SANDBOX)
+
+
+def _switch_runtime_mode(use_sandbox: bool, confirm_real: str) -> bool:
+    """Переключает бота между sandbox и боевым счётом: пишет в .env режим, токен и счёт нужного режима.
+    Возвращает True, если режим изменился (нужен перезапуск бота и дашборда).
+    Защиты: боевой режим только с подтверждением; нужны сохранённые токен и счёт этого режима;
+    при открытых позициях бота не переключаем (позиции принадлежат счёту прежнего режима)."""
+    env = _read_env()
+    cur_sandbox = str(env.get("TINVEST_USE_SANDBOX", "true")).lower() == "true"
+    if cur_sandbox == use_sandbox:
+        return False
+    if not use_sandbox and (confirm_real or "").strip().upper() != "REAL":
+        raise HTTPException(status_code=400,
+                            detail="Переключение на боевой счёт требует подтверждения (confirm_real=REAL)")
+    if get_open_positions(source="BOT"):
+        raise HTTPException(status_code=400,
+                            detail="Есть открытые позиции бота: переключать режим можно только без позиций")
+    sfx_cur, sfx_new = ("SANDBOX", "PROD") if cur_sandbox else ("PROD", "SANDBOX")
+    token = env.get(f"TINVEST_TOKEN_{sfx_new}", "")
+    account = env.get(f"TINVEST_ACCOUNT_ID_{sfx_new}", "")
+    if not token or not account:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Для режима «{'Sandbox' if use_sandbox else 'Боевой'}» не сохранены токен и счёт — "
+                   f"сначала внесите их в блоке «Токен API»")
+    updates = {
+        "TINVEST_USE_SANDBOX": "true" if use_sandbox else "false",
+        "TINVEST_TOKEN": token,
+        "TINVEST_ACCOUNT_ID": account,
+    }
+    # Реквизиты текущего режима запоминаем, чтобы вернуться обратно
+    if not env.get(f"TINVEST_TOKEN_{sfx_cur}") and env.get("TINVEST_TOKEN"):
+        updates[f"TINVEST_TOKEN_{sfx_cur}"] = env["TINVEST_TOKEN"]
+    if not env.get(f"TINVEST_ACCOUNT_ID_{sfx_cur}") and env.get("TINVEST_ACCOUNT_ID"):
+        updates[f"TINVEST_ACCOUNT_ID_{sfx_cur}"] = env["TINVEST_ACCOUNT_ID"]
+    _write_env(updates)
+    return True
+
+
+def _schedule_restart() -> None:
+    """Перезапуск бота сразу, дашборда — через 2 с (чтобы успел уйти ответ клиенту)."""
+    from app.control import restart_service_by_signal
+    restart_service_by_signal("trading-bot")
+    threading.Timer(2.0, lambda: restart_service_by_signal("dashboard")).start()
+
+
 def _mask_token(token: str) -> str:
     if not token:
         return ""
@@ -1192,7 +1275,7 @@ def api_dashboard_runtime():
 
     return {
         "botenabled": settings_map.get("bot_enabled", "1"),
-        "tinvestusesandbox": settings_map.get("tinvestusesandbox", "true"),
+        "tinvestusesandbox": "true" if _is_sandbox_mode() else "false",
         "activeprofilename": settings_map.get("active_profile_name", ""),
         "activestrategyname": strategy_display,
         "lasterror": settings_map.get("last_error", ""),
@@ -1203,8 +1286,7 @@ def api_dashboard_runtime():
 
 @app.post("/api/sandbox/pay-in")
 def api_sandbox_pay_in(amount: int = Form(100_000)):
-    s = get_all_settings()
-    if str(s.get("tinvestusesandbox", "true")).lower() != "true":
+    if not _is_sandbox_mode():
         raise HTTPException(status_code=400, detail="Только для Sandbox режима")
     try:
         new_balance = sandbox_pay_in(amount)
@@ -1220,8 +1302,7 @@ def api_sandbox_reset(amount: int = Form(100_000)):
     """Сброс sandbox-счёта: закрывает текущий, создаёт новый, пополняет на amount.
     Возвращает новый account_id — нужно обновить TINVEST_ACCOUNT_ID в .env.
     """
-    s = get_all_settings()
-    if str(s.get("tinvestusesandbox", "true")).lower() != "true":
+    if not _is_sandbox_mode():
         raise HTTPException(status_code=400, detail="Только для Sandbox режима")
     try:
         result = sandbox_reset_account(amount)
@@ -1261,7 +1342,7 @@ def api_balance_check():
     """Проверка достаточности баланса для каждого инструмента активной стратегии."""
     s = get_all_settings()
     active_strategy_id = (s.get("active_strategy_id", "") or "").strip()
-    is_sandbox = str(s.get("tinvestusesandbox", "true")).lower() == "true"
+    is_sandbox = _is_sandbox_mode()
     commission_pct = safe_decimal(s.get("estimated_commission_pct", "0.0004"))
     market_map = get_instrument_market_state_map()
 
@@ -1433,38 +1514,19 @@ def api_dashboard_settings(profile_id: Optional[int] = None):
                 "bot_enabled": ps("bot_enabled", "1"),
                 "telegram_errors_only": ps("telegram_errors_only", "0"),
                 "auto_reload_settings": ps("auto_reload_settings", "1"),
-                "tinvestusesandbox": ps("tinvestusesandbox", "true"),
+                "tinvestusesandbox": "true" if _is_sandbox_mode() else "false",
                 "parallel_trading_enabled": ps("parallel_trading_enabled", "0"),
                 "trade_only_session": ps("trade_only_session", "1"),
                 "max_open_positions": ps("max_open_positions", "3"),
                 "max_trades_per_day": ps("max_trades_per_day", str(get_max_trades_per_day())),
                 "max_daily_loss_rub": ps("max_daily_loss_rub", str(get_max_daily_loss_rub())),
+                "adopt_orphan_positions": ps("adopt_orphan_positions", "1"),
             },
         },
         "view_strategy": {
             "id": strategy.get("id"),
             "name": strategy.get("name", ""),
-            "settings": {
-                "max_trades_per_day": ss("max_trades_per_day", "15"),
-                "max_daily_loss_rub": ss("max_daily_loss_rub", "200"),
-                "max_daily_loss_rub_ui": fmt_money(ss("max_daily_loss_rub", "200")),
-                "max_open_positions": ss("max_open_positions", "2"),
-                "check_interval_sec": ss("check_interval_sec", "5"),
-                "default_stop_loss_pct_ui": fmt_pct_fraction(ss("default_stop_loss_pct", "0.0025")),
-                "default_take_profit_pct_ui": fmt_pct_fraction(ss("default_take_profit_pct", "0.005")),
-                "estimated_commission_pct_ui": fmt_pct_fraction(ss("estimated_commission_pct", "0.0004")),
-                "allow_long_global": ss("allow_long_global", "1"),
-                "allow_short_global": ss("allow_short_global", "1"),
-                "trade_only_session": ss("trade_only_session", "0"),
-                "pause_after_error_sec": ss("pause_after_error_sec", "10"),
-                "tradingmode": ss("tradingmode", "trend"),
-                "errorseriespausecount": ss("errorseriespausecount", "3"),
-                "stopseriespausecount": ss("stopseriespausecount", "3"),
-                "trailing_stop_enabled": ss("trailing_stop_enabled", "0"),
-                "use_signal_service": ss("use_signal_service", "0"),
-                "use_api_confirm": ss("use_api_confirm", "0"),
-                "min_signal_score": ss("min_signal_score", "0"),
-            },
+            "settings": _strategy_settings_view(strat_settings),
             "parallel_enabled": bool(int(strategy.get("parallel_enabled") or 0)),
         },
         "profiles": list_profiles(),
@@ -2408,8 +2470,12 @@ def api_profiles_save_settings(
     max_open_positions: str = Form("3"),
     max_trades_per_day: str = Form(""),
     max_daily_loss_rub: str = Form(""),
+    adopt_orphan_positions: str = Form("1"),
+    confirm_real: str = Form(""),
 ):
     use_sandbox = "true" if runtime_mode == "sandbox" else "false"
+    # Переключатель режима реально переключает бота (.env + перезапуск); при отказе настройки не сохраняем
+    mode_changed = _switch_runtime_mode(runtime_mode == "sandbox", confirm_real)
     try:
         _mop = max(1, min(12, int(max_open_positions or 3)))
     except Exception:
@@ -2435,8 +2501,14 @@ def api_profiles_save_settings(
         "tinvestusesandbox": use_sandbox,
         "trade_only_session": bool01(trade_only_session),
         "max_open_positions": str(_mop),
+        "adopt_orphan_positions": bool01(adopt_orphan_positions),
     })
-    return JSONResponse({"ok": True})
+    if mode_changed:
+        log_event("SERVICE_CONTROL",
+                  f"Режим API изменён: {'Sandbox' if use_sandbox == 'true' else 'БОЕВОЙ'}; бот и дашборд перезапускаются",
+                  level="WARNING")
+        _schedule_restart()
+    return JSONResponse({"ok": True, "restart": mode_changed})
 
 
 @app.post("/api/profiles/{profile_id}/delete")
@@ -2480,6 +2552,10 @@ def api_strategies_save_settings(
     use_api_confirm: str = Form("0"),
     min_signal_score: str = Form("0"),
     use_order_book_filter: str = Form("1"),
+    trade_only_session: str = Form("0"),
+    reentry_cooldown_min: str = Form("30"),
+    reentry_cooldown_stop_min: str = Form("60"),
+    series_pause_min: str = Form("120"),
 ):
     update_strategy_settings(strategy_id, {
         "max_trades_per_day": max_trades_per_day,
@@ -2500,6 +2576,10 @@ def api_strategies_save_settings(
         "use_api_confirm": bool01(use_api_confirm),
         "min_signal_score": min_signal_score,
         "use_order_book_filter": bool01(use_order_book_filter),
+        "trade_only_session": bool01(trade_only_session),
+        "reentry_cooldown_min": reentry_cooldown_min,
+        "reentry_cooldown_stop_min": reentry_cooldown_stop_min,
+        "series_pause_min": series_pause_min,
     })
     new_name = apply_auto_name(strategy_id)
     return JSONResponse({"ok": True, "new_name": new_name})
@@ -2524,35 +2604,12 @@ def api_strategy_details(strategy_id: int):
         raise HTTPException(status_code=404, detail="Strategy not found")
     raw = get_strategy_settings(strategy_id)
 
-    def ss(key, default=""):
-        return raw.get(key, default)
-
     market_map = get_instrument_market_state_map()
     instr = list_strategy_instruments(strategy_id)
     return JSONResponse({
         "id":   strategy_id,
         "name": strategy.get("name", ""),
-        "settings": {
-            "max_trades_per_day":        ss("max_trades_per_day", "15"),
-            "max_daily_loss_rub":        ss("max_daily_loss_rub", "200"),
-            "max_daily_loss_rub_ui":     fmt_money(ss("max_daily_loss_rub", "200")),
-            "max_open_positions":        ss("max_open_positions", "2"),
-            "check_interval_sec":        ss("check_interval_sec", "5"),
-            "default_stop_loss_pct_ui":  fmt_pct_fraction(ss("default_stop_loss_pct", "0.0025")),
-            "default_take_profit_pct_ui": fmt_pct_fraction(ss("default_take_profit_pct", "0.005")),
-            "estimated_commission_pct_ui": fmt_pct_fraction(ss("estimated_commission_pct", "0.0004")),
-            "allow_long_global":         ss("allow_long_global", "1"),
-            "allow_short_global":        ss("allow_short_global", "1"),
-            "trade_only_session":        ss("trade_only_session", "0"),
-            "pause_after_error_sec":     ss("pause_after_error_sec", "10"),
-            "tradingmode":               ss("tradingmode", "trend"),
-            "errorseriespausecount":     ss("errorseriespausecount", "3"),
-            "stopseriespausecount":      ss("stopseriespausecount", "3"),
-            "trailing_stop_enabled":     ss("trailing_stop_enabled", "0"),
-            "use_signal_service":        ss("use_signal_service", "0"),
-            "use_api_confirm":           ss("use_api_confirm", "0"),
-            "min_signal_score":          ss("min_signal_score", "0"),
-        },
+        "settings": _strategy_settings_view(raw),
         "instruments": [strategy_instrument_row(i, market_map) for i in instr],
     })
 
@@ -3102,7 +3159,7 @@ def api_debug_search(q: str = "SBER"):
 def api_credentials_get():
     """Возвращает маскированные токены и account_id (sandbox + prod)."""
     env = _read_env()
-    is_sandbox = str(get_all_settings().get("tinvestusesandbox", "true")).lower() == "true"
+    is_sandbox = _is_sandbox_mode()
     active_token = env.get("TINVEST_TOKEN", "")
     active_id    = env.get("TINVEST_ACCOUNT_ID", "")
     sb_token  = env.get("TINVEST_TOKEN_SANDBOX",  active_token if is_sandbox else "")
@@ -3133,7 +3190,7 @@ async def api_credentials_save(request: Request):
     account_id = (body.get("account_id") or "").strip()
     if not token and not account_id:
         raise HTTPException(status_code=400, detail="token or account_id required")
-    is_sandbox = str(get_all_settings().get("tinvestusesandbox", "true")).lower() == "true"
+    is_sandbox = _is_sandbox_mode()
     updates: dict = {}
     if mode == "sandbox":
         if token:

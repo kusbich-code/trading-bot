@@ -999,7 +999,7 @@ async function renderSettingsTab() {
         <button class="btn" id="btnOpenProfiles">Изменить профиль</button>
       </div>
 
-      <form id="profileSettingsForm" class="form-grid" style="margin-top:12px;">
+      <form id="profileSettingsForm" class="form-grid" style="margin-top:12px;" data-mode="${sandboxSelected ? "sandbox" : "prod"}">
         <input type="hidden" name="profile_id_val" value="${esc(prof.id || "")}">
         <label>Торговля
           <select class="field" name="bot_enabled">
@@ -1024,6 +1024,14 @@ async function renderSettingsTab() {
             <option value="sandbox" ${sandboxSelected ? "selected" : ""}>Sandbox</option>
             <option value="prod" ${!sandboxSelected ? "selected" : ""}>Боевой</option>
           </select>
+          <span class="note" style="font-size:11px">Переключает бота и дашборд на токен и счёт выбранного режима (из блока «Токен API») и перезапускает их. Только без открытых позиций; боевой режим — с подтверждением</span>
+        </label>
+        <label>Подхват позиций брокера
+          <select class="field" name="adopt_orphan_positions">
+            <option value="1" ${profSettings.adopt_orphan_positions !== "0" ? "selected" : ""}>Да — брать под управление позиции, которых нет в учёте</option>
+            <option value="0" ${profSettings.adopt_orphan_positions === "0" ? "selected" : ""}>Нет — только предупреждать</option>
+          </select>
+          <span class="note" style="font-size:11px">Если расхождение с брокером держится дольше 3 минут: создаётся учётная запись, бот ставит стопы и ведёт позицию</span>
         </label>
         <label>Только сессия MOEX
           <select class="field" name="trade_only_session">
@@ -1178,63 +1186,7 @@ async function renderSettingsTab() {
       ${strat.id ? `
       <form id="strategySettingsForm" class="form-grid" style="margin-top:12px;">
         <input type="hidden" name="strategy_id_val" value="${esc(strat.id)}">
-        <label>Сделок/день<input class="field" name="max_trades_per_day" value="${esc(stratSettings.max_trades_per_day || 15)}"></label>
-        <label>Лимит убытка<input class="field" name="max_daily_loss_rub" value="${esc(stratSettings.max_daily_loss_rub_ui || 0)}"></label>
-        <label>Позиций макс<input class="field" name="max_open_positions" value="${esc(stratSettings.max_open_positions || 2)}"></label>
-        <label>Интервал, сек<input class="field" name="check_interval_sec" value="${esc(stratSettings.check_interval_sec || 5)}"></label>
-        <label>SL % (умолч.)<input class="field" name="default_stop_loss_pct" value="${esc(stratSettings.default_stop_loss_pct_ui || 0.25)}"></label>
-        <label>TP % (умолч.)<input class="field" name="default_take_profit_pct" value="${esc(stratSettings.default_take_profit_pct_ui || 0.50)}"></label>
-        <label>Комиссия %<input class="field" name="estimated_commission_pct" value="${esc(stratSettings.estimated_commission_pct_ui || 0.04)}"></label>
-        <label>Лонг разрешён
-          <select class="field" name="allow_long_global">
-            <option value="1" ${stratSettings.allow_long_global === "1" ? "selected" : ""}>Да</option>
-            <option value="0" ${stratSettings.allow_long_global === "0" ? "selected" : ""}>Нет</option>
-          </select>
-        </label>
-        <label>Шорт разрешён
-          <select class="field" name="allow_short_global">
-            <option value="1" ${stratSettings.allow_short_global === "1" ? "selected" : ""}>Да</option>
-            <option value="0" ${stratSettings.allow_short_global === "0" ? "selected" : ""}>Нет</option>
-          </select>
-        </label>
-        <label>Пауза после ошибки, сек<input class="field" name="pause_after_error_sec" value="${esc(stratSettings.pause_after_error_sec || 10)}"></label>
-        <label>Режим торговли
-          <select class="field" name="tradingmode">
-            <option value="trend" ${stratSettings.tradingmode === "trend" ? "selected" : ""}>Тренд (SMA9/SMA21 + моментум)</option>
-            <option value="mean_reversion" ${stratSettings.tradingmode === "mean_reversion" ? "selected" : ""}>Возврат к средней (Z-score ±1.8)</option>
-            <option value="breakout" ${stratSettings.tradingmode === "breakout" ? "selected" : ""}>Пробой (20 баров + объём)</option>
-          </select>
-        </label>
-        <label>Пауза после ошибок подряд<input class="field" name="errorseriespausecount" value="${esc(stratSettings.errorseriespausecount || 3)}"></label>
-        <label>Пауза после стопов подряд<input class="field" name="stopseriespausecount" value="${esc(stratSettings.stopseriespausecount || 3)}"></label>
-        <label>Трейлинг-стоп
-          <select class="field" name="trailing_stop_enabled">
-            <option value="1" ${stratSettings.trailing_stop_enabled === "1" ? "selected" : ""}>Вкл — стоп двигается за ценой</option>
-            <option value="0" ${stratSettings.trailing_stop_enabled !== "1" ? "selected" : ""}>Выкл — фиксированный стоп</option>
-          </select>
-        </label>
-        <label>Фильтр аналитиков T-Bank
-          <select class="field" name="use_signal_service">
-            <option value="1" ${stratSettings.use_signal_service === "1" ? "selected" : ""}>Вкл — не входить против сигнала</option>
-            <option value="0" ${stratSettings.use_signal_service !== "1" ? "selected" : ""}>Выкл</option>
-          </select>
-        </label>
-        <label>Подтверждение RSI/MACD/BB (API)
-          <select class="field" name="use_api_confirm">
-            <option value="1" ${stratSettings.use_api_confirm === "1" ? "selected" : ""}>Вкл — RSI&lt;70/&gt;30 + MACD + BB</option>
-            <option value="0" ${stratSettings.use_api_confirm !== "1" ? "selected" : ""}>Выкл</option>
-          </select>
-        </label>
-        <label>Фильтр стакана (давление 40%)
-          <select class="field" name="use_order_book_filter">
-            <option value="1" ${(stratSettings.use_order_book_filter ?? "1") !== "0" ? "selected" : ""}>Вкл — проверять давление покупателей/продавцов</option>
-            <option value="0" ${stratSettings.use_order_book_filter === "0" ? "selected" : ""}>Выкл — пропустить фильтр (экономит ~156 req/min)</option>
-          </select>
-        </label>
-        <label>Мин. качество сигнала (score)
-          <input class="field" type="number" name="min_signal_score" min="0" max="100" step="1"
-            value="${esc(stratSettings.min_signal_score || 0)}">
-        </label>
+        ${strategySettingsFields(stratSettings)}
         <div class="row-buttons">
           <button type="button" class="btn btn-primary" id="btnSaveStrategySettings">Сохранить настройки стратегии</button>
         </div>
@@ -1430,57 +1382,7 @@ async function expandParallelStrategy(strategyId, mode = "instruments", forceReo
       body.innerHTML = `
         <form class="form-grid" id="parallelStratForm">
           <input type="hidden" name="strategy_id_val" value="${strategyId}">
-          <label>Сделок/день<input class="field" name="max_trades_per_day" value="${esc(s.max_trades_per_day||15)}"></label>
-          <label>Лимит убытка ₽<input class="field" name="max_daily_loss_rub" value="${esc(s.max_daily_loss_rub_ui||200)}"></label>
-          <label>Позиций макс<input class="field" name="max_open_positions" value="${esc(s.max_open_positions||2)}"></label>
-          <label>Интервал, сек<input class="field" name="check_interval_sec" value="${esc(s.check_interval_sec||5)}"></label>
-          <label>SL %<input class="field" name="default_stop_loss_pct" value="${esc(s.default_stop_loss_pct_ui||0.25)}"></label>
-          <label>TP %<input class="field" name="default_take_profit_pct" value="${esc(s.default_take_profit_pct_ui||0.5)}"></label>
-          <label>Комиссия %<input class="field" name="estimated_commission_pct" value="${esc(s.estimated_commission_pct_ui||0.04)}"></label>
-          <label>Мин. score сигнала<input class="field" type="number" name="min_signal_score" min="0" max="100" value="${esc(s.min_signal_score||0)}"></label>
-          <label>Режим торговли
-            <select class="field" name="tradingmode">
-              <option value="trend" ${s.tradingmode==="trend"?"selected":""}>Тренд</option>
-              <option value="mean_reversion" ${s.tradingmode==="mean_reversion"?"selected":""}>Возврат к средней</option>
-              <option value="breakout" ${s.tradingmode==="breakout"?"selected":""}>Пробой</option>
-            </select>
-          </label>
-          <label>Лонг разрешён
-            <select class="field" name="allow_long_global">
-              <option value="1" ${s.allow_long_global!=="0"?"selected":""}>Да</option>
-              <option value="0" ${s.allow_long_global==="0"?"selected":""}>Нет</option>
-            </select>
-          </label>
-          <label>Шорт разрешён
-            <select class="field" name="allow_short_global">
-              <option value="1" ${s.allow_short_global==="1"?"selected":""}>Да</option>
-              <option value="0" ${s.allow_short_global!=="1"?"selected":""}>Нет</option>
-            </select>
-          </label>
-          <label>Трейлинг-стоп
-            <select class="field" name="trailing_stop_enabled">
-              <option value="1" ${s.trailing_stop_enabled==="1"?"selected":""}>Вкл</option>
-              <option value="0" ${s.trailing_stop_enabled!=="1"?"selected":""}>Выкл</option>
-            </select>
-          </label>
-          <label>Фильтр аналитиков T-Bank
-            <select class="field" name="use_signal_service">
-              <option value="1" ${s.use_signal_service==="1"?"selected":""}>Вкл</option>
-              <option value="0" ${s.use_signal_service!=="1"?"selected":""}>Выкл</option>
-            </select>
-          </label>
-          <label>RSI/MACD/BB подтверждение (API)
-            <select class="field" name="use_api_confirm">
-              <option value="1" ${s.use_api_confirm==="1"?"selected":""}>Вкл</option>
-              <option value="0" ${s.use_api_confirm!=="1"?"selected":""}>Выкл</option>
-            </select>
-          </label>
-          <label>Фильтр стакана (давление 40%)
-            <select class="field" name="use_order_book_filter">
-              <option value="1" ${(s.use_order_book_filter ?? "1") !== "0" ? "selected" : ""}>Вкл</option>
-              <option value="0" ${s.use_order_book_filter === "0" ? "selected" : ""}>Выкл (−156 req/min)</option>
-            </select>
-          </label>
+          ${strategySettingsFields(s)}
           <div class="row-buttons">
             <button type="button" class="btn btn-primary" id="btnSaveParallelStrat">Сохранить настройки</button>
           </div>
@@ -1502,6 +1404,59 @@ async function expandParallelStrategy(strategyId, mode = "instruments", forceReo
 }
 
 // ── Profile modal ─────────────────────────────────────────────────────────────
+
+// Поля настроек стратегии — одни и те же на экране одиночной стратегии и в параллельном режиме
+function strategySettingsFields(s) {
+  const sel = (name, value, opts) => `
+    <select class="field" name="${name}">
+      ${opts.map(([v, label]) => `<option value="${v}" ${String(value) === v ? "selected" : ""}>${label}</option>`).join("")}
+    </select>`;
+  const num = (name, value, extra = "") =>
+    `<input class="field" type="number" name="${name}" value="${esc(value)}" ${extra}>`;
+  const note = (t) => `<span class="note" style="font-size:11px">${t}</span>`;
+  const mode = s.tradingmode || "trend";
+  return `
+    <label>Сделок/день (входов по бумаге)${num("max_trades_per_day", s.max_trades_per_day ?? 15, 'min="0"')}
+      ${note("После лимита вход по бумаге блокируется до следующего дня. 0 — без лимита")}</label>
+    <label>Лимит убытка стратегии за день, ₽${num("max_daily_loss_rub", s.max_daily_loss_rub_ui ?? 200, 'min="0"')}
+      ${note("Убыток стратегии за день достиг лимита — новые входы блокируются. 0 — без лимита")}</label>
+    <label>Позиций макс (стратегии)${num("max_open_positions", s.max_open_positions ?? 2, 'min="0"')}
+      ${note("Одновременно открытых позиций стратегии. 0 — без лимита")}</label>
+    <label>Интервал, сек${num("check_interval_sec", s.check_interval_sec ?? 5, 'min="1"')}</label>
+    <label>SL % по умолчанию${num("default_stop_loss_pct", s.default_stop_loss_pct_ui ?? 0.25, 'step="any"')}
+      ${note("Применяется, если у инструмента не задан свой стоп. Стоп не ниже 0,5%")}</label>
+    <label>TP % по умолчанию${num("default_take_profit_pct", s.default_take_profit_pct_ui ?? 0.5, 'step="any"')}
+      ${note("Применяется, если у инструмента не задан свой тейк")}</label>
+    <label>Комиссия %${num("estimated_commission_pct", s.estimated_commission_pct_ui ?? 0.04, 'step="any"')}</label>
+    <label>Мин. качество сигнала (score)${num("min_signal_score", s.min_signal_score ?? 0, 'min="0" max="100"')}</label>
+    <label>Режим торговли
+      ${sel("tradingmode", mode, [["trend", "Тренд (SMA9/SMA21 + моментум)"],
+        ["mean_reversion", "Возврат к средней (Z-score ±1.8)"], ["breakout", "Пробой (20 баров + объём)"]])}</label>
+    <label>Лонг разрешён${sel("allow_long_global", s.allow_long_global ?? "1", [["1", "Да"], ["0", "Нет"]])}</label>
+    <label>Шорт разрешён${sel("allow_short_global", s.allow_short_global ?? "1", [["1", "Да"], ["0", "Нет"]])}</label>
+    <label>Только сессия MOEX (для стратегии)
+      ${sel("trade_only_session", s.trade_only_session ?? "0", [["0", "Как в профиле"], ["1", "Да — только в торговую сессию"]])}
+      ${note("Стратегия может только ужесточить правило профиля")}</label>
+    <label>Пауза после ошибки ордера, сек${num("pause_after_error_sec", s.pause_after_error_sec ?? 10, 'min="0"')}</label>
+    <label>Серия ошибок ордеров подряд → пауза${num("errorseriespausecount", s.errorseriespausecount ?? 3, 'min="0"')}
+      ${note("Столько неудачных ордеров подряд по бумаге — вход приостанавливается. 0 — выкл")}</label>
+    <label>Серия стопов подряд → пауза${num("stopseriespausecount", s.stopseriespausecount ?? 3, 'min="0"')}
+      ${note("Столько стоп-лоссов подряд по бумаге — вход приостанавливается. 0 — выкл")}</label>
+    <label>Длительность паузы после серии, мин${num("series_pause_min", s.series_pause_min ?? 120, 'min="0"')}</label>
+    <label>Пауза после закрытия позиции, мин${num("reentry_cooldown_min", s.reentry_cooldown_min ?? 30, 'min="0"')}
+      ${note("Не входить в бумагу повторно сразу после закрытия (против разворотов). 0 — выкл")}</label>
+    <label>Пауза после стоп-лосса, мин${num("reentry_cooldown_stop_min", s.reentry_cooldown_stop_min ?? 60, 'min="0"')}</label>
+    <label>Трейлинг-стоп
+      ${sel("trailing_stop_enabled", s.trailing_stop_enabled ?? "0", [["1", "Вкл — стоп двигается за ценой"], ["0", "Выкл — фиксированный стоп"]])}</label>
+    <label>Фильтр аналитиков T-Bank
+      ${sel("use_signal_service", s.use_signal_service ?? "0", [["1", "Вкл — не входить против сигнала"], ["0", "Выкл"]])}</label>
+    <label>Подтверждение RSI/MACD/BB (API)
+      ${sel("use_api_confirm", s.use_api_confirm ?? "0", [["1", "Вкл — RSI&lt;70/&gt;30 + MACD + BB"], ["0", "Выкл"]])}</label>
+    <label>Фильтр стакана (давление 40%)
+      ${sel("use_order_book_filter", s.use_order_book_filter ?? "1", [["1", "Вкл — проверять давление покупателей/продавцов"],
+        ["0", "Выкл — пропустить фильтр (экономит ~156 req/min)"]])}</label>`;
+}
+
 
 function openProfilesModal(data) {
   const profiles = data.profiles || [];
@@ -1656,7 +1611,19 @@ async function saveProfileSettings(profileId) {
     const fd = new FormData(document.getElementById("profileSettingsForm"));
     const data = Object.fromEntries(fd.entries());
     delete data.profile_id_val;
-    await apiPostForm(`/api/profiles/${profileId}/settings`, data);
+    // Переключение на боевой счёт — только после явного подтверждения
+    const wasProd = document.getElementById("profileSettingsForm").dataset.mode === "prod";
+    if (data.runtime_mode === "prod" && !wasProd) {
+      if (!confirm("Переключить бота на БОЕВОЙ счёт? Ордера будут уходить на реальные деньги. " +
+                   "Бот и дашборд перезапустятся.")) { return; }
+      data.confirm_real = "REAL";
+    }
+    const res = await apiPostForm(`/api/profiles/${profileId}/settings`, data);
+    if (res && res.restart) {
+      showToast("Режим API изменён. Бот и дашборд перезапускаются — страница обновится", "success");
+      setTimeout(() => location.reload(), 9000);
+      return;
+    }
     showToast("Настройки профиля сохранены", "success");
     await renderSummaryCards();
   } catch (e) {

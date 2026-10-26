@@ -10,7 +10,7 @@ def _now_msk() -> str:
     return datetime.now(tz=_MSK).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
 
 
-PROFILE_SETTING_KEYS = {"bot_enabled", "telegram_errors_only", "auto_reload_settings", "tinvestusesandbox", "parallel_trading_enabled", "trade_only_session", "max_open_positions", "max_trades_per_day", "max_daily_loss_rub"}
+PROFILE_SETTING_KEYS = {"bot_enabled", "telegram_errors_only", "auto_reload_settings", "tinvestusesandbox", "parallel_trading_enabled", "trade_only_session", "max_open_positions", "max_trades_per_day", "max_daily_loss_rub", "adopt_orphan_positions"}
 
 STRATEGY_SETTING_KEYS = {
     "max_trades_per_day", "max_daily_loss_rub", "max_open_positions", "check_interval_sec",
@@ -19,6 +19,38 @@ STRATEGY_SETTING_KEYS = {
     "tradingmode", "errorseriespausecount", "stopseriespausecount",
     "trailing_stop_enabled", "use_signal_service", "min_signal_score", "use_api_confirm",
     "use_order_book_filter",
+    "reentry_cooldown_min", "reentry_cooldown_stop_min", "series_pause_min",
+}
+
+# Ключи, которые есть только у стратегии (у профиля такого ключа нет). get_setting() для них отдаёт значение
+# активной стратегии: раньше стратегия копировала свои значения в общие настройки, и «последняя сохранённая»
+# перезаписывала их для всех (общий порог сигнала, трейлинг и режим принадлежали случайной стратегии)
+_STRATEGY_ONLY_KEYS = STRATEGY_SETTING_KEYS - PROFILE_SETTING_KEYS
+
+# Значения по умолчанию для новой стратегии
+STRATEGY_DEFAULTS = {
+    "max_trades_per_day": "15",
+    "max_daily_loss_rub": "200",
+    "max_open_positions": "2",
+    "check_interval_sec": "5",
+    "default_stop_loss_pct": "0.0025",
+    "default_take_profit_pct": "0.005",
+    "estimated_commission_pct": "0.0004",
+    "allow_long_global": "1",
+    "allow_short_global": "1",
+    "trade_only_session": "0",
+    "pause_after_error_sec": "10",
+    "tradingmode": "trend",
+    "errorseriespausecount": "3",
+    "stopseriespausecount": "3",
+    "trailing_stop_enabled": "0",
+    "use_signal_service": "0",
+    "min_signal_score": "0",
+    "use_api_confirm": "1",
+    "use_order_book_filter": "1",
+    "reentry_cooldown_min": "30",
+    "reentry_cooldown_stop_min": "60",
+    "series_pause_min": "120",
 }
 
 
@@ -598,7 +630,6 @@ def _seed_defaults(cur):
     seed_setting(cur, "errorseriespausecount", "3")
     seed_setting(cur, "stopseriespausecount", "3")
     seed_setting(cur, "min_signal_score", "0")
-    seed_setting(cur, "healthtelegramenabled", "0")
     seed_setting(cur, "analyst_budget_rub", "60000")
     seed_setting(cur, "analyst_min_win_rate", "45")
     seed_setting(cur, "analyst_min_trades", "5")
@@ -612,25 +643,7 @@ def _seed_defaults(cur):
 
 
 def _seed_default_profile_and_strategy(cur):
-    STRAT_DEFAULTS = {
-        "max_trades_per_day": "15",
-        "max_daily_loss_rub": "200",
-        "max_open_positions": "2",
-        "check_interval_sec": "5",
-        "default_stop_loss_pct": "0.0025",
-        "default_take_profit_pct": "0.005",
-        "estimated_commission_pct": "0.0004",
-        "allow_long_global": "1",
-        "allow_short_global": "1",
-        "trade_only_session": "0",
-        "pause_after_error_sec": "10",
-        "tradingmode": "trend",
-        "errorseriespausecount": "3",
-        "stopseriespausecount": "3",
-        "trailing_stop_enabled": "0",
-        "use_signal_service": "0",
-        "min_signal_score": "0",
-    }
+    STRAT_DEFAULTS = STRATEGY_DEFAULTS
     PROF_DEFAULTS = {
         "bot_enabled": "1",
         "telegram_errors_only": "0",
@@ -889,11 +902,36 @@ def ensure_instruments_columns(cur):
 
 # ── bot_settings ─────────────────────────────────────────────────────────────
 
+def _active_strategy_id(cur) -> str:
+    cur.execute("SELECT value FROM bot_settings WHERE key = 'active_strategy_id'")
+    row = cur.fetchone()
+    return (row["value"] or "").strip() if row else ""
+
+
 def get_setting(key, default=None):
     with db_cursor() as cur:
+        if key in _STRATEGY_ONLY_KEYS:
+            sid = _active_strategy_id(cur)
+            if sid:
+                cur.execute("SELECT value FROM strategy_settings WHERE strategy_id = ? AND key = ?", (sid, key))
+                srow = cur.fetchone()
+                if srow is not None:
+                    return srow["value"]
         cur.execute("SELECT value FROM bot_settings WHERE key = ?", (key,))
         row = cur.fetchone()
         return row["value"] if row else default
+
+
+def sync_runtime_mode(is_sandbox: bool) -> None:
+    """Приводит сохранённый в БД флаг режима API к фактическому (из .env, с которым запущен бот).
+    Переключатель в интерфейсе пишет в .env, а флаг в БД — только отображение; расхождения быть не должно."""
+    value = "true" if is_sandbox else "false"
+    with db_cursor() as cur:
+        cur.execute("""
+        INSERT INTO bot_settings(key, value) VALUES ('tinvestusesandbox', ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        """, (value,))
+        cur.execute("UPDATE profile_settings SET value = ? WHERE key = 'tinvestusesandbox'", (value,))
 
 
 def set_setting(key, value):
@@ -907,7 +945,14 @@ def set_setting(key, value):
 def get_all_settings():
     with db_cursor() as cur:
         cur.execute("SELECT key, value FROM bot_settings ORDER BY key")
-        return {row["key"]: row["value"] for row in cur.fetchall()}
+        result = {row["key"]: row["value"] for row in cur.fetchall()}
+        sid = (result.get("active_strategy_id") or "").strip()
+        if sid:
+            cur.execute("SELECT key, value FROM strategy_settings WHERE strategy_id = ?", (sid,))
+            for srow in cur.fetchall():
+                if srow["key"] in _STRATEGY_ONLY_KEYS:
+                    result[srow["key"]] = srow["value"]
+        return result
 
 
 # ── runtime_state ─────────────────────────────────────────────────────────────
@@ -1011,11 +1056,23 @@ def get_last_closed_trade(figi: str) -> dict | None:
     with db_cursor() as cur:
         cur.execute(
             "SELECT time, reason FROM trades WHERE figi=? "
-            "AND reason NOT IN (?, ?, ?) ORDER BY id DESC LIMIT 1",
+            "AND reason NOT IN (?, ?, ?) ORDER BY time DESC, id DESC LIMIT 1",
             (figi, *_SERVICE_TRADE_REASONS),
         )
         row = cur.fetchone()
     return dict(row) if row else None
+
+
+def get_recent_trade_reasons(figi: str, limit: int) -> list:
+    """Причины и время закрытия последних limit торговых сделок по figi (новые первыми) —
+    для паузы после серии стопов подряд."""
+    with db_cursor() as cur:
+        cur.execute(
+            "SELECT time, reason FROM trades WHERE figi=? AND reason NOT IN (?, ?, ?) "
+            "ORDER BY time DESC, id DESC LIMIT ?",
+            (figi, *_SERVICE_TRADE_REASONS, int(limit)),
+        )
+        return [dict(r) for r in cur.fetchall()]
 
 
 def count_entries_since(figi: str, since: str) -> int:
@@ -1612,12 +1669,7 @@ def activate_profile(profile_id: int):
             cur.execute("SELECT name FROM strategies WHERE id = ?", (strategy_id,))
             strat_row = cur.fetchone()
             strategy_name = strat_row["name"] if strat_row else ""
-            cur.execute("SELECT key, value FROM strategy_settings WHERE strategy_id = ?", (strategy_id,))
-            for srow in cur.fetchall():
-                cur.execute("""
-                INSERT INTO bot_settings(key, value) VALUES (?, ?)
-                ON CONFLICT(key) DO UPDATE SET value = excluded.value
-                """, (srow["key"], srow["value"]))
+            # Настройки стратегии в общие не копируем: get_setting() читает их у активной стратегии напрямую
             cur.execute("""
             INSERT INTO bot_settings(key, value) VALUES ('active_strategy_id', ?)
             ON CONFLICT(key) DO UPDATE SET value = excluded.value
@@ -1715,12 +1767,7 @@ def set_profile_strategy(profile_id: int, strategy_id: int):
             cur.execute("SELECT name FROM strategies WHERE id = ?", (strategy_id,))
             strat_row = cur.fetchone()
             strategy_name = strat_row["name"] if strat_row else ""
-            cur.execute("SELECT key, value FROM strategy_settings WHERE strategy_id = ?", (strategy_id,))
-            for srow in cur.fetchall():
-                cur.execute("""
-                INSERT INTO bot_settings(key, value) VALUES (?, ?)
-                ON CONFLICT(key) DO UPDATE SET value = excluded.value
-                """, (srow["key"], srow["value"]))
+            # Настройки стратегии в общие не копируем: get_setting() читает их у активной стратегии напрямую
             cur.execute("""
             INSERT INTO bot_settings(key, value) VALUES ('active_strategy_id', ?)
             ON CONFLICT(key) DO UPDATE SET value = excluded.value
@@ -1906,13 +1953,10 @@ def create_strategy(name: str) -> int:
         cur.execute("INSERT INTO strategies(name) VALUES (?)", (name,))
         strategy_id = cur.lastrowid
         for key in STRATEGY_SETTING_KEYS:
-            cur.execute("SELECT value FROM bot_settings WHERE key = ?", (key,))
-            row = cur.fetchone()
-            value = row["value"] if row else ""
             cur.execute("""
             INSERT INTO strategy_settings(strategy_id, key, value) VALUES (?, ?, ?)
             ON CONFLICT(strategy_id, key) DO NOTHING
-            """, (strategy_id, key, value))
+            """, (strategy_id, key, STRATEGY_DEFAULTS.get(key, "")))
         return strategy_id
 
 
@@ -1936,14 +1980,7 @@ def update_strategy_settings(strategy_id: int, settings_dict: dict):
                 INSERT INTO strategy_settings(strategy_id, key, value) VALUES (?, ?, ?)
                 ON CONFLICT(strategy_id, key) DO UPDATE SET value = excluded.value
                 """, (strategy_id, key, str(value)))
-        cur.execute("SELECT id FROM profiles WHERE strategy_id = ? AND is_active = 1", (strategy_id,))
-        if cur.fetchone():
-            for key, value in settings_dict.items():
-                if key in STRATEGY_SETTING_KEYS:
-                    cur.execute("""
-                    INSERT INTO bot_settings(key, value) VALUES (?, ?)
-                    ON CONFLICT(key) DO UPDATE SET value = excluded.value
-                    """, (key, str(value)))
+        # В общие настройки (bot_settings) не копируем: значения стратегии живут только у неё
 
 
 def set_setting_all_strategies(key: str, value: str):

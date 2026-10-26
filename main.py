@@ -73,6 +73,8 @@ from app.db import (
     get_instrument_sl_tp,
     get_recent_trade,
     get_last_closed_trade,
+    sync_runtime_mode,
+    get_recent_trade_reasons,
     count_entries_since,
     get_ticker_daily_pnl,
     save_position_feature_id,
@@ -618,11 +620,12 @@ def _candles_to_dicts(candles) -> list:
     return out
 
 
-def is_session_allowed(client, figi: str) -> bool:
+def is_session_allowed(client, figi: str, strategy_only_session: bool = False) -> bool:
     """
     Проверяет, разрешена ли торговля в текущей сессии.
     Читает trade_only_session из настроек активного профиля (profile_settings),
-    с откатом на bot_settings для обратной совместимости.
+    с откатом на bot_settings для обратной совместимости. Стратегия может только ужесточить
+    правило (strategy_only_session=True), но не отменить требование профиля.
     """
     # Читаем из профиля если возможно
     active_pid_str = get_setting("active_profile_id", "").strip()
@@ -631,7 +634,7 @@ def is_session_allowed(client, figi: str) -> bool:
     else:
         trade_only_session = get_setting("trade_only_session", "0") == "1"
 
-    if not trade_only_session:
+    if not (trade_only_session or strategy_only_session):
         return True
 
     status = get_trading_status(client, figi)
@@ -939,30 +942,89 @@ def _broker_net_lots(client, figi: str):
         return None
 
 
-def _reentry_block_reason(figi: str, ticker: str, max_entries: int = 0) -> Optional[str]:
-    """Причина, по которой бумагу пока нельзя открывать снова, или None.
-    Настройки (минуты, 0 отключает): reentry_cooldown_min — пауза после любого закрытия,
-    reentry_cooldown_stop_min — после стоп-лосса. max_entries — лимит входов по бумаге за день
-    из поля «Сделок/день» настроек стратегии (0 — без лимита)."""
+# figi → (число подряд неудачных ордеров, время последней неудачи) — для паузы после серии ошибок
+_order_fail_series: Dict[str, tuple] = {}
+
+
+def _cfg_num(cfg: Optional[Dict], key: str, default: float) -> float:
+    """Число из настроек стратегии (cfg) или, в основном режиме, из настроек активной стратегии."""
+    raw = cfg.get(key) if cfg is not None else get_setting(key)
     try:
-        cd_min = int(get_setting("reentry_cooldown_min", "30") or 0)
-        cd_stop_min = int(get_setting("reentry_cooldown_stop_min", "60") or 0)
+        return float(raw) if raw not in (None, "") else float(default)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _minutes_since(ts: str) -> float:
+    return (_now() - datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")).total_seconds() / 60.0
+
+
+def _entry_guard_reason(figi: str, ticker: str, strategy_id: Optional[int],
+                        cfg: Optional[Dict]) -> Optional[str]:
+    """Причина, по которой бумагу пока нельзя открывать, или None. Все пороги берутся из настроек стратегии
+    (0 отключает проверку):
+      • errorseriespausecount — столько неудачных ордеров подряд -> пауза series_pause_min;
+      • stopseriespausecount — столько стоп-лоссов подряд -> пауза series_pause_min;
+      • reentry_cooldown_min / reentry_cooldown_stop_min — пауза после любого закрытия / после стопа;
+      • max_trades_per_day — входов по бумаге за день («Сделок/день»);
+      • max_daily_loss_rub — убыток стратегии за день;
+      • max_open_positions — одновременно открытых позиций стратегии.
+    Последние три — только для стратегий параллельного режима (cfg не None): в основном режиме те же
+    лимиты действуют на уровне профиля."""
+    try:
+        pause_min = _cfg_num(cfg, "series_pause_min", 120)
+
+        n_err = int(_cfg_num(cfg, "errorseriespausecount", 0))
+        fails = _order_fail_series.get(figi)
+        if n_err > 0 and fails and fails[0] >= n_err and (_now() - fails[1]).total_seconds() < pause_min * 60:
+            left = int(pause_min - (_now() - fails[1]).total_seconds() / 60) + 1
+            return (f"{ticker}: {fails[0]} неудачных ордеров подряд (порог {n_err}), "
+                    f"пауза {int(pause_min)} мин, осталось {left} мин — вход пропущен")
+
+        cd_min = _cfg_num(cfg, "reentry_cooldown_min", 30)
+        cd_stop_min = _cfg_num(cfg, "reentry_cooldown_stop_min", 60)
         if cd_min > 0 or cd_stop_min > 0:
             last = get_last_closed_trade(figi)
             if last:
-                closed_at = datetime.strptime(last["time"], "%Y-%m-%d %H:%M:%S")
                 wait_min = cd_stop_min if last["reason"] == "STOP_LOSS" else cd_min
-                left = wait_min * 60 - (_now().replace(tzinfo=None) - closed_at).total_seconds()
+                left = wait_min - _minutes_since(last["time"])
                 if wait_min > 0 and left > 0:
-                    return (f"{ticker}: пауза {wait_min} мин после закрытия ({last['reason']}), "
-                            f"осталось {int(left // 60) + 1} мин — вход пропущен")
-        if max_entries > 0:
-            since = _now().strftime("%Y-%m-%d") + " 00:00:00"
-            n = count_entries_since(figi, since)
-            if n >= max_entries:
-                return f"{ticker}: достигнут лимит сделок/день стратегии ({n} из {max_entries}) — вход пропущен"
+                    return (f"{ticker}: пауза {int(wait_min)} мин после закрытия ({last['reason']}), "
+                            f"осталось {int(left) + 1} мин — вход пропущен")
+
+        n_stop = int(_cfg_num(cfg, "stopseriespausecount", 0))
+        if n_stop > 0:
+            recent = get_recent_trade_reasons(figi, n_stop)
+            if (len(recent) == n_stop and all(r["reason"] == "STOP_LOSS" for r in recent)
+                    and _minutes_since(recent[0]["time"]) < pause_min):
+                left = int(pause_min - _minutes_since(recent[0]["time"])) + 1
+                return (f"{ticker}: {n_stop} стоп-лосса подряд, пауза {int(pause_min)} мин, "
+                        f"осталось {left} мин — вход пропущен")
+
+        if cfg is not None:
+            max_entries = int(_cfg_num(cfg, "max_trades_per_day", 0))
+            if max_entries > 0:
+                n = count_entries_since(figi, _now().strftime("%Y-%m-%d") + " 00:00:00")
+                if n >= max_entries:
+                    return f"{ticker}: достигнут лимит сделок/день стратегии ({n} из {max_entries}) — вход пропущен"
+
+            max_loss = _cfg_num(cfg, "max_daily_loss_rub", 0)
+            max_pos = int(_cfg_num(cfg, "max_open_positions", 0))
+            if strategy_id and (max_loss > 0 or max_pos > 0):
+                instr = _parallel_instruments(strategy_id)
+                if max_loss > 0:
+                    today = _now().strftime("%Y-%m-%d")
+                    pnl = sum(get_ticker_daily_pnl(i["ticker"], today) for i in instr)
+                    if pnl <= -max_loss:
+                        return (f"{ticker}: убыток стратегии за день {pnl:.2f} ₽ достиг лимита "
+                                f"-{max_loss:.0f} ₽ — вход пропущен")
+                if max_pos > 0:
+                    figis = {i["figi"] for i in instr}
+                    opened = sum(1 for p in get_open_positions(source="BOT") if p["figi"] in figis)
+                    if opened >= max_pos:
+                        return f"{ticker}: открыто {opened} позиций стратегии (лимит {max_pos}) — вход пропущен"
     except Exception as e:
-        log.warning("_reentry_block_reason %s: %s", ticker, e)  # при сбое проверки торговлю не блокируем
+        log.warning("_entry_guard_reason %s: %s", ticker, e)  # при сбое проверки торговлю не блокируем
     return None
 
 
@@ -1771,8 +1833,8 @@ def _order_status_name(raw) -> str:
         return text
 
 
-def place_order_checked(client, ticker: str, figi: str, lots: int, raw_price: Decimal, direction: OrderDirection,
-                        market: bool = False):
+def _place_order_checked_impl(client, ticker: str, figi: str, lots: int, raw_price: Decimal, direction: OrderDirection,
+                              market: bool = False):
     """market=True → рыночный ордер (для закрытия позиций, гарантирует исполнение)."""
     meta = state.instrument_meta.get(ticker)
     if not meta:
@@ -1995,6 +2057,19 @@ def place_order_checked(client, ticker: str, figi: str, lots: int, raw_price: De
             return None
         log_event("ORDER_ERROR", msg, ticker=ticker, level="ERROR")
         return None
+
+
+def place_order_checked(client, ticker: str, figi: str, lots: int, raw_price: Decimal, direction: OrderDirection,
+                        market: bool = False):
+    """Отправка ордера с подтверждением исполнения. Считает неудачи подряд по бумаге: по настройке стратегии
+    «Пауза после ошибок подряд» (errorseriespausecount) вход в бумагу приостанавливается (_entry_guard_reason)."""
+    result = _place_order_checked_impl(client, ticker, figi, lots, raw_price, direction, market)
+    if result:
+        _order_fail_series.pop(figi, None)
+    else:
+        count = _order_fail_series.get(figi, (0, None))[0] + 1
+        _order_fail_series[figi] = (count, _now())
+    return result
 
 
 class _SkipStop(Exception):
@@ -2276,8 +2351,15 @@ def process_instrument(client, item,
     # Пол стопа: стоп теснее 0.5% выбивает рыночным шумом/спредом сразу после
     # открытия (черн — позиция живёт секунды и закрывается «в ноль» по комиссии).
     # Защищает и от устаревших значений в памяти, и от слишком агрессивного оптимизатора.
-    stop_loss_pct = max(Decimal(str(item["stop_loss_pct"])), MIN_STOP_LOSS_PCT)
-    take_profit_pct = Decimal(str(item["take_profit_pct"]))
+    # SL/TP «по умолчанию» стратегии подставляются, только если у инструмента значение не задано
+    _sl_item = Decimal(str(item["stop_loss_pct"] or 0))
+    _tp_item = Decimal(str(item["take_profit_pct"] or 0))
+    if _sl_item <= 0:
+        _sl_item = Decimal(str(_cfg("default_stop_loss_pct", "0.0025")))
+    if _tp_item <= 0:
+        _tp_item = Decimal(str(_cfg("default_take_profit_pct", "0.005")))
+    stop_loss_pct = max(_sl_item, MIN_STOP_LOSS_PCT)
+    take_profit_pct = _tp_item
     allow_long = int(item.get("allow_long", 1))
     allow_short = int(item.get("allow_short", 1))
 
@@ -2424,8 +2506,9 @@ def process_instrument(client, item,
 
     # Cooldown после ORDER_ERROR
     _cd = state.order_cooldowns.get(figi)
-    if _cd and (_now() - _cd).total_seconds() < BotState.ORDER_COOLDOWN_SEC:
-        remaining = int(BotState.ORDER_COOLDOWN_SEC - (_now() - _cd).total_seconds())
+    _err_pause = int(_cfg_num(_strategy_cfg, "pause_after_error_sec", BotState.ORDER_COOLDOWN_SEC))
+    if _cd and (_now() - _cd).total_seconds() < _err_pause:
+        remaining = int(_err_pause - (_now() - _cd).total_seconds())
         _save_signal(skip_reason=f"Пауза после ошибки ордера (осталось {remaining}с)", skip_filter="cooldown")
         return
 
@@ -2436,7 +2519,8 @@ def process_instrument(client, item,
             _save_signal(skip_reason="Биржа закрыта (MOEX)", skip_filter="market_hours")
             return
 
-        if not is_session_allowed(client, figi):
+        if not is_session_allowed(client, figi, _strategy_cfg is not None
+                                  and str(_cfg("trade_only_session", "0")) == "1"):
             _save_signal(skip_reason="Торговая сессия закрыта", skip_filter="session")
             return
 
@@ -2459,6 +2543,20 @@ def process_instrument(client, item,
 
         max_spread_pct = Decimal(str(item.get("max_spread_pct", "0")))
         if max_spread_pct > 0 and spread_pct > max_spread_pct:
+            return
+
+    # Дешёвые проверки входа — до запросов к API: порог качества сигнала, паузы после закрытий и ошибок,
+    # серии стопов, лимиты стратегии. Иначе подтверждение по API (3 запроса) гоняется каждые 5 секунд
+    # по сигналу, который всё равно будет отсеян.
+    if sig in ("BUY", "SELL") and ticker not in positions:
+        min_score = int(_cfg("min_signal_score", "0"))
+        if min_score > 0 and score < min_score:
+            _log_skip("min_score", f"{ticker}: score={score} < порог={min_score} [{tradingmode}], пропуск", ticker)
+            _save_signal(skip_reason=f"Качество сигнала {score} < порог {min_score}", skip_filter="min_score")
+            return
+        _guard = _entry_guard_reason(figi, ticker, _strategy_id, _strategy_cfg)
+        if _guard:
+            _save_signal(skip_reason=_guard, skip_filter="entry_guard")
             return
 
     # Блок А: подтверждение сигнала через API-индикаторы (RSI/MACD/BB)
@@ -2756,21 +2854,6 @@ def process_instrument(client, item,
     if sig == "HOLD":
         return
 
-    # Пауза после закрытия и лимит «Сделок/день» стратегии: разворот сразу после закрытия и серии
-    # входов в боковике (ALRS 3 стопа за день, IRAO 5–6 сделок) съедают деньги комиссией и стопами.
-    # Лимит берём только из настроек стратегии: в основном режиме _cfg отдаёт общий лимит бота
-    if sig in ("BUY", "SELL"):
-        _strat_max_trades = 0
-        if _strategy_cfg is not None:
-            try:
-                _strat_max_trades = int(_strategy_cfg.get("max_trades_per_day", 0) or 0)
-            except (TypeError, ValueError):
-                _strat_max_trades = 0
-        _re_block = _reentry_block_reason(figi, ticker, _strat_max_trades)
-        if _re_block:
-            _save_signal(skip_reason=_re_block, skip_filter="reentry_guard")
-            return
-
     # Общие дневные лимиты. Главный цикл их проверял, а воркеры параллельных стратегий — нет.
     try:
         if state.trades_today >= get_max_trades_per_day():
@@ -2781,12 +2864,6 @@ def process_instrument(client, item,
             return
     except Exception as _dle:
         log.debug("daily limits check: %s", _dle)
-
-    min_score = int(_cfg("min_signal_score", "0"))
-    if min_score > 0 and score < min_score:
-        _log_skip("min_score", f"{ticker}: score={score} < порог={min_score} [{tradingmode}], пропуск", ticker)
-        _save_signal(skip_reason=f"Качество сигнала {score} < порог {min_score}", skip_filter="min_score")
-        return
 
     log_event("SIGNAL", f"{sig} [{tradingmode}] score={score} on {ticker}", ticker=ticker)
 
@@ -3275,6 +3352,8 @@ def _parallel_strategy_worker(strategy_id: int, strat_name: str, stop_ev: thread
                 if _pid_str:
                     from app.db import get_profile_setting as _gps
                     _trade_session_only = _gps(int(_pid_str), "trade_only_session", "1")
+                if str(cfg.get("trade_only_session", "0")) == "1":
+                    _trade_session_only = "1"  # стратегия может ужесточить правило профиля
                 if _trade_session_only == "1" and not is_moex_session_open():
                     _sleep_secs, _open_label = _secs_to_next_session_open()
                     _wake_label = (datetime.now(MSK_TZ) + timedelta(seconds=_sleep_secs)).strftime("%H:%M")
@@ -3484,6 +3563,8 @@ def main():
 
     log.info("=== Bot v%s started ===", BOT_VERSION)
     log_event("BOT_START", "Bot started")
+    # Режим API (sandbox/боевой) определяется .env; флаг в БД, который показывает интерфейс, приводим к нему
+    sync_runtime_mode(settings.TINVEST_USE_SANDBOX)
 
     # Сбрасываем устаревшие данные координатора и потоков из предыдущей сессии
     import json as _jstart

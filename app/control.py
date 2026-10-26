@@ -23,10 +23,15 @@ def run_control(action: str) -> Dict[str, Any]:
     if action == "status":
         cmd = ["systemctl", "status", "trading-bot.service"]
     else:
-        cmd = ["sudo", "/bin/systemctl", action, "trading-bot.service"]
+        # -n: не ждать пароль (без записи в sudoers sudo сразу вернёт ошибку, а не повиснет)
+        cmd = ["sudo", "-n", "/bin/systemctl", action, "trading-bot.service"]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=15, check=False)
         ok = result.returncode == 0
+        if not ok and action == "restart":
+            # Без sudo перезапускаем штатно: SIGTERM главному процессу, systemd (Restart=always) поднимет его сам
+            if restart_service_by_signal("trading-bot"):
+                return {"ok": True, "action": action, "message": "success (SIGTERM)", "output": "", "platform": "linux"}
         return {
             "ok": ok,
             "action": action,
@@ -36,6 +41,22 @@ def run_control(action: str) -> Dict[str, Any]:
         }
     except Exception as e:
         return {"ok": False, "action": action, "message": str(e), "output": "", "platform": "linux"}
+
+
+def restart_service_by_signal(service: str) -> bool:
+    """Перезапуск сервиса без sudo: SIGTERM главному процессу юнита (пользователь тот же). Сервисы бота и
+    дашборда имеют Restart=always, поэтому systemd поднимает процесс заново. True — сигнал отправлен."""
+    try:
+        out = subprocess.run(["systemctl", "show", "-p", "MainPID", "--value", f"{service}.service"],
+                             capture_output=True, text=True, timeout=10, check=False)
+        pid = int((out.stdout or "0").strip() or 0)
+        if pid <= 1:
+            return False
+        os.kill(pid, 15)
+        log_event("BOT_CONTROL", f"Linux: SIGTERM сервису {service} (PID {pid})")
+        return True
+    except Exception:
+        return False
 
 
 def _windows_control(action: str) -> Dict[str, Any]:
