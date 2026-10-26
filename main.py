@@ -185,6 +185,16 @@ class _ParallelCoord:
         with self._lock:
             return sid in self._owners
 
+    def owner_figi(self, sid) -> Optional[str]:
+        """figi, которым владеет стратегия sid (None — не владеет)."""
+        with self._lock:
+            return self._owners.get(sid)
+
+    def owned_by_other(self, figi: str, sid) -> bool:
+        """True, если позицию по figi ведёт другая стратегия, не sid."""
+        with self._lock:
+            return any(s != sid and f == figi for s, f in self._owners.items())
+
     @property
     def owner_count(self) -> int:
         with self._lock:
@@ -287,24 +297,75 @@ _bot_client_cls = None  # устанавливается в main() до запу
 _30034_count: Dict[str, int] = {}  # figi → число последовательных 30034 за сессию
 
 
+ORDERS_STREAM_PING_MS = 10000      # просим брокера присылать пинг-кадры раз в 10 с
+ORDERS_STREAM_DEAD_SEC = 45        # столько тишины (даже без пингов) считаем обрывом соединения
+# None — не знаем, шлёт ли сервер пинги; True — шлёт; False — не шлёт (сторож отключён)
+_orders_stream_pings: Optional[bool] = None
+_orders_stream_silent_connects = 0
+
+
+def _orders_stream_watchdog(client_obj, conn: dict):
+    """Сторож залипания OrdersStream: gRPC-поток может молча перестать доставлять события (после простоя,
+    выходных, обрыва на стороне брокера), и тогда исполнение узнаётся только резервным опросом.
+    Если от потока давно нет кадров (пинги приходят раз в ORDERS_STREAM_PING_MS), закрываем канал —
+    чтение падает с ошибкой, и воркер переподключается."""
+    global _orders_stream_pings, _orders_stream_silent_connects
+    while not conn["stop"]:
+        time.sleep(5)
+        silent = time.time() - conn["last"]
+        if _orders_stream_pings is False:
+            return  # сервер пингов не шлёт — по тишине обрыв не определить
+        if silent > ORDERS_STREAM_DEAD_SEC:
+            if not conn["ping_seen"] and _orders_stream_pings is None:
+                # Ни одного кадра с момента подключения: либо пинги не поддерживаются, либо поток мёртв.
+                # Два подключения подряд без единого пинга — считаем, что пингов нет, и сторож отключаем
+                _orders_stream_silent_connects += 1
+                if _orders_stream_silent_connects >= 2:
+                    _orders_stream_pings = False
+                    log.info("OrdersStream: пинг-кадров нет, сторож залипания отключён")
+                    return
+            log.warning("OrdersStream: нет кадров %.0f с — переподключение", silent)
+            try:
+                client_obj._channel.close()
+            except Exception as exc:
+                log.warning("OrdersStream: не удалось закрыть канал: %s", exc)
+            return
+
+
 def _orders_stream_worker():
     """Фоновый поток: подписывается на события исполнения ордеров через OrdersStream."""
+    global _orders_stream_pings, _orders_stream_silent_connects
     account_id = settings.TINVEST_ACCOUNT_ID
     while True:
+        conn = {"last": time.time(), "ping_seen": False, "stop": False}
         try:
-            with _bot_client_cls(settings.TINVEST_TOKEN) as sc:
+            client_obj = _bot_client_cls(settings.TINVEST_TOKEN)
+            with client_obj as sc:
                 log.info("OrdersStream: подключён")
-                for resp in sc.orders_stream.trades_stream(accounts=[account_id]):
+                Thread(target=_orders_stream_watchdog, args=(client_obj, conn), daemon=True,
+                       name="orders-stream-watchdog").start()
+                for resp in sc.orders_stream.trades_stream(accounts=[account_id],
+                                                           ping_delay_ms=ORDERS_STREAM_PING_MS):
+                    conn["last"] = time.time()
                     ot = getattr(resp, "order_trades", None)
                     if ot is None:
-                        continue  # пинг-фрейм
+                        # пинг-кадр: поток жив
+                        if not conn["ping_seen"]:
+                            conn["ping_seen"] = True
+                            _orders_stream_pings = True
+                            _orders_stream_silent_connects = 0
+                        continue
                     order_id = str(getattr(ot, "order_id", "") or "")
                     q = _pending_orders.get(order_id)
                     if q is not None:
                         q.put(ot)
+            log.warning("OrdersStream: сервер закрыл поток, переподключение через 5 с")
+            time.sleep(5)
         except Exception as exc:
             log.warning("OrdersStream: ошибка %s, переподключение через 5 с", exc)
             time.sleep(5)
+        finally:
+            conn["stop"] = True
 
 
 # ── MarketDataStream (Приоритет-2) ────────────────────────────────────────────
@@ -949,9 +1010,14 @@ def _ensure_native_stops(client, broker_signed: Dict[str, int]):
                 else:
                     acc += lots_st
 
-        covered = {getattr(s, "figi", "") for s in all_stops}
+        # Объём стопов по каждому figi и типу (1 — тейк, 2 — стоп): нужен, чтобы докрыть позицию,
+        # если стопы поставлены на часть объёма (докупка, подхват позиции брокера, сбой выставления)
+        covered_lots: Dict[tuple, int] = {}
+        for st in all_stops:
+            key = (getattr(st, "figi", ""), int(getattr(st, "order_type", 0) or 0))
+            covered_lots[key] = covered_lots.get(key, 0) + int(getattr(st, "lots_requested", 0) or 0)
         for bp in get_open_positions(source="BOT"):
-            if bp["figi"] in covered or bp["figi"] in _closing_in_progress:
+            if bp["figi"] in _closing_in_progress:
                 continue
             try:
                 age = (_now() - datetime.strptime(bp.get("opened_at", ""), "%Y-%m-%d %H:%M:%S")).total_seconds()
@@ -959,15 +1025,25 @@ def _ensure_native_stops(client, broker_signed: Dict[str, int]):
                     continue
             except Exception:
                 pass
+            # Целевой объём не больше реальной позиции брокера: стоп сверх позиции опасен
+            target = int(bp["qty"])
+            if bp["figi"] in broker_signed:
+                target = min(target, abs(int(broker_signed[bp["figi"]])))
+            miss_sl = target - covered_lots.get((bp["figi"], 2), 0)
+            miss_tp = target - covered_lots.get((bp["figi"], 1), 0)
+            if miss_sl <= 0 and miss_tp <= 0:
+                continue
             meta = state.instrument_meta.get(bp["ticker"], {})
             sl_tp = get_instrument_sl_tp(bp["figi"])
             sl = max(Decimal(str(sl_tp["sl_pct"])), MIN_STOP_LOSS_PCT)
             ids = _place_native_stops(
                 client, bp["ticker"], bp["figi"], meta.get("instrument_uid", "") or "",
                 "BUY" if str(bp["direction"]).upper() == "BUY" else "SELL",
-                int(bp["qty"]), Decimal(str(bp["entry_price"])), sl, Decimal(str(sl_tp["tp_pct"])))
+                target, Decimal(str(bp["entry_price"])), sl, Decimal(str(sl_tp["tp_pct"])),
+                qty_sl=max(miss_sl, 0), qty_tp=max(miss_tp, 0))
             if ids.get("sl_id") or ids.get("tp_id"):
-                log_event("STOP_ORDER", f"{bp['ticker']}: сторож вернул биржевые стопы {ids}",
+                log_event("STOP_ORDER", f"{bp['ticker']}: сторож докрыл биржевые стопы {ids} "
+                          f"(не хватало SL {max(miss_sl, 0)}, TP {max(miss_tp, 0)} лот)",
                           ticker=bp["ticker"], level="WARNING")
     except Exception as e:
         log.warning("_ensure_native_stops: %s", e)
@@ -975,24 +1051,114 @@ def _ensure_native_stops(client, broker_signed: Dict[str, int]):
 
 _mismatch_last_alert: Dict[str, float] = {}
 MISMATCH_ALERT_INTERVAL_SEC = 1800
+# Расхождение сразу после входа/выхода — норма: брокер уже показывает позицию, а запись бота
+# появится после выставления стопов. Реальным считаем только расхождение, державшееся дольше.
+MISMATCH_GRACE_SEC = 180
+# figi → (брокер, бот, время, когда расхождение впервые замечено в таком виде)
+_mismatch_first_seen: Dict[str, tuple] = {}
 
 
-def _reconcile_bot_vs_broker(broker_signed: Dict[str, int]):
-    """Сверяет нетто-позицию брокера по каждому figi с суммой открытых BOT-позиций.
-    Брокер ведёт позицию нетто по бумаге, бот — по стратегиям; расхождение значит, что
-    ордер (ручной, close-all, встречный вход другой стратегии) изменил позицию мимо учёта бота.
-    Ничего не торгует и не правит — только пишет POSITION_MISMATCH (не чаще раза в 30 мин на figi)."""
+def _bot_signed_positions() -> tuple:
+    """Нетто-позиции открытых BOT-записей по figi (лонг +, шорт −) и их тикеры."""
     bot_signed: Dict[str, int] = {}
     tickers: Dict[str, str] = {}
     for bp in get_open_positions(source="BOT"):
         sign = 1 if str(bp["direction"]).upper() == "BUY" else -1
         bot_signed[bp["figi"]] = bot_signed.get(bp["figi"], 0) + sign * int(bp["qty"])
         tickers[bp["figi"]] = bp["ticker"]
+    return bot_signed, tickers
+
+
+def _persistent_mismatch(figi: str, b_brk: int, b_bot: int, now_ts: float) -> bool:
+    """True, если расхождение по figi в таком виде держится не меньше MISMATCH_GRACE_SEC."""
+    seen = _mismatch_first_seen.get(figi)
+    if seen is None or seen[0] != b_brk or seen[1] != b_bot:
+        _mismatch_first_seen[figi] = (b_brk, b_bot, now_ts)
+        return False
+    return now_ts - seen[2] >= MISMATCH_GRACE_SEC
+
+
+def _figi_in_strategies(figi: str) -> bool:
+    """Есть ли бумага среди инструментов стратегий бота."""
+    try:
+        from app.db import db_cursor as _dbc_fs
+        with _dbc_fs() as _c_fs:
+            _c_fs.execute("SELECT 1 FROM strategy_instruments WHERE figi=? LIMIT 1", (figi,))
+            return _c_fs.fetchone() is not None
+    except Exception:
+        return False
+
+
+def _adopt_orphan_positions(broker_info: Dict[str, dict]):
+    """Подхват позиций брокера, о которых бот не знает (ордер потерян, исполнился после таймаута,
+    восстановление после сбоя): без учётной записи у позиции нет ни стопов, ни мониторинга, а входы
+    по бумаге блокируются защитой от дублей. Расхождение должно продержаться MISMATCH_GRACE_SEC.
+      • у бота позиции нет → создаём BOT-запись по данным брокера (стопы поставит сторож);
+      • то же направление, другой объём → приводим учёт к брокеру (брокер — источник истины);
+      • противоположное направление → не трогаем (неясно, что правильно), только предупреждение.
+    Отключается настройкой adopt_orphan_positions=0."""
+    if get_setting("adopt_orphan_positions", "1") != "1":
+        return
+    bot_signed, _ = _bot_signed_positions()
+    bot_rows: Dict[str, list] = {}
+    for bp in get_open_positions(source="BOT"):
+        bot_rows.setdefault(bp["figi"], []).append(bp)
+    now_ts = time.time()
+    for figi, info in broker_info.items():
+        if figi in _closing_in_progress:
+            continue
+        b_brk = info["signed"]
+        b_bot = bot_signed.get(figi, 0)
+        if b_brk == b_bot:
+            continue
+        if not _persistent_mismatch(figi, b_brk, b_bot, now_ts):
+            continue
+        if not _figi_in_strategies(figi):
+            continue  # бумага вне стратегий бота — это не наша позиция, не трогаем
+        ticker = info["ticker"]
+        direction = "BUY" if b_brk > 0 else "SELL"
+        rows = bot_rows.get(figi, [])
+        if b_bot == 0 and not rows:
+            action = "создана учётная запись"
+        elif len(rows) == 1 and b_bot != 0 and (b_bot > 0) == (b_brk > 0):
+            action = f"объём в учёте {abs(b_bot)} → {abs(b_brk)} лот"
+        else:
+            continue  # встречное направление или несколько записей — решаем вручную
+        upsert_position({
+            "ticker": ticker,
+            "figi": figi,
+            "direction": direction,
+            "qty": abs(b_brk),
+            "entry_price": info["avg_price"] or (rows[0]["entry_price"] if rows else 0),
+            "current_price": info["current_price"],
+            "unrealized_pnl": rows[0].get("unrealized_pnl", 0) if rows else 0,
+            "opened_at": rows[0]["opened_at"] if rows else _now().strftime("%Y-%m-%d %H:%M:%S"),
+            "status": "OPEN",
+            "source": "BOT",
+        })
+        _mismatch_first_seen.pop(figi, None)
+        _mismatch_last_alert.pop(figi, None)
+        msg = (f"{ticker}: подхвачена позиция брокера {direction} {abs(b_brk)} лот "
+               f"(в учёте было {b_bot:+d}): {action}")
+        log_event("POSITION_ADOPT", msg, ticker=ticker, level="WARNING")
+        notify(f"ℹ️ {msg}", is_error=False)
+
+
+def _reconcile_bot_vs_broker(broker_signed: Dict[str, int]):
+    """Сверяет нетто-позицию брокера по каждому figi с суммой открытых BOT-позиций.
+    Брокер ведёт позицию нетто по бумаге, бот — по стратегиям; расхождение значит, что
+    ордер (ручной, close-all, встречный вход другой стратегии) изменил позицию мимо учёта бота.
+    Ничего не торгует и не правит — только пишет POSITION_MISMATCH: не раньше чем расхождение
+    продержится MISMATCH_GRACE_SEC и не чаще раза в 30 мин на figi."""
+    bot_signed, tickers = _bot_signed_positions()
     now_ts = time.time()
     for figi in set(bot_signed) | set(broker_signed):
         b_bot, b_brk = bot_signed.get(figi, 0), broker_signed.get(figi, 0)
         if b_bot == b_brk:
             _mismatch_last_alert.pop(figi, None)
+            _mismatch_first_seen.pop(figi, None)
+            continue
+        if not _persistent_mismatch(figi, b_brk, b_bot, now_ts):
             continue
         if now_ts - _mismatch_last_alert.get(figi, 0) < MISMATCH_ALERT_INTERVAL_SEC:
             continue
@@ -1001,6 +1167,29 @@ def _reconcile_bot_vs_broker(broker_signed: Dict[str, int]):
         msg = f"{ticker}: брокер {b_brk:+d} лот, учёт бота {b_bot:+d} лот — расхождение {b_brk - b_bot:+d}"
         log_event("POSITION_MISMATCH", msg, ticker=ticker, level="WARNING")
         notify(f"⚠️ Рассинхрон позиции\n{msg}", is_error=True)
+
+
+def _sync_legacy_positions():
+    """Приводит словарь позиций основного цикла (state.open_positions) в соответствие с БД.
+    Он восстанавливается из БД при старте и сам по себе не очищается: после закрытия позиции воркером
+    запись жила дальше и «управляла» чужой позицией (отменённые закрытия AFLT с неверным направлением).
+    Убираем запись, если позиции нет в БД, направление не совпадает или позицию ведёт параллельный воркер."""
+    db_dir = {p["figi"]: str(p["direction"]).upper() for p in get_open_positions(source="BOT")}
+    for tk in list(state.open_positions.keys()):
+        pos = state.open_positions[tk]
+        f = pos.get("figi", "")
+        if f not in db_dir:
+            why = "позиции нет в БД"
+        elif str(pos.get("direction", "")).upper() != db_dir[f]:
+            why = f"направление {pos.get('direction')} в памяти не совпадает с БД ({db_dir[f]})"
+        elif _parallel_coord.owned_by_other(f, None):
+            why = "позицию ведёт параллельный воркер"
+        else:
+            continue
+        log.warning("Основной цикл %s: запись позиции сброшена — %s", tk, why)
+        del state.open_positions[tk]
+        if _parallel_coord.owner_figi(None) == f:
+            _parallel_coord.release(None)
 
 
 def _lot_size_by_figi(figi: str, ticker: str = "") -> int:
@@ -1037,6 +1226,7 @@ def sync_portfolio_positions(client):
 
         broker_figis: set = set()
         broker_signed: Dict[str, int] = {}  # figi → нетто-позиция в лотах (+лонг / −шорт)
+        broker_info: Dict[str, dict] = {}   # figi → тикер, объём и цены брокера (для подхвата позиций)
         for p in positions:
             figi = getattr(p, "figi", "") or ""
             instrument_type = str(getattr(p, "instrument_type", "") or "").lower()
@@ -1076,6 +1266,8 @@ def sync_portfolio_positions(client):
             # Согласовано с BOT: BUY = лонг, SELL = шорт
             direction = "SELL" if qty < 0 else "BUY"
             broker_signed[figi] = qty
+            broker_info[figi] = {"ticker": ticker, "signed": qty, "avg_price": avg_price,
+                                 "current_price": current_price}
 
             # Вычисляем нереализованный PnL если брокер вернул 0 (часто в sandbox)
             if expected_yield == 0.0 and avg_price > 0 and current_price > 0:
@@ -1116,6 +1308,7 @@ def sync_portfolio_positions(client):
                 log.info("Позиция %s не найдена в портфеле — определяем причину закрытия", bp["ticker"])
                 _handle_manual_close(bp, market_map, client=client)
 
+        _adopt_orphan_positions(broker_info)
         _reconcile_bot_vs_broker(broker_signed)
         _ensure_native_stops(client, broker_signed)
 
@@ -1645,8 +1838,9 @@ def place_order_checked(client, ticker: str, figi: str, lots: int, raw_price: De
                     if lots_executed_raw is not None:
                         _le = int(lots_executed_raw)
                         _lot_sz2 = int(meta.get("lot", 1))
-                        # Polling: lots_executed может быть в акциях — нормализуем в лоты
-                        if _lot_sz2 > 1 and _le > 0:
+                        # lots_executed у брокера уже в лотах. Делим на размер лота только если значение
+                        # больше заказанного (тогда это явно штуки); иначе 38 лотов ALRS превращались в 3
+                        if _lot_sz2 > 1 and _le > lots:
                             lots_executed = _le // _lot_sz2
                         else:
                             lots_executed = _le
@@ -1697,8 +1891,8 @@ def place_order_checked(client, ticker: str, figi: str, lots: int, raw_price: De
                         account_id=settings.TINVEST_ACCOUNT_ID, order_id=response_order_id)
                     _st_last = _order_status_name(getattr(_os_last, "execution_report_status", "UNKNOWN"))
                     _le_last = int(getattr(_os_last, "lots_executed", 0) or 0)
-                    if _le_last > 0 and int(meta.get("lot", 1)) > 1:
-                        _le_last //= int(meta.get("lot", 1))
+                    if _le_last > lots and int(meta.get("lot", 1)) > 1:
+                        _le_last //= int(meta.get("lot", 1))  # значение в штуках, а не в лотах
                     if "FILL" in _st_last:
                         execution_report_status = _st_last
                         lots_executed = _le_last or (lots if "PARTIALLY" not in _st_last else 0)
@@ -1758,14 +1952,23 @@ def place_order_checked(client, ticker: str, figi: str, lots: int, raw_price: De
         return None
 
 
+class _SkipStop(Exception):
+    """Служебное: стоп этого типа ставить не нужно (нулевой объём)."""
+
+
 def _place_native_stops(client, ticker: str, figi: str, instrument_uid: str,
                         direction: str, qty: int, entry_price: Decimal,
-                        sl_pct: Decimal, tp_pct: Decimal) -> dict:
+                        sl_pct: Decimal, tp_pct: Decimal,
+                        qty_sl: Optional[int] = None, qty_tp: Optional[int] = None) -> dict:
     """
     Размещает нативные StopLoss и TakeProfit на бирже после открытия позиции.
     Возвращает dict с id ордеров: {"sl_id": ..., "tp_id": ...}
     Работает даже при зависании бота — ордера исполнятся на стороне биржи.
+    qty_sl / qty_tp — объём конкретного стопа (по умолчанию qty); 0 — этот стоп не ставим
+    (так сторож докрывает только недостающие лоты).
     """
+    qty_sl = qty if qty_sl is None else qty_sl
+    qty_tp = qty if qty_tp is None else qty_tp
     ids = {"sl_id": None, "tp_id": None}
     instr_id = instrument_uid or figi
 
@@ -1790,9 +1993,11 @@ def _place_native_stops(client, ticker: str, figi: str, instrument_uid: str,
 
     # StopLoss
     try:
+        if qty_sl <= 0:
+            raise _SkipStop()
         resp = client.stop_orders.post_stop_order(
             instrument_id=instr_id,
-            quantity=qty,
+            quantity=qty_sl,
             stop_price=_q(sl_price),
             direction=close_dir,
             account_id=settings.TINVEST_ACCOUNT_ID,
@@ -1801,14 +2006,19 @@ def _place_native_stops(client, ticker: str, figi: str, instrument_uid: str,
         )
         ids["sl_id"] = getattr(resp, "stop_order_id", None)
         log_event("STOP_ORDER", f"{ticker} SL native @ {sl_price} id={ids['sl_id']}", ticker=ticker)
+    except _SkipStop:
+        pass
     except Exception as e:
-        log.warning("Не удалось разместить нативный SL для %s: %s", ticker, e)
+        log.warning("Не удалось разместить нативный SL для %s (%s, %s лот, вход %s, цена стопа %s): %s",
+                    ticker, direction, qty_sl, entry_price, sl_price, e)
 
     # TakeProfit
     try:
+        if qty_tp <= 0:
+            raise _SkipStop()
         resp = client.stop_orders.post_stop_order(
             instrument_id=instr_id,
-            quantity=qty,
+            quantity=qty_tp,
             stop_price=_q(tp_price),
             direction=close_dir,
             account_id=settings.TINVEST_ACCOUNT_ID,
@@ -1817,8 +2027,11 @@ def _place_native_stops(client, ticker: str, figi: str, instrument_uid: str,
         )
         ids["tp_id"] = getattr(resp, "stop_order_id", None)
         log_event("STOP_ORDER", f"{ticker} TP native @ {tp_price} id={ids['tp_id']}", ticker=ticker)
+    except _SkipStop:
+        pass
     except Exception as e:
-        log.warning("Не удалось разместить нативный TP для %s: %s", ticker, e)
+        log.warning("Не удалось разместить нативный TP для %s (%s, %s лот, вход %s, цена стопа %s): %s",
+                    ticker, direction, qty_tp, entry_price, tp_price, e)
 
     return ids
 
@@ -3349,6 +3562,7 @@ def main():
                     _refresh_parallel_workers()
 
                 watchlist = load_enabled_instruments(client)
+                _sync_legacy_positions()
 
                 for item in watchlist:
                     _rate.throttle_if_needed()
