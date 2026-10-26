@@ -1002,6 +1002,41 @@ def get_recent_trade(figi: str, since: str) -> dict | None:
     return dict(row) if row else None
 
 
+# Служебные записи исправления учёта — это не торговые решения, в кулдауне и лимитах не участвуют
+_SERVICE_TRADE_REASONS = ("ORPHAN_CLEANUP", "REPAIR_REVERSAL", "NETTING_CLOSE")
+
+
+def get_last_closed_trade(figi: str) -> dict | None:
+    """Последняя торговая сделка по figi (время закрытия и причина) — для паузы перед повторным входом."""
+    with db_cursor() as cur:
+        cur.execute(
+            "SELECT time, reason FROM trades WHERE figi=? "
+            "AND reason NOT IN (?, ?, ?) ORDER BY id DESC LIMIT 1",
+            (figi, *_SERVICE_TRADE_REASONS),
+        )
+        row = cur.fetchone()
+    return dict(row) if row else None
+
+
+def count_entries_since(figi: str, since: str) -> int:
+    """Сколько входов по figi было с момента since: закрытые сделки (по времени открытия)
+    плюс открытая сейчас позиция бота, если она открыта позже since."""
+    with db_cursor() as cur:
+        cur.execute(
+            "SELECT COUNT(*) AS n FROM trades WHERE figi=? AND open_time>=? "
+            "AND reason NOT IN (?, ?, ?)",
+            (figi, since, *_SERVICE_TRADE_REASONS),
+        )
+        closed = int(cur.fetchone()["n"])
+        cur.execute(
+            "SELECT COUNT(*) AS n FROM positions WHERE figi=? AND status='OPEN' "
+            "AND source='BOT' AND opened_at>=?",
+            (figi, since),
+        )
+        opened = int(cur.fetchone()["n"])
+    return closed + opened
+
+
 def get_logs(limit=200, ticker=None, event_type=None, date_from=None, date_to=None, level=None):
     query = "SELECT * FROM event_logs WHERE 1=1"
     params = []

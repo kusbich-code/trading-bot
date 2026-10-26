@@ -72,6 +72,8 @@ from app.db import (
     fix_ticker_by_figi,
     get_instrument_sl_tp,
     get_recent_trade,
+    get_last_closed_trade,
+    count_entries_since,
     get_ticker_daily_pnl,
     save_position_feature_id,
     get_position_feature_id,
@@ -935,6 +937,33 @@ def _broker_net_lots(client, figi: str):
     except Exception as e:
         log.warning("Не удалось получить позицию брокера по %s: %s", figi, e)
         return None
+
+
+def _reentry_block_reason(figi: str, ticker: str) -> Optional[str]:
+    """Причина, по которой бумагу пока нельзя открывать снова, или None.
+    Настройки (минуты/штуки, 0 отключает): reentry_cooldown_min — пауза после любого закрытия,
+    reentry_cooldown_stop_min — после стоп-лосса, max_entries_per_ticker_day — входов в день."""
+    try:
+        cd_min = int(get_setting("reentry_cooldown_min", "30") or 0)
+        cd_stop_min = int(get_setting("reentry_cooldown_stop_min", "60") or 0)
+        max_entries = int(get_setting("max_entries_per_ticker_day", "3") or 0)
+        if cd_min > 0 or cd_stop_min > 0:
+            last = get_last_closed_trade(figi)
+            if last:
+                closed_at = datetime.strptime(last["time"], "%Y-%m-%d %H:%M:%S")
+                wait_min = cd_stop_min if last["reason"] == "STOP_LOSS" else cd_min
+                left = wait_min * 60 - (_now().replace(tzinfo=None) - closed_at).total_seconds()
+                if wait_min > 0 and left > 0:
+                    return (f"{ticker}: пауза {wait_min} мин после закрытия ({last['reason']}), "
+                            f"осталось {int(left // 60) + 1} мин — вход пропущен")
+        if max_entries > 0:
+            since = _now().strftime("%Y-%m-%d") + " 00:00:00"
+            n = count_entries_since(figi, since)
+            if n >= max_entries:
+                return f"{ticker}: достигнут лимит входов по бумаге за день ({n} из {max_entries}) — вход пропущен"
+    except Exception as e:
+        log.warning("_reentry_block_reason %s: %s", ticker, e)  # при сбое проверки торговлю не блокируем
+    return None
 
 
 def _entry_blocked_reason(client, figi: str, ticker: str):
@@ -2709,6 +2738,14 @@ def process_instrument(client, item,
     # ── Торговое решение по сигналу (вычислен выше, до проверок сессии) ────────
     if sig == "HOLD":
         return
+
+    # Пауза и лимит повторных входов по бумаге: разворот сразу после закрытия и серии входов
+    # в боковике (ALRS 3 стопа за день, IRAO 5–6 сделок) съедают деньги комиссией и стопами
+    if sig in ("BUY", "SELL"):
+        _re_block = _reentry_block_reason(figi, ticker)
+        if _re_block:
+            _save_signal(skip_reason=_re_block, skip_filter="reentry_guard")
+            return
 
     # Общие дневные лимиты. Главный цикл их проверял, а воркеры параллельных стратегий — нет.
     try:

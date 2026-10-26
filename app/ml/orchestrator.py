@@ -172,6 +172,26 @@ def _soft_update(figi: str, pnl: float) -> None:
         log.warning("_soft_update %s: %s", figi, e)
 
 
+OPT_COOLDOWN_DAYS = 14  # параметры инструмента можно менять оптимизатором не чаще раза в 2 недели
+
+
+def _optimized_recently(figi: str, days: int = OPT_COOLDOWN_DAYS) -> bool:
+    """Применялись ли автоматические изменения параметров этого инструмента за последние days дней.
+    Без паузы оптимизатор менял одни и те же SL/TP/режим туда-сюда каждый день (SBER 0.8→0.5→1.2%),
+    подгоняясь под шум последних свечей."""
+    try:
+        from app.db import db_cursor
+        with db_cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM ml_optimization_log WHERE figi=? AND applied=1 "
+                "AND timestamp >= datetime('now', ?, 'localtime') LIMIT 1",
+                (figi, f"-{int(days)} days"))
+            return cur.fetchone() is not None
+    except Exception as e:
+        log.warning("_optimized_recently %s: %s", figi, e)
+        return False
+
+
 def _deep_update(figi: str, ticker: str, strategy_id: int, current_params: Dict) -> None:
     """Полный анализ и возможное обновление параметров."""
     from app.ml.experience import get_recent_contexts
@@ -200,8 +220,13 @@ def _deep_update(figi: str, ticker: str, strategy_id: int, current_params: Dict)
     # pnl не пересчитывался под новый стоп). Здесь движок реально проигрывает свечи.
     try:
         from app.ml.backtest_client import optimize_instrument as _bt_opt
-        bt = _bt_opt(figi, ticker, ml_params["strategy_mode"],
-                     ml_params["stop_loss_pct"], ml_params["take_profit_pct"])
+        if _optimized_recently(figi):
+            log.info("[ML] %s: параметры менялись менее %d дн. назад — бэктест-оптимизация пропущена",
+                     ticker, OPT_COOLDOWN_DAYS)
+            bt = None
+        else:
+            bt = _bt_opt(figi, ticker, ml_params["strategy_mode"],
+                         ml_params["stop_loss_pct"], ml_params["take_profit_pct"])
         if bt and bt.get("improved"):
             reason = (f"Бэктест 90д ({bt['candles']} свечей): перебрано {bt['n_combos']} комбинаций "
                       f"режим×SL×TP. Лучшая: {bt['mode']}, SL {bt['sl']*100:.2f}%, TP {bt['tp']*100:.2f}% "

@@ -9,12 +9,14 @@ from typing import Dict, Optional, List
 log = logging.getLogger("ml.backtest_client")
 
 BACKTEST_DAYS = 90          # период истории для бэктеста
-MIN_BT_TRADES = 8           # минимум сделок в бэктесте чтобы доверять результату
-IMPROVE_MARGIN = 1.10       # новые параметры должны быть на 10%+ лучше
+MIN_BT_TRADES = 20          # минимум сделок на обучающей выборке: на 8 «лучшая» комбинация — это шум
+MIN_OOS_TRADES = 8          # минимум сделок на отложенной выборке для подтверждения
+IMPROVE_MARGIN = 1.50       # новые параметры должны быть на 50%+ лучше текущих
 
-# Сетка перебора
+# Сетка перебора. Нижняя граница стопа 0.5% = пол стопа в боевом коде (main.MIN_STOP_LOSS_PCT):
+# стоп уже 0.5% там всё равно поднимается до пола, и бэктест на 0.3% не подтверждал реальную торговлю
 _MODES = ["mean_reversion", "breakout", "trend"]
-_SL_GRID = [0.003, 0.005, 0.008, 0.012]
+_SL_GRID = [0.005, 0.008, 0.012]
 _TP_GRID = [0.006, 0.010, 0.015, 0.020]
 
 
@@ -102,7 +104,7 @@ def optimize_instrument(figi: str, ticker: str,
             tb = float(getattr(test_best, "net_pnl", 0) or 0)
             t0 = float(getattr(test_base, "net_pnl", 0) or 0)
             best["test_pnl"], best["test_base_pnl"] = tb, t0
-            if tb <= 0 or tb < t0 or int(getattr(test_best, "total_trades", 0) or 0) < MIN_BT_TRADES // 2:
+            if tb <= 0 or tb <= t0 or int(getattr(test_best, "total_trades", 0) or 0) < MIN_OOS_TRADES:
                 improved = False  # не подтвердилось вне выборки — подгонка под шум
         best["improved"] = improved
         return best
