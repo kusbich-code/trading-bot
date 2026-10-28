@@ -1042,6 +1042,9 @@ def _entry_blocked_reason(client, figi: str, ticker: str):
     return None
 
 
+NO_BROKER_POSITION_WHY = "у брокера нет позиции (уже закрыта биржевым стопом или вручную)"
+
+
 def _plan_close(client, figi: str, direction: str, qty_lots: int):
     """Закрывающий ордер может только УМЕНЬШАТЬ позицию. Сверяем с брокером: нет позиции — не шлём
     (иначе откроется встречная), позиция другого знака — не шлём, объёма меньше — уменьшаем.
@@ -1050,7 +1053,7 @@ def _plan_close(client, figi: str, direction: str, qty_lots: int):
     if net is None:
         return 0, "не удалось получить позицию брокера"
     if net == 0:
-        return 0, "у брокера нет позиции (уже закрыта биржевым стопом или вручную)"
+        return 0, NO_BROKER_POSITION_WHY
     if (direction == "BUY" and net < 0) or (direction == "SELL" and net > 0):
         return 0, f"направление позиции у брокера ({net:+d}) не совпадает с учётом бота ({direction})"
     return min(int(qty_lots), abs(net)), ""
@@ -2710,9 +2713,27 @@ def process_instrument(client, item,
                 # Отменяем ВСЕ ордера по figi перед закрытием (нативные стопы + лимитники)
                 _close_qty, _close_why = _plan_close(client, figi, direction, qty)
                 if _close_qty <= 0:
-                    # Закрывать нечего/нельзя: ордер не шлём. Запись о позиции приведёт в порядок sync_portfolio_positions
-                    log_event("POSITION_CLOSE", f"{ticker}: закрытие отменено — {_close_why}", ticker=ticker, level="WARNING")
+                    # Закрывать нечего/нельзя: ордер не шлём
                     state.order_cooldowns[figi] = _now()
+                    if _close_why == NO_BROKER_POSITION_WHY:
+                        # Позицию закрыл биржевой стоп: сами оформляем сделку и закрываем запись в БД, не дожидаясь
+                        # sync_portfolio_positions (иначе предупреждение повторялось каждый цикл десятки минут).
+                        # Грейс 90 с — как в sync: свежая позиция могла ещё не появиться в портфеле брокера.
+                        try:
+                            _age = (_now() - datetime.strptime(pos.get("opened_at", ""), "%Y-%m-%d %H:%M:%S")).total_seconds()
+                        except Exception:
+                            _age = 9999
+                        if _age >= 90:
+                            _bp_db = next((p for p in get_open_positions(source="BOT") if p["figi"] == figi), None)
+                            if _bp_db is not None:
+                                log_event("POSITION_CLOSE", f"{ticker}: позиции у брокера нет — оформляем закрытие биржевым стопом",
+                                          ticker=ticker, level="INFO")
+                                _handle_manual_close(_bp_db, get_instrument_market_state_map(), client=client)
+                            positions.pop(ticker, None)
+                            if _coord is not None:
+                                _coord.release(_strategy_id)
+                            return
+                    log_event("POSITION_CLOSE", f"{ticker}: закрытие отменено — {_close_why}", ticker=ticker, level="WARNING")
                     return
                 qty = _close_qty  # не больше фактической позиции брокера
                 _cancel_all_orders_for_figi(client, figi, ticker)
