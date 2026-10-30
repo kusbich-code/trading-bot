@@ -162,13 +162,15 @@ def _set_sector_returns(markers: Dict[str, Series], own_figi: str, t_close: date
 
 def replay_instrument(item: dict, series: Series, markers: Optional[Dict[str, Series]] = None, *,
                       start: datetime, end: Optional[datetime] = None, spread_pct: float = SPREAD_PCT,
-                      include_open: bool = False,
+                      include_open: bool = False, keep_paths: bool = False,
                       build: Callable[..., dict] = build_features) -> List[Tuple[vt.VTrade, dict]]:
     """Проигрывает историю одной бумаги. start/end — границы моментов сигнала (UTC); свечи до start служат разогревом.
 
     item: {"figi", "ticker", "levels": {режим: (sl, tp)}, "min_scores": {режим: порог}} — как у живого сканера.
     Возвращает пары (закрытая сделка, признаки); сделки, не успевшие закрыться к концу данных, отбрасываются
     (include_open=True добавляет их — для проверки отсутствия заглядывания в будущее).
+    keep_paths=False — поминутный путь цены после закрытия не хранится (его можно пересчитать из кеша свечей;
+    на десятках тысяч сделок он занимал бы сотни мегабайт памяти и БД).
     """
     markers = markers or {}
     figi, ticker = item["figi"], item.get("ticker", "")
@@ -187,6 +189,8 @@ def replay_instrument(item: dict, series: Series, markers: Optional[Dict[str, Se
         engine.on_bar(figi, o, h, l, c, t_open + timedelta(seconds=30))
         engine.expire(t_close, {figi: c})
         for t in engine.drain_closed():
+            if not keep_paths:
+                t.bars = []
             out.append((t, pending.pop(t.episode_id)))
 
         # 2) часовые свечи (в боевом пути последняя — формирующаяся, поэтому текущий час включается как есть)

@@ -30,6 +30,7 @@ logs/*
 !logs/.gitkeep
 *.log
 data/*.json
+data/backfill_cache/
 !data/.gitkeep
 data/*.sqlite3
 data/*.sqlite3.backup

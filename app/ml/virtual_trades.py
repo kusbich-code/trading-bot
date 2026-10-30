@@ -465,7 +465,8 @@ def store_backfill_batch(items: List[Tuple["VTrade", dict]]) -> int:
                   t.checkpoints.get(15), t.checkpoints.get(30), t.checkpoints.get(60), t.label, fid))
             vid = cur.lastrowid
             cur.execute("UPDATE ml_features SET virtual_id=? WHERE id=?", (vid, fid))
-            cur.execute("INSERT OR REPLACE INTO ml_virtual_paths(virtual_id, path_json) VALUES (?, ?)",
-                        (vid, json.dumps(t.bars, separators=(",", ":"))))
+            if t.bars:
+                cur.execute("INSERT OR REPLACE INTO ml_virtual_paths(virtual_id, path_json) VALUES (?, ?)",
+                            (vid, json.dumps(t.bars, separators=(",", ":"))))
             written += 1
     return written

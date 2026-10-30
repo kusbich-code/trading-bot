@@ -153,8 +153,15 @@ def test_sector_correlation_uses_marker_history(series):
 
 # ── хранение ─────────────────────────────────────────────────────────────────
 
-def test_store_batch_is_idempotent_and_separated(tmp_db, series):
+def test_paths_not_kept_by_default_but_can_be(series):
     out, _ = run(series)
+    assert out and all(t.bars == [] for t, _ in out)
+    with_paths, _ = run(series, keep_paths=True)
+    assert with_paths and all(len(t.bars) >= 1 for t, _ in with_paths)
+
+
+def test_store_batch_is_idempotent_and_separated(tmp_db, series):
+    out, _ = run(series, keep_paths=True)
     batch = out[:15]
     assert vt.store_backfill_batch(batch) == 15
     assert vt.store_backfill_batch(batch) == 0                          # повтор не плодит дубликаты

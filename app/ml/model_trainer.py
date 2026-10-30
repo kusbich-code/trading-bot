@@ -384,6 +384,7 @@ def should_retrain(figi: str, strategy_id: int) -> bool:
             cur.execute("""
                 SELECT COUNT(*) FROM ml_features
                 WHERE figi=? AND strategy_id=? AND label IS NOT NULL AND timestamp > ?
+                  AND COALESCE(source, 'REAL') = 'REAL'
             """, (figi, strategy_id, last_train))
             new_count = cur.fetchone()[0] or 0
         return new_count >= RETRAIN_EVERY

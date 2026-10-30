@@ -97,6 +97,20 @@ def test_cache_prevents_repeat_requests(env, tmp_db, monkeypatch):
     assert all(d == today for _, d in env[first:])
 
 
+def test_stops_when_memory_is_low(env, tmp_db, monkeypatch, capsys):
+    monkeypatch.setattr(cli, "mem_available_mb", lambda *a, **k: 100)
+    assert run_cli(monkeypatch, "--apply") == 0
+    assert "ОСТАНОВКА" in capsys.readouterr().out
+    assert counts(tmp_db) == (0, 0)
+
+
+def test_mem_available_parser(tmp_path):
+    f = tmp_path / "meminfo"
+    f.write_text("MemTotal:  2000000 kB\nMemAvailable:  1536000 kB\n", encoding="utf-8")
+    assert cli.mem_available_mb(str(f)) == 1500
+    assert cli.mem_available_mb(str(tmp_path / "нет-файла")) is None
+
+
 def test_ticker_filter_and_empty_universe(env, tmp_db, monkeypatch, capsys):
     assert run_cli(monkeypatch, "--tickers", "SBER") == 1
     assert "Нет инструментов" in capsys.readouterr().out

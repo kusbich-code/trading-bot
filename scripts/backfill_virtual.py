@@ -89,6 +89,21 @@ class CandleFetcher:
         return out
 
 
+MIN_FREE_MB = 450      # при меньшем запасе памяти скрипт останавливается, чтобы не вытеснить боевой бот (OOM)
+
+
+def mem_available_mb(meminfo_path: str = "/proc/meminfo"):
+    """Доступная память в МБ (Linux); None, если определить нельзя."""
+    try:
+        with open(meminfo_path, encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) // 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
+
+
 def live_start_utc(conn: sqlite3.Connection):
     """Момент появления первой живой виртуальной сделки (UTC) или None: добивка заканчивается до него."""
     try:
@@ -111,18 +126,29 @@ def backup_db(db_path: str) -> str:
     return str(dst)
 
 
-def summarize(label: str, results: list) -> None:
-    by_mode = defaultdict(lambda: Counter())
-    pnl = defaultdict(list)
-    for t, _ in results:
-        c = by_mode[t.mode]
-        c["n"] += 1
-        c["wins"] += int(t.label == 1)
-        pnl[t.mode].append(t.pnl_pct)
-    print(f"  {label}: {len(results)} эпизодов")
-    for mode, c in sorted(by_mode.items()):
-        p = pnl[mode]
-        print(f"      {mode:15s} {c['n']:5d}  прибыльных {c['wins'] / c['n']:5.1%}  ср. итог {sum(p) / len(p):+.3f}%")
+class Agg:
+    """Счётчики по эпизодам. Сами сделки не накапливаются: на десятках тысяч они не помещаются в память сервера."""
+
+    def __init__(self):
+        self.n = Counter()
+        self.wins = Counter()
+        self.pnl = defaultdict(float)
+        self.reasons = Counter()
+        self.total = 0
+
+    def add(self, results: list) -> None:
+        for t, _ in results:
+            self.n[t.mode] += 1
+            self.wins[t.mode] += int(t.label == 1)
+            self.pnl[t.mode] += t.pnl_pct
+            self.reasons[t.exit_reason] += 1
+            self.total += 1
+
+    def print(self, label: str) -> None:
+        print(f"  {label}: {self.total} эпизодов")
+        for mode in sorted(self.n):
+            n = self.n[mode]
+            print(f"      {mode:15s} {n:5d}  прибыльных {self.wins[mode] / n:5.1%}  ср. итог {self.pnl[mode] / n:+.3f}%")
 
 
 def main() -> int:
@@ -168,7 +194,7 @@ def main() -> int:
         init_db()                                    # миграции (колонка source) идемпотентны; бот делает то же при старте
 
     cache_dir = Path(args.cache_dir)
-    total = []
+    total = Agg()
     written = 0
     t0 = time.time()
     with with_client() as client:
@@ -179,25 +205,32 @@ def main() -> int:
             print(f"[маркер] {name}: загрузка свечей…", flush=True)
             markers[mfigi] = bf.make_series(mfigi, name, fetcher.load(mfigi, load_first, load_last))
         for u in universe:
+            free_mb = mem_available_mb()
+            if free_mb is not None and free_mb < MIN_FREE_MB:
+                print(f"ОСТАНОВКА: свободной памяти {free_mb} МБ < {MIN_FREE_MB} МБ, боевой бот важнее. "
+                      f"Повторите запуск позже (уже загруженные дни и записанные эпизоды сохранены).")
+                break
             print(f"[{u['ticker']}] загрузка свечей…", flush=True)
             series = markers.get(u["figi"]) or bf.make_series(u["figi"], u["ticker"], fetcher.load(u["figi"], load_first, load_last))
             if len(series.times) < 500:
                 print(f"    мало свечей ({len(series.times)}), пропуск")
                 continue
             res = bf.replay_instrument(u, series, markers, start=start, end=end)
-            summarize(f"{u['ticker']} (свечей {len(series.times)})", res)
-            total.extend(res)
+            one = Agg()
+            one.add(res)
+            one.print(f"{u['ticker']} (свечей {len(series.times)})")
+            total.add(res)
             if args.apply:
                 for i in range(0, len(res), BATCH):
                     written += vt.store_backfill_batch(res[i:i + BATCH])
+            del res
             if u["figi"] not in markers:
                 del series
             gc.collect()
 
     print("\n== ИТОГО")
-    summarize("все бумаги", total)
-    by_reason = Counter(t.exit_reason for t, _ in total)
-    print("  причины выхода:", dict(by_reason))
+    total.print("все бумаги")
+    print("  причины выхода:", dict(total.reasons))
     print(f"  запросов свечей: {fetcher.requests}, пропущенных дней: {len(fetcher.failed_days)}, время {time.time() - t0:.0f} с")
     if fetcher.failed_days:
         print("  ПРОПУЩЕНЫ (повторите запуск — кеш подхватит остальное):", fetcher.failed_days[:10])

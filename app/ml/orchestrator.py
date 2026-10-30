@@ -399,7 +399,7 @@ def _check_concept_drift() -> None:
                 return  # Модель ещё не активирована — нечего проверять
             cur.execute("""
                 SELECT label FROM ml_features
-                WHERE label IS NOT NULL AND timestamp >= ?
+                WHERE label IS NOT NULL AND timestamp >= ? AND COALESCE(source, 'REAL') = 'REAL'
                 ORDER BY id DESC LIMIT 20
             """, (activation_date,))
             labels = [r[0] for r in cur.fetchall()]
