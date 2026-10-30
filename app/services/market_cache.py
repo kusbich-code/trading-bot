@@ -9,6 +9,7 @@ StreamSubscriptions — какие инструменты слушает MarketD
 """
 import threading
 import time
+from collections import deque
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
@@ -60,6 +61,39 @@ class CandleCache:
         with self._lock:
             self._data[key] = (bucket, self._mono(), candles, final)
         return candles
+
+
+class ApiBudget:
+    """Скользящий лимит запросов к API для фоновых задач: не больше per_minute в минуту.
+
+    Реальная торговля в приоритете: пока общая нагрузка total_rpm не ниже yield_at, бюджет ничего не выдаёт.
+    """
+
+    def __init__(self, per_minute: int, mono_fn: Optional[Callable[[], float]] = None):
+        self.per_minute = max(0, int(per_minute))
+        self._mono = mono_fn or time.monotonic
+        self._stamps: deque = deque()
+        self._lock = threading.Lock()
+        self.denied = 0
+
+    def try_acquire(self, n: int = 1, total_rpm: int = 0, yield_at: Optional[int] = None) -> bool:
+        if yield_at is not None and total_rpm >= yield_at:
+            self.denied += 1
+            return False
+        now = self._mono()
+        with self._lock:
+            while self._stamps and now - self._stamps[0] >= 60.0:
+                self._stamps.popleft()
+            if len(self._stamps) + n > self.per_minute:
+                self.denied += 1
+                return False
+            self._stamps.extend([now] * n)
+            return True
+
+    def used(self) -> int:
+        now = self._mono()
+        with self._lock:
+            return sum(1 for s in self._stamps if now - s < 60.0)
 
 
 class StreamSubscriptions:

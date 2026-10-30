@@ -454,6 +454,60 @@ def init_db():
             cur.execute("ALTER TABLE ml_features ADD COLUMN exit_reason TEXT")
         except Exception:
             pass
+        # источник строки: REAL — реальная сделка, VIRTUAL — виртуальная (без брокера), BACKFILL — историческая добивка;
+        # strategy_mode — режим сигнала (trend/mean_reversion/breakout); virtual_id — связь с ml_virtual_trades
+        for _ddl in ("ALTER TABLE ml_features ADD COLUMN source TEXT DEFAULT 'REAL'",
+                     "ALTER TABLE ml_features ADD COLUMN strategy_mode TEXT",
+                     "ALTER TABLE ml_features ADD COLUMN virtual_id INTEGER"):
+            try:
+                cur.execute(_ddl)
+            except Exception:
+                pass
+
+        # ── Виртуальные сделки: сигнал отрабатывается без брокера, исход нужен для обучения ──
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS ml_virtual_trades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT NOT NULL,
+            figi TEXT NOT NULL,
+            ticker TEXT NOT NULL,
+            strategy_mode TEXT NOT NULL,
+            direction TEXT NOT NULL,              -- BUY / SELL
+            episode_id TEXT DEFAULT '',           -- одна серия подряд идущих сигналов = один эпизод
+            signal_score REAL DEFAULT 0,
+            filter_stage TEXT DEFAULT '',         -- какие фильтры реальной торговли сигнал не прошёл (пусто — прошёл все)
+            ml_p REAL,                            -- вероятность модели в момент сигнала (если считалась)
+            ml_decision TEXT DEFAULT '',          -- решение модели: allow / block / shadow_block / ''
+            real_trade INTEGER DEFAULT 0,         -- 1 — по этому сигналу открыта реальная позиция
+            entry_mid REAL,                       -- цена рынка в момент сигнала
+            entry_price REAL,                     -- цена входа с учётом спреда (BUY по ask, SELL по bid)
+            fill_src TEXT DEFAULT '',             -- откуда цена входа: book (стакан) / mid (последняя цена)
+            spread_pct REAL,                      -- спред на входе, % от цены
+            sl_pct REAL, tp_pct REAL,             -- уровни, доли от цены входа (0.008 = 0.8%)
+            commission_pct REAL,                  -- комиссия за одну сторону, %
+            ind_missing INTEGER DEFAULT 0,        -- 1 — индикаторы API недоступны (нет бюджета запросов)
+            status TEXT DEFAULT 'OPEN',           -- OPEN / CLOSED / ABORTED (прервана перезапуском)
+            closed_at TEXT,
+            exit_price REAL,
+            exit_reason TEXT,                     -- STOP_LOSS / TAKE_PROFIT / TIMEOUT / SESSION_END
+            pnl_pct REAL,                         -- чистый результат, % от цены входа, после комиссий и спреда
+            mfe_pct REAL, mae_pct REAL,           -- максимальный ход в нашу пользу / против нас, %
+            hold_min REAL,
+            ret_5m REAL, ret_15m REAL, ret_30m REAL, ret_60m REAL,   -- результат через N минут после входа, %
+            label INTEGER,                        -- 1 прибыль, 0 убыток, NULL — не определён
+            feature_id INTEGER                    -- строка ml_features с признаками на момент сигнала
+        )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_mlvt_status ON ml_virtual_trades(status)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_mlvt_created ON ml_virtual_trades(created_at)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_mlvt_figi_mode ON ml_virtual_trades(figi, strategy_mode, direction)")
+        # поминутный путь цены (open/high/low/close) для пересчёта исходов с другими SL/TP; очищается через N дней
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS ml_virtual_paths (
+            virtual_id INTEGER PRIMARY KEY,
+            path_json TEXT NOT NULL
+        )
+        """)
 
         cur.execute("""
         CREATE TABLE IF NOT EXISTS ml_models (

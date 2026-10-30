@@ -3914,6 +3914,19 @@ function _buildLearningHtml(data) {
       ${stage("♻️","6. Дообучение","каждые 10","новых сделок","#7ab0e8")}
     </div>`;
 
+  // ── Виртуальные сделки (без брокера) ─────────────────────────────────────
+  const vStat = data.virtual_stats || {};
+  const vDone = (vStat.wins || 0) + (vStat.losses || 0);
+  const vWin = vDone ? Math.round((vStat.wins || 0) / vDone * 100) : 0;
+  const virtualBlock = vStat.enabled === false
+    ? `<div class="muted" style="font-size:12px">Выключено (настройка virtual_trades_enabled=0).</div>`
+    : `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:stretch">
+        ${stage("🧬","Эпизодов",vStat.episodes||0,"независимых сигналов","#7ab0e8")}
+        ${stage("⏳","Открыто сейчас",vStat.open_n||0,"в работе","#c4dcff")}
+        ${stage("🏁","Закрыто",vStat.closed_n||0,`${vStat.wins||0}✓ / ${vStat.losses||0}✗ (${vWin}%)`,"#2fa36b")}
+        ${stage("📊","Всего записей",vStat.n||0,"включая прерванные","#9b7ae8")}
+      </div>`;
+
   // ── 2. Глоссарий ─────────────────────────────────────────────────────────
   const glossary = [
     ["Признак (feature)","Одно измеримое свойство рынка в момент сделки — RSI, тренд, объём. Модель видит мир как набор из 31 числа."],
@@ -4026,6 +4039,8 @@ function _buildLearningHtml(data) {
     ${statusBanner}
     <div style="margin:14px 0 6px"><button class="btn btn-primary" onclick="mlRebalance()">⚡ Переобучить модель сейчас</button>
       <span class="muted" style="font-size:11px;margin-left:8px">обычно происходит автоматически в 00:00 МСК и каждые 10 новых сделок</span></div>
+
+    ${sec(h2("🧪 Виртуальные сделки","Каждый новый сигнал отрабатывается без брокера, исход идёт в обучение. Одна серия подряд идущих сигналов считается одним эпизодом.") + virtualBlock)}
 
     ${sec(h2("🔄 Как работает модель — полный цикл","Каждый этап с живыми данными вашей модели. Стрелки показывают поток данных.") + pipeline +
       edu("💡 <b>Принцип машинного обучения:</b> модель не знает торговых правил. Она смотрит на тысячи примеров «вот так выглядел рынок → вот что вышло» и сама находит закономерности. Чем больше размеченных сделок — тем умнее модель. Это тот же принцип, что и в нейросетях; здесь используется <b>GradientBoosting</b> — ансамбль из 150 решающих деревьев, который часто точнее нейросети на табличных данных."))}

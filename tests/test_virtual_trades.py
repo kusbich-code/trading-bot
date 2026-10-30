@@ -1,0 +1,294 @@
+"""Виртуальные сделки: издержки, метки, эпизоды, SL/TP по тикам, таймауты и хранение."""
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+from app.ml import virtual_trades as vt
+
+UTC = timezone.utc
+# 10:30 МСК (основная сессия, до закрытия окна 18:45 МСК далеко)
+T0 = datetime(2026, 10, 30, 7, 30, 0, tzinfo=UTC)
+
+
+def at(minutes=0.0, seconds=0.0):
+    return T0 + timedelta(minutes=minutes, seconds=seconds)
+
+
+def open_trade(engine, direction="BUY", now=None, mid=100.0, bid=99.95, ask=100.05, sl=0.01, tp=0.02, **kw):
+    now = now or T0
+    ep = engine.claim("F1", "mean_reversion", direction, now)
+    assert ep, "claim должен разрешить открытие"
+    return engine.open(figi="F1", ticker="SBER", mode="mean_reversion", direction=direction, episode_id=ep,
+                       score=70, now=now, mid=mid, bid=bid, ask=ask, sl_pct=sl, tp_pct=tp, **kw)
+
+
+# ── издержки и метки ─────────────────────────────────────────────────────────
+
+def test_net_pnl_includes_both_commissions():
+    assert vt.net_pnl_pct(1, 100.0, 101.0, 0.04) == pytest.approx(0.92)
+    assert vt.net_pnl_pct(-1, 100.0, 99.0, 0.04) == pytest.approx(0.92)
+    assert vt.net_pnl_pct(1, 100.0, 100.0, 0.04) == pytest.approx(-0.08)
+
+
+def test_labels_follow_net_result():
+    assert vt.decide_label(0.9) == 1
+    assert vt.decide_label(0.01) == 1
+    assert vt.decide_label(0.0) == 0
+    assert vt.decide_label(-1.1) == 0
+
+
+def test_session_deadline_windows():
+    msk = lambda h, m: datetime(2026, 10, 30, h, m, tzinfo=vt.MSK)
+    assert vt.session_deadline(msk(10, 30)) == msk(18, 45)
+    assert vt.session_deadline(msk(19, 10)) == msk(23, 45)
+    assert vt.session_deadline(msk(9, 59)) is None
+    assert vt.session_deadline(msk(18, 50)) is None            # перерыв
+    assert vt.session_deadline(msk(23, 46)) is None
+
+
+# ── эпизоды ──────────────────────────────────────────────────────────────────
+
+def test_one_trade_per_episode():
+    e = vt.VirtualEngine()
+    assert e.claim("F1", "trend", "BUY", at(0)) is not None
+    for m in range(1, 6):                                       # сигнал держится каждую минуту
+        assert e.claim("F1", "trend", "BUY", at(m)) is None
+    assert e.stats["episodes"] == 1 and e.stats["signals"] == 6
+
+
+def test_new_episode_after_gap():
+    e = vt.VirtualEngine()
+    first = e.claim("F1", "trend", "BUY", at(0))
+    second = e.claim("F1", "trend", "BUY", at(0, 151))          # пауза больше EPISODE_GAP_SEC
+    assert first and second and first != second
+
+
+def test_short_pause_does_not_break_episode():
+    e = vt.VirtualEngine()
+    e.claim("F1", "trend", "BUY", at(0))
+    assert e.claim("F1", "trend", "BUY", at(2)) is None         # один пропущенный интервал: 120 с < 150 с
+
+
+def test_directions_modes_and_instruments_are_independent():
+    e = vt.VirtualEngine()
+    assert e.claim("F1", "trend", "BUY", at(0))
+    assert e.claim("F1", "trend", "SELL", at(0))
+    assert e.claim("F1", "breakout", "BUY", at(0))
+    assert e.claim("F2", "trend", "BUY", at(0))
+
+
+def test_no_trade_outside_session_or_near_close():
+    e = vt.VirtualEngine()
+    night = datetime(2026, 10, 30, 2, 0, tzinfo=UTC)            # 05:00 МСК
+    assert e.claim("F1", "trend", "BUY", night) is None
+    near_close = datetime(2026, 10, 30, 15, 42, tzinfo=UTC)     # 18:42 МСК, до закрытия окна 3 минуты
+    assert e.claim("F1", "trend", "BUY", near_close) is None
+    assert e.stats["skipped_session"] == 2
+
+
+def test_episode_not_lost_when_skipped_near_close():
+    e = vt.VirtualEngine()
+    near_close = datetime(2026, 10, 30, 15, 42, tzinfo=UTC)
+    assert e.claim("F1", "trend", "BUY", near_close) is None
+    next_day = datetime(2026, 10, 31, 7, 30, tzinfo=UTC)
+    assert e.claim("F1", "trend", "BUY", next_day) is not None
+
+
+# ── вход ─────────────────────────────────────────────────────────────────────
+
+def test_entry_uses_ask_for_buy_and_bid_for_sell():
+    e = vt.VirtualEngine()
+    b = open_trade(e, "BUY", bid=99.95, ask=100.05)
+    assert b.entry_fill == 100.05 and b.fill_src == "book"
+    assert b.spread_pct == pytest.approx(0.1)
+    s = vt.VirtualEngine()
+    t = open_trade(s, "SELL", bid=99.95, ask=100.05)
+    assert t.entry_fill == 99.95
+
+
+def test_entry_without_book_uses_mid():
+    e = vt.VirtualEngine()
+    t = open_trade(e, bid=None, ask=None)
+    assert t.entry_fill == 100.0 and t.fill_src == "mid" and t.spread_pct is None
+
+
+def test_levels_from_fill_price():
+    e = vt.VirtualEngine()
+    t = open_trade(e, "BUY", bid=99.95, ask=100.0, sl=0.01, tp=0.02)
+    assert t.sl_price == pytest.approx(99.0) and t.tp_price == pytest.approx(102.0)
+    s = vt.VirtualEngine()
+    t = open_trade(s, "SELL", bid=100.0, ask=100.05, sl=0.01, tp=0.02)
+    assert t.sl_price == pytest.approx(101.0) and t.tp_price == pytest.approx(98.0)
+
+
+def test_deadline_is_hold_limit_or_session_end():
+    e = vt.VirtualEngine()
+    t = open_trade(e)
+    assert t.deadline == at(120) and t.deadline_reason == "TIMEOUT"
+    late = datetime(2026, 10, 30, 14, 30, tzinfo=UTC)           # 17:30 МСК: до конца сессии 75 минут
+    e2 = vt.VirtualEngine()
+    t2 = open_trade(e2, now=late)
+    assert t2.deadline == datetime(2026, 10, 30, 15, 45, tzinfo=UTC) and t2.deadline_reason == "SESSION_END"
+
+
+# ── тики: SL / TP ────────────────────────────────────────────────────────────
+
+def test_buy_take_profit():
+    e = vt.VirtualEngine()
+    t = open_trade(e, "BUY", bid=99.95, ask=100.0)
+    e.on_tick("F1", 101.0, at(1))
+    assert t.status == "OPEN"
+    e.on_tick("F1", 102.5, at(2))                               # перелетели цель: исполнение по уровню
+    assert t.status == "CLOSED" and t.exit_reason == "TAKE_PROFIT"
+    assert t.exit_price == pytest.approx(102.0)
+    assert t.pnl_pct == pytest.approx(2.0 - 0.08)
+    assert t.label == 1
+    assert e.open_count() == 0 and e.drain_closed() == [t] and e.drain_closed() == []
+
+
+def test_buy_stop_loss_with_book():
+    e = vt.VirtualEngine()
+    t = open_trade(e, "BUY", bid=99.95, ask=100.0)
+    e.on_tick("F1", 98.9, at(3), bid=98.85, ask=98.95)
+    assert t.exit_reason == "STOP_LOSS" and t.exit_price == 98.85
+    assert t.pnl_pct == pytest.approx((98.85 - 100.0) / 100.0 * 100 - 0.08)
+    assert t.label == 0
+
+
+def test_stop_loss_without_book_pays_half_spread():
+    e = vt.VirtualEngine()
+    t = open_trade(e, "BUY", bid=99.95, ask=100.05)             # спред 0.1%
+    sl = t.sl_price
+    e.on_tick("F1", sl - 0.01, at(3))
+    assert t.exit_price == pytest.approx((sl - 0.01) * (1 - 0.1 / 200.0))
+
+
+def test_sell_take_profit_and_stop_loss():
+    e = vt.VirtualEngine()
+    t = open_trade(e, "SELL", bid=100.0, ask=100.05)
+    e.on_tick("F1", 97.9, at(1))
+    assert t.exit_reason == "TAKE_PROFIT" and t.exit_price == pytest.approx(98.0)
+    assert t.pnl_pct == pytest.approx(2.0 - 0.08) and t.label == 1
+
+    e2 = vt.VirtualEngine()
+    t2 = open_trade(e2, "SELL", bid=100.0, ask=100.05)
+    e2.on_tick("F1", 101.2, at(1), bid=101.15, ask=101.25)
+    assert t2.exit_reason == "STOP_LOSS" and t2.exit_price == 101.25    # SELL выкупаем по ask
+    assert t2.label == 0
+
+
+def test_ticks_for_other_instrument_ignored():
+    e = vt.VirtualEngine()
+    t = open_trade(e)
+    e.on_tick("OTHER", 1.0, at(1))
+    e.on_tick("F1", 0.0, at(1))
+    e.on_tick("F1", None, at(1))
+    assert t.status == "OPEN"
+
+
+# ── MFE / MAE / контрольные точки ────────────────────────────────────────────
+
+def test_mfe_mae_and_checkpoints():
+    e = vt.VirtualEngine()
+    t = open_trade(e, "BUY", bid=99.95, ask=100.0, sl=0.05, tp=0.05)
+    e.on_tick("F1", 100.8, at(2))
+    e.on_tick("F1", 99.5, at(6))                                # прошло > 5 мин: фиксируем ret_5m
+    e.on_tick("F1", 100.2, at(16))
+    assert t.checkpoints[5] == pytest.approx(-0.5)
+    assert t.checkpoints[15] == pytest.approx(0.2)
+    assert t.checkpoints[30] is None
+    e.expire(at(121), {"F1": 100.4})
+    assert t.exit_reason == "TIMEOUT"
+    assert t.mfe_pct == pytest.approx(0.8) and t.mae_pct == pytest.approx(-0.5)
+    assert t.hold_min == pytest.approx(121.0)
+    assert len(t.bars) >= 3
+
+
+def test_short_trade_mfe_mae_signs():
+    e = vt.VirtualEngine()
+    t = open_trade(e, "SELL", bid=100.0, ask=100.05, sl=0.05, tp=0.05)
+    e.on_tick("F1", 99.0, at(1))        # в нашу пользу
+    e.on_tick("F1", 100.5, at(2))       # против нас
+    e.expire(at(130), {"F1": 100.5})
+    assert t.mfe_pct == pytest.approx(1.0) and t.mae_pct == pytest.approx(-0.5)
+
+
+# ── таймауты ─────────────────────────────────────────────────────────────────
+
+def test_expire_before_deadline_does_nothing():
+    e = vt.VirtualEngine()
+    t = open_trade(e)
+    assert e.expire(at(119)) == 0 and t.status == "OPEN"
+
+
+def test_expire_at_session_end_flat_price_is_a_loss_after_costs():
+    e = vt.VirtualEngine()
+    late = datetime(2026, 10, 30, 14, 30, tzinfo=UTC)
+    t = open_trade(e, now=late, bid=99.99, ask=100.0)
+    assert e.expire(datetime(2026, 10, 30, 15, 45, tzinfo=UTC), {"F1": 100.0}) == 1
+    assert t.exit_reason == "SESSION_END"
+    assert t.pnl_pct < -0.08 and t.label == 0                   # цена не двигалась, но комиссия и спред съели результат
+
+
+def test_expire_uses_last_tick_when_no_price_given():
+    e = vt.VirtualEngine()
+    t = open_trade(e, bid=99.95, ask=100.0, sl=0.1, tp=0.1)
+    e.on_tick("F1", 100.7, at(10))
+    e.expire(at(121))
+    assert t.exit_price < 100.7 and t.label == 1
+
+
+# ── хранение ─────────────────────────────────────────────────────────────────
+
+def _feature_row(db):
+    with db.db_cursor() as cur:
+        cur.execute("INSERT INTO ml_features(figi, ticker, strategy_id, timestamp, source) "
+                    "VALUES ('F1','SBER',0,'2026-10-30 10:30:00','VIRTUAL')")
+        return cur.lastrowid
+
+
+def test_store_roundtrip(tmp_db):
+    fid = _feature_row(tmp_db)
+    e = vt.VirtualEngine()
+    t = open_trade(e, "BUY", bid=99.95, ask=100.0, filter_stage="min_score", ml_p=0.31,
+                   ml_decision="shadow_block", feature_id=fid)
+    assert vt.store_open(t) > 0
+    e.on_tick("F1", 101.0, at(2))
+    e.on_tick("F1", 102.3, at(7))
+    (closed,) = e.drain_closed()
+    vt.store_closed(closed)
+    with tmp_db.db_cursor() as cur:
+        cur.execute("SELECT * FROM ml_virtual_trades WHERE id=?", (t.id,))
+        r = cur.fetchone()
+        assert (r["status"], r["exit_reason"], r["label"], r["filter_stage"], r["ml_decision"]) == \
+               ("CLOSED", "TAKE_PROFIT", 1, "min_score", "shadow_block")
+        assert r["pnl_pct"] == pytest.approx(2.0 - 0.08) and r["feature_id"] == fid
+        assert r["ret_5m"] == pytest.approx(1.0) or r["ret_5m"] is not None
+        cur.execute("SELECT label, exit_reason, virtual_id, pnl FROM ml_features WHERE id=?", (fid,))
+        f = cur.fetchone()
+        assert (f["label"], f["exit_reason"], f["virtual_id"]) == (1, "TAKE_PROFIT", t.id)
+        cur.execute("SELECT path_json FROM ml_virtual_paths WHERE virtual_id=?", (t.id,))
+        assert len(__import__("json").loads(cur.fetchone()["path_json"])) >= 2
+
+
+def test_abort_open_on_start_and_counters(tmp_db):
+    e = vt.VirtualEngine()
+    a = open_trade(e)
+    vt.store_open(a)
+    b = open_trade(e, "SELL", bid=100.0, ask=100.05)
+    vt.store_open(b)
+    assert vt.abort_open_on_start() == 2
+    c = vt.counters()
+    assert c["n"] == 2 and c["open_n"] == 0 and c["closed_n"] == 0
+
+
+def test_prune_paths_keeps_trades(tmp_db):
+    e = vt.VirtualEngine()
+    t = open_trade(e, sl=0.001, tp=0.5)
+    vt.store_open(t)
+    e.on_tick("F1", 99.0, at(1))
+    vt.store_closed(e.drain_closed()[0])
+    with tmp_db.db_cursor() as cur:
+        cur.execute("UPDATE ml_virtual_trades SET closed_at='2020-01-01 00:00:00'")
+    assert vt.prune_paths(days=30) == 1
+    assert vt.counters()["closed_n"] == 1

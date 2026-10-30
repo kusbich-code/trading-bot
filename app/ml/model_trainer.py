@@ -22,7 +22,10 @@ MIN_PRECISION_ACTIVATE = 0.50  # минимальная precision для акт�
 # ручное закрытие, чистка осиротевших позиций и т.п. не отражают качества входа (ранний выход к тому же
 # всегда даёт убыток по построению). NULL — причина не известна (старые строки), их не отбрасываем.
 POLICY_EXIT_REASONS = ("STOP_LOSS", "TAKE_PROFIT")
-_CLEAN_LABEL_SQL = "(exit_reason IS NULL OR exit_reason IN ('STOP_LOSS','TAKE_PROFIT'))"
+# Этот тренер учится только на реальных сделках. Виртуальные строки (source='VIRTUAL') пойдут в обучение вместе
+# с новым тренером (разбиение по времени, веса по эпизодам); в старом их много и они сильно коррелированы.
+_CLEAN_LABEL_SQL = ("(exit_reason IS NULL OR exit_reason IN ('STOP_LOSS','TAKE_PROFIT')) "
+                    "AND COALESCE(source, 'REAL') = 'REAL'")
 
 
 def _balance_classes(X_train: list, y_train: list) -> Tuple[list, list]:

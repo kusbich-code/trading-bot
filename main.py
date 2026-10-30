@@ -49,7 +49,9 @@ except Exception:
 from app.config import settings
 from app.version import __version__ as BOT_VERSION
 from app.services.strategy_engine import evaluate_signal as _evaluate_signal
-from app.services.market_cache import CandleCache, StreamSubscriptions
+from app.services.market_cache import ApiBudget, CandleCache, StreamSubscriptions
+from app.ml import virtual_trades as _vt
+from app.ml.virtual_scanner import SkipInstrument, VirtualScanner
 from app.db import (
     init_db,
     set_runtime,
@@ -453,6 +455,9 @@ _md_subs = StreamSubscriptions()      # инструменты подписки 
 _md_restart = Event()                 # установка → воркер переподключается с новыми инструментами
 _MD_RESTART_COALESCE_SEC = 3.0        # воркеры регистрируют инструменты по одному: ждём, чтобы переподключиться один раз
 _candle_cache = CandleCache()         # завершённые минутные свечи: запрос не чаще раза в минуту на бумагу
+_virtual_engine = _vt.VirtualEngine()  # виртуальные сделки (без брокера): тики цены приходят из стрима
+_virtual_budget = ApiBudget(int(_rate.limit // 2))   # запросы виртуального контура: не больше половины лимита API
+_virtual_client: Dict[str, object] = {"c": None}     # клиент API на текущий проход сканера
 
 
 def _make_md_gen(instruments: list, stop_ev: Event):
@@ -526,6 +531,13 @@ def _market_data_stream_worker():
                                 _d = _md.setdefault(figi, {})
                                 _d["price"] = Decimal(str(price))
                                 _d["price_ts"] = time.monotonic()  # для проверки свежести
+                                _ob_v = _d.get("orderbook") if (time.monotonic() - _d.get("ob_ts", 0.0)) <= MD_STALE_SEC else None
+                                _bid_v = float(_ob_v["bid_price"]) if _ob_v and _ob_v["bid_price"] else None
+                                _ask_v = float(_ob_v["ask_price"]) if _ob_v and _ob_v["ask_price"] else None
+                            try:  # виртуальные сделки: SL/TP и экстремумы по каждому тику; не должно мешать стриму
+                                _virtual_engine.on_tick(figi, float(price), datetime.now(timezone.utc), _bid_v, _ask_v)
+                            except Exception as _vte:
+                                log.debug("виртуальный тик %s: %s", figi, _vte)
 
                     ob = getattr(resp, "orderbook", None)
                     if ob:
@@ -3513,6 +3525,167 @@ def _parallel_instruments(strategy_id: int) -> list:
     return result
 
 
+# ── Виртуальные сделки (без брокера) ─────────────────────────────────────────
+
+_MODE_CANON = {"trend": "trend", "mean": "mean_reversion", "mean_reversion": "mean_reversion",
+               "revert": "mean_reversion", "breakout": "breakout"}
+_vs_universe_cache: Dict[str, object] = {"ts": 0.0, "items": []}
+
+
+def _virtual_api_ok(n: int) -> bool:
+    """Бюджет запросов виртуального контура: не больше половины лимита API, реальная торговля в приоритете."""
+    return _virtual_budget.try_acquire(n, total_rpm=_rate.rpm, yield_at=_rate.warn)
+
+
+def _vs_universe() -> list:
+    """Инструменты для сканера: основной цикл + инструменты всех активных параллельных стратегий.
+    Для каждого — уровни SL/TP и порог score по режимам, под которые настроена стратегия (кеш 60 с)."""
+    if time.monotonic() - float(_vs_universe_cache["ts"]) < 60:
+        return _vs_universe_cache["items"]
+    items: Dict[str, dict] = {}
+
+    def add(it: dict, mode: str, min_score: int):
+        e = items.setdefault(it["figi"], {"figi": it["figi"], "ticker": it["ticker"], "instrument_uid": "",
+                                          "levels": {}, "min_scores": {}})
+        if it.get("instrument_uid") and not e["instrument_uid"]:
+            e["instrument_uid"] = it["instrument_uid"]
+        canon = _MODE_CANON.get(str(mode).lower())
+        if canon:
+            e["levels"].setdefault(canon, (float(it.get("stop_loss_pct") or 0) or 0.008,
+                                           float(it.get("take_profit_pct") or 0) or 0.015))
+            e["min_scores"].setdefault(canon, min_score)
+
+    try:
+        pid = get_setting("active_profile_id", "").strip()
+        if pid and get_profile_setting(int(pid), "parallel_trading_enabled", "0") == "1":
+            for entry in list_profile_parallel_strategies(int(pid)):
+                sid = entry["strategy_id"]
+                cfg = {r[0]: r[1] for r in _parallel_cfg_rows(sid)}
+                mode = cfg.get("tradingmode", "trend")
+                try:
+                    ms = int(float(cfg.get("min_signal_score", 0) or 0))
+                except (TypeError, ValueError):
+                    ms = 0
+                for it in _parallel_instruments(sid):
+                    add(it, mode, ms)
+        main_mode = get_setting("tradingmode", "trend")
+        try:
+            main_ms = int(float(get_setting("min_signal_score", "0") or 0))
+        except (TypeError, ValueError):
+            main_ms = 0
+        for it in list(state.instrument_meta.values()):
+            add(it, main_mode, main_ms)
+    except Exception as e:
+        log.warning("виртуальный сканер: список инструментов: %s", e)
+    _vs_universe_cache["items"] = list(items.values())
+    _vs_universe_cache["ts"] = time.monotonic()
+    return _vs_universe_cache["items"]
+
+
+def _vs_candles(item: dict) -> list:
+    """Свечи через общий кеш с воркерами; собственный запрос — только в рамках бюджета."""
+    uid, figi = item.get("instrument_uid", "") or "", item["figi"]
+    client = _virtual_client["c"]
+
+    def fetch():
+        if client is None or not _virtual_api_ok(1):
+            raise SkipInstrument("нет клиента или исчерпан бюджет запросов")
+        return get_candles(client, figi, n=50, instrument_uid=uid)   # n=50 как у воркеров: общий ключ кеша
+
+    return _candle_cache.get((uid or figi, 50), fetch)
+
+
+def _vs_quote(figi: str) -> Optional[dict]:
+    """Цена и стакан из стрима (без запросов к API); None — свежих данных нет."""
+    with _md_lock:
+        d = dict(_md.get(figi, {}))
+    now_m = time.monotonic()
+    price = float(d["price"]) if d.get("price") and (now_m - d.get("price_ts", 0.0)) <= MD_STALE_SEC else None
+    ob = d.get("orderbook") if (now_m - d.get("ob_ts", 0.0)) <= MD_STALE_SEC else None
+    bid = float(ob["bid_price"]) if ob and ob.get("bid_price") else None
+    ask = float(ob["ask_price"]) if ob and ob.get("ask_price") else None
+    if price is None and bid and ask:
+        price = (bid + ask) / 2
+    if price is None:
+        return None
+    return {"price": price, "bid": bid, "ask": ask,
+            "bid_vol": int(ob["bid_vol"]) if ob else 0, "ask_vol": int(ob["ask_vol"]) if ob else 0}
+
+
+def _vs_indicators(item: dict) -> Optional[dict]:
+    """RSI/MACD/BB из API: общий кеш 90 с с боевым путём; новый запрос (3 вызова) — только в рамках бюджета."""
+    uid, figi = item.get("instrument_uid", "") or "", item["figi"]
+    cached = _tech_cache.get(uid or figi)
+    if cached and (time.monotonic() - cached[0]) < _TECH_TTL:
+        return cached[1]
+    client = _virtual_client["c"]
+    if client is None or not _virtual_api_ok(3):
+        return None
+    return get_api_indicators(client, uid, figi)
+
+
+def _vs_timeframes(item: dict) -> dict:
+    from app.ml.multi_timeframe import get_all_timeframes
+    try:
+        return get_all_timeframes(_virtual_client["c"], item["figi"])
+    except Exception as e:
+        log.debug("виртуальный сканер: 1ч/4ч %s: %s", item.get("ticker"), e)
+        return {}
+
+
+def _vs_save_features(item: dict, features: dict, mode: str) -> int:
+    from app.db import db_cursor
+    from app.ml.feature_builder import store_features
+    fid = store_features(item["figi"], item["ticker"], 0, features, 0)
+    if fid:
+        with db_cursor() as cur:
+            cur.execute("UPDATE ml_features SET source='VIRTUAL', strategy_mode=? WHERE id=?", (mode, fid))
+    return fid
+
+
+def _vs_predict(figi: str, features: dict) -> Optional[float]:
+    from app.ml.model_predictor import predict_probability
+    return predict_probability(figi, 0, features)
+
+
+def _vs_has_real_position(figi: str) -> bool:
+    return any(p["figi"] == figi for p in get_open_positions(source="BOT"))
+
+
+def _virtual_scanner_worker():
+    """Фоновый поток виртуальных сделок: раз в ~5 с обходит инструменты и открывает сделки по новым сигналам,
+    а также закрывает сделки по сроку и сохраняет итоги. Выключается настройкой virtual_trades_enabled=0."""
+    from app.ml.feature_builder import build_features
+    from app.ml.virtual_trades import abort_open_on_start, prune_paths
+    try:
+        aborted = abort_open_on_start()
+        pruned = prune_paths(30)
+        log.info("Виртуальные сделки: запуск (прервано незавершённых: %d, очищено путей: %d)", aborted, pruned)
+    except Exception as e:
+        log.warning("Виртуальные сделки: подготовка при запуске: %s", e)
+    scanner = VirtualScanner(
+        _virtual_engine, universe=_vs_universe, candles=_vs_candles, candles_to_dicts=_candles_to_dicts,
+        quote=_vs_quote, indicators=_vs_indicators, timeframes=_vs_timeframes, build_features=build_features,
+        save_features=_vs_save_features, predict=_vs_predict, has_real_position=_vs_has_real_position)
+    while True:
+        try:
+            enabled = str(get_setting("virtual_trades_enabled", "1")) != "0"
+            if enabled and _bot_client_cls is not None and is_moex_session_open():
+                with _bot_client_cls(settings.TINVEST_TOKEN) as client:
+                    _virtual_client["c"] = client
+                    try:
+                        scanner.scan_once(scan=True)
+                    finally:
+                        _virtual_client["c"] = None
+                time.sleep(5)
+            else:
+                scanner.scan_once(scan=False)     # вне сессии или при выключении: только закрытие по сроку и запись итогов
+                time.sleep(15 if enabled else 60)
+        except Exception as e:
+            log.warning("Виртуальный сканер: %s", e)
+            time.sleep(10)
+
+
 def _refresh_parallel_workers():
     """
     Сравнивает текущую конфигурацию параллельных стратегий в БД с запущенными потоками.
@@ -3650,6 +3823,7 @@ def main():
     Thread(target=_orders_stream_worker, daemon=True, name="orders-stream").start()
     Thread(target=_market_data_stream_worker, daemon=True, name="market-data-stream").start()
     log.info("OrdersStream + MarketDataStream workers started")
+    Thread(target=_virtual_scanner_worker, daemon=True, name="virtual-scanner").start()
 
     # Инициализируем total_assets ДО запуска параллельных воркеров
     try:

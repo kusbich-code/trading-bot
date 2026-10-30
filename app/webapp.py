@@ -924,7 +924,8 @@ def api_market_session():
         with _dbc_v() as _cv:
             _cv.execute("""
                 SELECT AVG(atr_pct), AVG(regime), AVG(sma_gap_pct)
-                FROM ml_features ORDER BY id DESC LIMIT 10
+                FROM (SELECT atr_pct, regime, sma_gap_pct FROM ml_features
+                      WHERE COALESCE(source, 'REAL') = 'REAL' ORDER BY id DESC LIMIT 10)
             """)
             row = _cv.fetchone()
         if row and row[0]:
@@ -3251,13 +3252,20 @@ def api_ml_summary():
                        SUM(CASE WHEN label=1 THEN 1 ELSE 0 END) as wins,
                        SUM(CASE WHEN label=0 THEN 1 ELSE 0 END) as losses,
                        SUM(CASE WHEN label IS NULL THEN 1 ELSE 0 END) as pending
-                FROM ml_features
+                FROM ml_features WHERE COALESCE(source, 'REAL') = 'REAL'
             """)
             row = _c.fetchone()
             data["features_stats"] = {
                 "total": row[0] or 0, "labeled": row[1] or 0, "wins": row[2] or 0,
                 "losses": row[3] or 0, "pending": row[4] or 0,
             }
+            # Виртуальные сделки (без брокера) считаются отдельно от реальных
+            try:
+                from app.ml.virtual_trades import counters as _vt_counters
+                data["virtual_stats"] = dict(_vt_counters())
+                data["virtual_stats"]["enabled"] = str(get_setting("virtual_trades_enabled", "1")) != "0"
+            except Exception as _vte:
+                data["virtual_stats"] = {"error": str(_vte)}
 
             # Счётчики решений по типам (за всё время)
             _c.execute("SELECT decision_type, COUNT(*) FROM ml_decisions GROUP BY decision_type")
@@ -3268,7 +3276,8 @@ def api_ml_summary():
             _cols_sql = ", ".join(_FN)
             _c.execute(f"""
                 SELECT ticker, timestamp, label, pnl, {_cols_sql}
-                FROM ml_features WHERE label IS NOT NULL ORDER BY id DESC LIMIT 1
+                FROM ml_features WHERE label IS NOT NULL AND COALESCE(source, 'REAL') = 'REAL'
+                ORDER BY id DESC LIMIT 1
             """)
             _ex = _c.fetchone()
             if _ex:

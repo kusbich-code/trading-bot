@@ -130,6 +130,26 @@ def test_naive_or_missing_time_does_not_crash():
     assert cache.get("X", lambda: candles) is candles
 
 
+def test_api_budget_limits_per_minute_and_recovers():
+    from app.services.market_cache import ApiBudget
+    clock = Clock(BASE)
+    b = ApiBudget(10, mono_fn=clock.monotonic)
+    assert b.try_acquire(3) and b.try_acquire(7)
+    assert b.try_acquire(1) is False and b.used() == 10
+    clock.advance(30)
+    assert b.try_acquire(1) is False
+    clock.advance(31)                                   # прошла минута с первых запросов
+    assert b.try_acquire(5) is True
+
+
+def test_api_budget_yields_to_real_trading():
+    from app.services.market_cache import ApiBudget
+    b = ApiBudget(100)
+    assert b.try_acquire(1, total_rpm=479, yield_at=480) is True
+    assert b.try_acquire(1, total_rpm=480, yield_at=480) is False
+    assert b.denied == 1
+
+
 def test_subscriptions_union_and_change_flags():
     subs = StreamSubscriptions()
     assert subs.set_main([{"figi": "A", "instrument_uid": "ua"}]) is True
