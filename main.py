@@ -49,6 +49,7 @@ except Exception:
 from app.config import settings
 from app.version import __version__ as BOT_VERSION
 from app.services.strategy_engine import evaluate_signal as _evaluate_signal
+from app.services.market_cache import CandleCache, StreamSubscriptions
 from app.db import (
     init_db,
     set_runtime,
@@ -448,9 +449,10 @@ class _ApiRateTracker:
             time.sleep(1.0)
 
 _rate = _ApiRateTracker()
-_md_instruments: list = []           # список словарей {figi, instrument_uid}
-_md_figis: Set[str] = set()          # множество figi для обнаружения изменений
+_md_subs = StreamSubscriptions()      # инструменты подписки стрима: основной цикл + параллельные воркеры
 _md_restart = Event()                 # установка → воркер переподключается с новыми инструментами
+_MD_RESTART_COALESCE_SEC = 3.0        # воркеры регистрируют инструменты по одному: ждём, чтобы переподключиться один раз
+_candle_cache = CandleCache()         # завершённые минутные свечи: запрос не чаще раза в минуту на бумагу
 
 
 def _make_md_gen(instruments: list, stop_ev: Event):
@@ -495,7 +497,9 @@ def _market_data_stream_worker():
         if _bot_client_cls is None:
             time.sleep(2)
             continue
-        instruments = list(_md_instruments)
+        if _md_restart.is_set():
+            time.sleep(_MD_RESTART_COALESCE_SEC)  # несколько воркеров могли добавить инструменты подряд
+        instruments = _md_subs.snapshot()
         if not instruments:
             time.sleep(5)
             continue
@@ -1438,6 +1442,12 @@ def get_candles(client, figi: str, n=20, instrument_uid: str = ""):
     return resp.candles
 
 
+def get_candles_cached(client, figi: str, n=20, instrument_uid: str = ""):
+    """get_candles с кешем: завершённая минутная свеча появляется раз в минуту, а воркеры опрашивают каждые ~5 с."""
+    return _candle_cache.get((instrument_uid or figi, n),
+                             lambda: get_candles(client, figi, n=n, instrument_uid=instrument_uid))
+
+
 def get_trading_status(client, instrument_id: str):
     # Кеш на 30 сек: trading status меняется редко
     _now_ts = time.monotonic()
@@ -1792,15 +1802,7 @@ def load_enabled_instruments(client):
             "priority": int(item.get("priority", 100)),
         }
 
-    new_figis = {v["figi"] for v in state.instrument_meta.values()}
-    if new_figis != _md_figis:
-        _md_figis.clear()
-        _md_figis.update(new_figis)
-        _md_instruments.clear()
-        _md_instruments.extend(
-            {"figi": v["figi"], "instrument_uid": v.get("instrument_uid", "")}
-            for v in state.instrument_meta.values()
-        )
+    if _md_subs.set_main(state.instrument_meta.values()):
         _md_restart.set()
 
     return list(state.instrument_meta.values())
@@ -2434,7 +2436,7 @@ def process_instrument(client, item,
 
         # ── Свечи: 50 баров достаточно для всех режимов strategy_engine ──────
         candle_n = 50
-        candles = get_candles(client, figi, n=candle_n, instrument_uid=instrument_uid)
+        candles = get_candles_cached(client, figi, n=candle_n, instrument_uid=instrument_uid)
         # Сигнал считаем по ЗАВЕРШЁННЫМ свечам: формирующаяся перерисовывается внутри минуты (ложные пробои,
         # заниженный объём), а бэктест всегда шёл по закрытым барам. Цена входа/выхода остаётся живой.
         candles = [c for c in candles if getattr(c, "is_complete", True)]
@@ -3500,6 +3502,14 @@ def _parallel_instruments(strategy_id: int) -> list:
         })
     result.sort(key=lambda x: x["priority"])
     _instr_cache[strategy_id] = (time.monotonic(), result)
+    # Стрим слушает и инструменты воркеров: иначе цена и стакан идут запросами REST, а стакан по REST
+    # приходит без объёмов (признаки bid_pressure/depth нейтральные). Отключается настройкой md_stream_workers=0.
+    try:
+        want = str(get_setting("md_stream_workers", "1")) != "0"
+        if _md_subs.set_extra(("strategy", strategy_id), result if want else []):
+            _md_restart.set()
+    except Exception as e:
+        log.debug("подписка стрима на инструменты стратегии %s: %s", strategy_id, e)
     return result
 
 
