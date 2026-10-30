@@ -193,6 +193,20 @@ def test_closing_is_persisted_outside_scan(tmp_db):
         assert cur.fetchone()["n"] == 1
 
 
+def test_forward_return_is_stored_while_trade_is_still_open(tmp_db):
+    """Данные не должны ждать закрытия: через 15 минут после сигнала доходность вперёд уже в БД, сделка открыта."""
+    env = Env()
+    s = env.scanner()
+    s.scan_once()
+    s.engine.on_tick("F1", 103.5, env.now + timedelta(minutes=15, seconds=10))      # в пределах SL/TP breakout BUY
+    env.now += timedelta(minutes=15, seconds=20)
+    s.scan_once(scan=False)
+    rows = {(r["strategy_mode"], r["direction"]): r for r in trades_in_db(tmp_db)}
+    br = rows[("breakout", "BUY")]
+    assert br["status"] == "OPEN" and br["fwd_ret_15m"] == pytest.approx((103.5 - 103.0) / 103.0 * 100, abs=0.01)
+    assert br["fwd_ret_30m"] is None
+
+
 def test_expire_at_timeout_in_scan_false_mode(tmp_db):
     env = Env()
     s = env.scanner()

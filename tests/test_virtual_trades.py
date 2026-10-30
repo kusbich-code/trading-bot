@@ -280,6 +280,18 @@ def test_tail_gives_up_after_limit_and_on_expire():
     assert e.drain_tails_done() == [t] and t.fwd[60] is None
 
 
+def test_fwd_dirty_is_drained_once_for_open_and_tail_trades():
+    e = vt.VirtualEngine()
+    t = open_trade(e, "BUY", bid=99.95, ask=100.0, sl=0.01, tp=0.05, mid=100.0)
+    assert e.drain_fwd_dirty() == []
+    e.on_tick("F1", 100.4, at(15.2))
+    assert e.drain_fwd_dirty() == [t] and e.drain_fwd_dirty() == []            # одна запись на новое значение
+    e.on_tick("F1", 98.9, at(20))                                                # стоп - сделка уходит в дослеживание
+    e.on_tick("F1", 101.0, at(30.5))
+    assert e.drain_fwd_dirty() == [t]                                            # значение для 30 минут из «хвоста»
+    assert t.fwd[15] == pytest.approx(0.4) and t.fwd[30] == pytest.approx(1.0)
+
+
 def test_fwd_replay_on_bars_matches_horizons():
     e = vt.VirtualEngine()
     t = open_trade(e, "BUY", bid=99.95, ask=100.0, sl=0.5, tp=0.5, mid=100.0)

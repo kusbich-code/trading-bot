@@ -102,6 +102,7 @@ class VTrade:
     # доходность вперёд, % от цены рынка в момент сигнала, в сторону сделки, без издержек и независимо от SL/TP
     fwd: Dict[int, Optional[float]] = field(default_factory=lambda: {m: None for m in HORIZONS_MIN})
     session_end: Optional[datetime] = None
+    fwd_dirty: bool = False          # появились новые значения fwd, ещё не записанные в БД
     # итог
     closed_at: Optional[datetime] = None
     exit_price: Optional[float] = None
@@ -258,6 +259,19 @@ class VirtualEngine:
             out, self._closed = self._closed, []
             return out
 
+    def drain_fwd_dirty(self) -> List[VTrade]:
+        """Открытые и дослеживаемые сделки, у которых появилась новая доходность вперёд: её нужно записать сразу,
+        не дожидаясь закрытия (иначе при перезапуске бота или долгой сделке данные теряются или запаздывают)."""
+        with self._lock:
+            out = []
+            for group in (self._open, self._tails):
+                for trades in group.values():
+                    for t in trades:
+                        if t.fwd_dirty:
+                            t.fwd_dirty = False
+                            out.append(t)
+            return out
+
     def drain_tails_done(self) -> List[VTrade]:
         """Закрытые сделки, у которых доходность вперёд досчитана (или срок дослеживания истёк)."""
         with self._lock:
@@ -334,6 +348,7 @@ class VirtualEngine:
         for h in HORIZONS_MIN:
             if t.fwd.get(h) is None and h <= elapsed <= h + FWD_MAX_LATE_MIN:
                 t.fwd[h] = t.side * (price - t.entry_mid) / t.entry_mid * 100.0
+                t.fwd_dirty = True
 
     def _fwd_pending(self, t: VTrade, now: datetime) -> bool:
         if all(t.fwd.get(h) is not None for h in HORIZONS_MIN):

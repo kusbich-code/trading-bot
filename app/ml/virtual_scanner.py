@@ -137,6 +137,12 @@ class VirtualScanner:
                 if q and q.get("price"):
                     prices[figi] = q["price"]
             self.engine.expire(now, prices)
+        for t in self.engine.drain_fwd_dirty():           # доходность вперёд пишем сразу, а не при закрытии сделки
+            try:
+                vt.store_forward(t)
+            except Exception as e:
+                self.errors += 1
+                log.warning("запись доходности вперёд (открытая сделка) %s: %s", t.id, e)
         for t in self.engine.drain_closed():
             try:
                 vt.store_closed(t)
