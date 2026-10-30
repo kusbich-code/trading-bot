@@ -205,6 +205,25 @@ class VirtualEngine:
             if not trades:
                 self._open.pop(figi, None)
 
+    def on_bar(self, figi: str, o: float, h: float, l: float, c: float, now: datetime) -> None:
+        """Минутная свеча вместо тиков (историческая добивка). Порядок движения внутри свечи неизвестен, поэтому
+        пессимистичный: для покупки сначала минимум (стоп), потом максимум (тейк); для продажи наоборот.
+        Так при касании и стопа, и тейка в одной свече засчитывается стоп, и добивка не завышает долю прибыльных."""
+        with self._lock:
+            trades = self._open.get(figi)
+            if not trades:
+                return
+            for t in list(trades):
+                for price in ((o, l, h, c) if t.side == 1 else (o, h, l, c)):
+                    if price and price > 0:
+                        self._update(t, price, now, None, None)
+                    if t.status != "OPEN":
+                        break
+                if t.status != "OPEN":
+                    trades.remove(t)
+            if not trades:
+                self._open.pop(figi, None)
+
     def expire(self, now: datetime, prices: Optional[Dict[str, float]] = None) -> int:
         """Закрывает сделки, у которых наступил срок (таймаут или конец сессии). prices — последние цены по figi."""
         prices = prices or {}
@@ -346,16 +365,19 @@ def prune_paths(days: int = 30) -> int:
         return cur.rowcount or 0
 
 
+_LIVE = "COALESCE(source, 'LIVE') = 'LIVE'"       # живые сделки; историческая добивка (BACKFILL) в срезах дашборда отдельно
+
+
 def recent(limit: int = 100) -> list:
-    """Последние виртуальные сделки для дашборда (новые сверху)."""
+    """Последние живые виртуальные сделки для дашборда (новые сверху)."""
     from app.db import db_cursor
     limit = max(1, min(int(limit), 500))
     with db_cursor() as cur:
-        cur.execute("""
+        cur.execute(f"""
             SELECT id, created_at, ticker, strategy_mode, direction, signal_score, filter_stage, ml_p, ml_decision,
                    real_trade, entry_price, fill_src, sl_pct, tp_pct, status, closed_at, exit_price, exit_reason,
                    pnl_pct, mfe_pct, mae_pct, hold_min, label, ind_missing
-            FROM ml_virtual_trades ORDER BY id DESC LIMIT ?
+            FROM ml_virtual_trades WHERE {_LIVE} ORDER BY id DESC LIMIT ?
         """, (limit,))
         return [dict(r) for r in cur.fetchall()]
 
@@ -372,7 +394,8 @@ def summary() -> dict:
     """Срезы виртуальных сделок: по режимам, причинам выхода, фильтрам, решению модели и бумагам."""
     from app.db import db_cursor
 
-    def group(cur, expr: str, where: str = "", limit: int = 50) -> list:
+    def group(cur, expr: str, extra: str = "", limit: int = 50) -> list:
+        where = f"WHERE {_LIVE}" + (f" AND {extra}" if extra else "")
         cur.execute(f"SELECT {expr} AS grp, {_SUMMARY_COLS} FROM ml_virtual_trades {where} "
                     f"GROUP BY grp ORDER BY n DESC LIMIT {int(limit)}")
         return [dict(r) for r in cur.fetchall()]
@@ -380,7 +403,7 @@ def summary() -> dict:
     with db_cursor() as cur:
         return {
             "by_mode": group(cur, "strategy_mode"),
-            "by_reason": group(cur, "exit_reason", "WHERE status='CLOSED'"),
+            "by_reason": group(cur, "exit_reason", "status='CLOSED'"),
             # прошёл ли сигнал фильтры реальной торговли: ответ на вопрос «не отсекаем ли мы прибыльное»
             "by_filter": group(cur, "CASE WHEN filter_stage='' THEN 'passed' ELSE filter_stage END"),
             # что думала модель: p_ok / p_low / '' (модели не было) — «вето было право?»
@@ -390,11 +413,59 @@ def summary() -> dict:
 
 
 def counters() -> dict:
-    """Сводка для дашборда: сколько виртуальных сделок, эпизодов и меток."""
+    """Сводка для дашборда: сколько живых виртуальных сделок, эпизодов и меток, и отдельно историческая добивка."""
     from app.db import db_cursor
     with db_cursor() as cur:
-        cur.execute("""SELECT COUNT(*) n, SUM(status='OPEN') open_n, SUM(status='CLOSED') closed_n,
-                              SUM(label=1) wins, SUM(label=0) losses, COUNT(DISTINCT episode_id) episodes
-                       FROM ml_virtual_trades""")
+        cur.execute(f"""SELECT COUNT(*) n, SUM(status='OPEN') open_n, SUM(status='CLOSED') closed_n,
+                               SUM(label=1) wins, SUM(label=0) losses, COUNT(DISTINCT episode_id) episodes
+                        FROM ml_virtual_trades WHERE {_LIVE}""")
         r = cur.fetchone()
-        return {k: (r[k] or 0) for k in r.keys()}
+        out = {k: (r[k] or 0) for k in r.keys()}
+        cur.execute("""SELECT COUNT(*) n, SUM(label=1) wins, SUM(label=0) losses, MIN(created_at) first, MAX(created_at) last
+                       FROM ml_virtual_trades WHERE source = 'BACKFILL'""")
+        b = cur.fetchone()
+        out.update(backfill_n=b["n"] or 0, backfill_wins=b["wins"] or 0, backfill_losses=b["losses"] or 0,
+                   backfill_first=b["first"], backfill_last=b["last"])
+        return out
+
+
+def store_backfill_batch(items: List[Tuple["VTrade", dict]]) -> int:
+    """Пакетная запись закрытых сделок исторической добивки: признаки + сделка + путь, одной транзакцией.
+
+    Повторный запуск не плодит дубликаты: эпизод с таким episode_id и source='BACKFILL' пропускается.
+    Возвращает число записанных сделок.
+    """
+    from app.db import db_cursor
+    written = 0
+    with db_cursor() as cur:
+        for t, features in items:
+            cur.execute("SELECT 1 FROM ml_virtual_trades WHERE episode_id=? AND source='BACKFILL' LIMIT 1",
+                        (t.episode_id,))
+            if cur.fetchone():
+                continue
+            cols = list(features.keys())
+            cur.execute(
+                f"INSERT INTO ml_features(figi, ticker, strategy_id, timestamp, trade_id, source, strategy_mode, "
+                f"pnl, quality_score, label, exit_reason, {','.join(cols)}) "
+                f"VALUES (?,?,?,?,?,?,?,?,?,?,?,{','.join('?' * len(cols))})",
+                [t.figi, t.ticker, 0, msk_str(t.opened_at), 0, "BACKFILL", t.mode, t.pnl_pct,
+                 (t.pnl_pct or 0.0) / 100.0, t.label, t.exit_reason] + [features[c] for c in cols])
+            fid = cur.lastrowid
+            cur.execute("""
+                INSERT INTO ml_virtual_trades(created_at, figi, ticker, strategy_mode, direction, episode_id,
+                    signal_score, filter_stage, ml_p, ml_decision, real_trade, entry_mid, entry_price, fill_src,
+                    spread_pct, sl_pct, tp_pct, commission_pct, ind_missing, status, closed_at, exit_price,
+                    exit_reason, pnl_pct, mfe_pct, mae_pct, hold_min, ret_5m, ret_15m, ret_30m, ret_60m, label,
+                    feature_id, source)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'CLOSED',?,?,?,?,?,?,?,?,?,?,?,?,?,'BACKFILL')
+            """, (msk_str(t.opened_at), t.figi, t.ticker, t.mode, t.direction, t.episode_id, t.score, t.filter_stage,
+                  t.ml_p, t.ml_decision, int(t.real_trade), t.entry_mid, t.entry_fill, t.fill_src, t.spread_pct,
+                  t.sl_pct, t.tp_pct, t.commission_pct, int(t.ind_missing), msk_str(t.closed_at), t.exit_price,
+                  t.exit_reason, t.pnl_pct, t.mfe_pct, t.mae_pct, t.hold_min, t.checkpoints.get(5),
+                  t.checkpoints.get(15), t.checkpoints.get(30), t.checkpoints.get(60), t.label, fid))
+            vid = cur.lastrowid
+            cur.execute("UPDATE ml_features SET virtual_id=? WHERE id=?", (vid, fid))
+            cur.execute("INSERT OR REPLACE INTO ml_virtual_paths(virtual_id, path_json) VALUES (?, ?)",
+                        (vid, json.dumps(t.bars, separators=(",", ":"))))
+            written += 1
+    return written

@@ -50,6 +50,7 @@ from app.config import settings
 from app.version import __version__ as BOT_VERSION
 from app.services.strategy_engine import evaluate_signal as _evaluate_signal
 from app.services.market_cache import ApiBudget, CandleCache, StreamSubscriptions
+from app.services.moex_calendar import generate_moex_holidays, get_moex_holidays_cached
 from app.ml import virtual_trades as _vt
 from app.ml.virtual_scanner import SkipInstrument, VirtualScanner
 from app.db import (
@@ -1532,66 +1533,9 @@ def _secs_to_next_session_open() -> tuple[int, str]:
     return max(secs, 0), label
 
 
-def _generate_moex_holidays(year: int) -> set:
-    """
-    Автоматически генерирует нерабочие дни MOEX для заданного года.
-    Российские федеральные праздники + перенос выходных.
-    Не требует ручного обновления — работает на любой год.
-    """
-    from datetime import date as _date, timedelta as _td
-    holidays = set()
-
-    def _add(d: _date):
-        holidays.add(d.strftime("%Y-%m-%d"))
-
-    def _shift_weekend(d: _date) -> _date:
-        """Если праздник попадает на сб/вс — переносим на ближайший пн."""
-        if d.weekday() == 5:   # суббота → понедельник
-            return d + _td(days=2)
-        if d.weekday() == 6:   # воскресенье → понедельник
-            return d + _td(days=1)
-        return d
-
-    # ── Фиксированные даты с переносом ──
-    fixed = [
-        (1, 1), (1, 2), (1, 3), (1, 4), (1, 5), (1, 6), (1, 7), (1, 8),  # Новый год + Рождество
-        (2, 23),   # День защитника
-        (3, 8),    # 8 марта
-        (5, 1),    # Труда
-        (5, 9),    # Победа
-        (6, 12),   # День России
-        (11, 4),   # Народное единство
-    ]
-    for m, d in fixed:
-        try:
-            base = _date(year, m, d)
-            _add(_shift_weekend(base))
-            # Добавляем длинные новогодние каникулы (1-8 января всегда нерабочие)
-            if m == 1 and d == 1:
-                for extra in range(1, 9):
-                    _add(_date(year, 1, extra))
-        except ValueError:
-            pass
-
-    # Перенос праздников: если суббота/воскресенье попадает между двумя праздниками,
-    # правительство может объявить дополнительный выходной. Это сложно предсказать точно,
-    # поэтому обрабатываем только базовые случаи.
-
-    return holidays
-
-
-def _get_moex_holidays_cached() -> set:
-    """Кеш на 24 часа: генерирует праздники для текущего + следующего года."""
-    import time as _t
-    _cache = getattr(_get_moex_holidays_cached, "_cache", None)
-    _ts    = getattr(_get_moex_holidays_cached, "_ts", 0)
-    if _cache is not None and (_t.time() - _ts) < 86400:
-        return _cache
-    now_year = datetime.now(MSK_TZ).year
-    result = _generate_moex_holidays(now_year) | _generate_moex_holidays(now_year + 1)
-    _get_moex_holidays_cached._cache = result
-    _get_moex_holidays_cached._ts    = _t.time()
-    return result
+# Календарь вынесен в app/services/moex_calendar.py (его же используют признаки модели, без импорта main.py)
+_generate_moex_holidays = generate_moex_holidays
+_get_moex_holidays_cached = get_moex_holidays_cached
 
 
 _MOEX_HOLIDAYS: set = set()  # будет заполнен при первом вызове short_carry_risk()

@@ -498,6 +498,12 @@ def init_db():
             feature_id INTEGER                    -- строка ml_features с признаками на момент сигнала
         )
         """)
+        try:
+            # LIVE — сделка по живому сигналу, BACKFILL — проигранная по исторической свече (scripts/backfill_virtual.py)
+            cur.execute("ALTER TABLE ml_virtual_trades ADD COLUMN source TEXT DEFAULT 'LIVE'")
+        except Exception:
+            pass
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_mlvt_episode ON ml_virtual_trades(episode_id)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_mlvt_status ON ml_virtual_trades(status)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_mlvt_created ON ml_virtual_trades(created_at)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_mlvt_figi_mode ON ml_virtual_trades(figi, strategy_mode, direction)")

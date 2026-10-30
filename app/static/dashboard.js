@@ -3967,6 +3967,9 @@ function _buildLearningHtml(data) {
         ${stage("🏁","Закрыто",vStat.closed_n||0,`${vStat.wins||0}✓ / ${vStat.losses||0}✗ (${vWin}%)`,"#2fa36b")}
         ${stage("📊","Всего записей",vStat.n||0,"включая прерванные","#9b7ae8")}
       </div>
+      ${vStat.backfill_n ? `<div class="muted" style="font-size:12px;margin-top:8px">📚 <b>Историческая добивка</b> (отдельно от живых, в срезах ниже не учтена): <b>${vStat.backfill_n}</b> эпизодов,
+        ${vStat.backfill_wins||0}✓ / ${vStat.backfill_losses||0}✗ (${vWr(vStat.backfill_wins||0, vStat.backfill_losses||0)}), период ${esc((vStat.backfill_first||"").slice(0,10))} … ${esc((vStat.backfill_last||"").slice(0,10))}.
+        Без стакана и по синтетическому спреду — для обучения, но не для оценки качества живых сигналов.</div>` : ""}
       <div style="display:flex;gap:14px;flex-wrap:wrap">
         ${vGroup("По режимам", vSum.by_mode, g => MODE_RU[g] || g)}
         ${vGroup("По причине выхода", vSum.by_reason, g => REASON_RU[g] || g || "—")}

@@ -186,6 +186,46 @@ def test_ticks_for_other_instrument_ignored():
     assert t.status == "OPEN"
 
 
+# ── проигрыш минутных свечей (историческая добивка) ──────────────────────────
+
+def test_bar_touching_both_levels_counts_stop_first_for_buy():
+    e = vt.VirtualEngine()
+    t = open_trade(e, "BUY", bid=99.95, ask=100.0, sl=0.01, tp=0.02)       # SL 99, TP 102
+    e.on_bar("F1", 100.0, 102.5, 98.5, 100.0, at(1))                          # свеча задела и стоп, и тейк
+    assert t.exit_reason == "STOP_LOSS" and t.label == 0
+
+
+def test_bar_touching_both_levels_counts_stop_first_for_sell():
+    e = vt.VirtualEngine()
+    t = open_trade(e, "SELL", bid=100.0, ask=100.05, sl=0.01, tp=0.02)     # SL 101, TP 98
+    e.on_bar("F1", 100.0, 101.5, 97.5, 100.0, at(1))
+    assert t.exit_reason == "STOP_LOSS"
+
+
+def test_bar_hitting_only_take_profit():
+    e = vt.VirtualEngine()
+    t = open_trade(e, "BUY", bid=99.95, ask=100.0, sl=0.01, tp=0.02)
+    e.on_bar("F1", 100.2, 102.1, 99.8, 101.9, at(1))
+    assert t.exit_reason == "TAKE_PROFIT" and t.exit_price == pytest.approx(102.0) and t.label == 1
+
+
+def test_gap_open_below_stop_exits_at_open_price():
+    e = vt.VirtualEngine()
+    t = open_trade(e, "BUY", bid=99.95, ask=100.0, sl=0.01, tp=0.02)
+    e.on_bar("F1", 97.0, 97.5, 96.5, 97.2, at(1))                            # открытие уже ниже стопа 99
+    assert t.exit_reason == "STOP_LOSS"
+    assert t.exit_price < 97.0 + 1e-9                                         # исполнение по цене открытия (минус полспреда), а не по уровню стопа
+
+
+def test_bar_without_touch_keeps_trade_and_tracks_extremes():
+    e = vt.VirtualEngine()
+    t = open_trade(e, "BUY", bid=99.95, ask=100.0, sl=0.05, tp=0.05)
+    e.on_bar("F1", 100.0, 100.8, 99.6, 100.3, at(1))
+    assert t.status == "OPEN" and t.hi == 100.8 and t.lo == 99.6
+    e.on_bar("OTHER", 1, 1, 1, 1, at(2))                                      # чужой инструмент игнорируется
+    assert t.status == "OPEN"
+
+
 # ── MFE / MAE / контрольные точки ────────────────────────────────────────────
 
 def test_mfe_mae_and_checkpoints():

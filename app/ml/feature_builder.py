@@ -6,6 +6,8 @@ import logging
 import math
 from typing import Dict, List, Optional, Any
 
+from app.services.moex_calendar import is_moex_holiday
+
 log = logging.getLogger("ml.feature_builder")
 
 
@@ -33,13 +35,15 @@ def build_features(
     candles_1h: Optional[List[Dict]] = None,
     candles_4h: Optional[List[Dict]] = None,
     position_minutes: float = 0.0,      # сколько минут открыта позиция
+    as_of: Optional[Any] = None,        # момент расчёта (datetime с часовым поясом); по умолчанию — сейчас
 ) -> Dict[str, float]:
     """
     Собирает 30 признаков. Все числовые, NaN заменяются на 0.
+    as_of нужен для исторической добивки: время суток, фаза сессии и риск переноса шорта считаются на этот момент.
     """
     from datetime import datetime, timezone, timedelta
     _MSK = timezone(timedelta(hours=3))
-    now_msk = datetime.now(tz=_MSK)
+    now_msk = as_of.astimezone(_MSK) if as_of is not None else datetime.now(tz=_MSK)
 
     ind = indicators or {}
     ob  = orderbook or {}
@@ -197,13 +201,9 @@ def build_features(
             if _d.weekday() >= 5:
                 _consecutive += 1
             else:
-                try:
-                    from main import _get_moex_holidays_cached as _ghc
-                    if _ds in _ghc():
-                        _consecutive += 1
-                        continue
-                except Exception:
-                    pass
+                if is_moex_holiday(_ds):
+                    _consecutive += 1
+                    continue
                 break
         if _consecutive == 0:
             short_carry_risk = 0.0
