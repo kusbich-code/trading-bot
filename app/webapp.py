@@ -3231,12 +3231,26 @@ def api_ml_summary():
                 SELECT m.figi, m.ticker, m.trained_at, m.accuracy, m.precision_, m.recall,
                        m.n_training_samples, m.status, m.feature_importance
                 FROM ml_models m
-                JOIN (SELECT figi, MAX(id) AS mid FROM ml_models GROUP BY figi) latest
+                JOIN (SELECT figi, MAX(id) AS mid FROM ml_models
+                      WHERE figi != 'UNIVERSAL_V2' GROUP BY figi) latest
                   ON m.id = latest.mid
                 ORDER BY m.id DESC LIMIT 50
             """)
             _cols = [d[0] for d in _c.description]
             data["trained_models"] = [dict(zip(_cols, r)) for r in _c.fetchall()]
+            # Модель, которая реально выдаёт вероятности (predict берёт status='active'), может быть не последней по id:
+            # свежее слабое переобучение остаётся в статусе learning и прежнюю активную не отключает
+            _c.execute("""
+                SELECT figi, ticker, trained_at, accuracy, precision_, recall, n_training_samples, status, feature_importance
+                FROM ml_models WHERE figi='UNIVERSAL' AND status='active' ORDER BY id DESC LIMIT 1
+            """)
+            _am = _c.fetchone()
+            data["active_universal"] = dict(zip([d[0] for d in _c.description], _am)) if _am else None
+            # Применяет ли модель свои решения к торговле (теневой режим по умолчанию) и сколько строк пригодно для обучения
+            data["ml_enforce"] = str(get_setting("ml_enforce", "0")).strip().lower() in ("1", "true", "yes")
+            from app.ml.model_trainer import _CLEAN_LABEL_SQL as _clean_sql
+            _c.execute(f"SELECT COUNT(*) FROM ml_features WHERE label IS NOT NULL AND {_clean_sql}")
+            data["trainable_labeled"] = _c.fetchone()[0] or 0
             _c.execute("""
                 SELECT timestamp, ticker, decision_type, model_confidence,
                        threshold, executed, reason
@@ -3267,6 +3281,14 @@ def api_ml_summary():
                 from app.ml.virtual_trades import recent as _vt_recent, summary as _vt_summary
                 data["virtual_recent"] = _vt_recent(100)
                 data["virtual_summary"] = _vt_summary()
+                # последняя оценка тренера v2 (хронологическая проверка на доходности вперёд)
+                _c.execute("SELECT created_at, report_json FROM ml_training_reports ORDER BY id DESC LIMIT 1")
+                _rep = _c.fetchone()
+                if _rep:
+                    import json as _json_rep
+                    _r = _json_rep.loads(_rep[1])
+                    _r["created_at"] = _rep[0]
+                    data["v2_report"] = _r
             except Exception as _vte:
                 data["virtual_stats"] = {"error": str(_vte)}
 

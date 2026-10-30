@@ -135,9 +135,11 @@ def test_train_final_save_and_predict_roundtrip(tmp_db):
     bundle = t2.train_final(ds, rep, q=0.05)
     mid = t2.save_candidate(bundle, rep, len(ds["y"]))
     with tmp_db.db_cursor() as cur:
-        cur.execute("SELECT status, figi, model_data FROM ml_models WHERE id=?", (mid,))
+        cur.execute("SELECT status, figi, model_data, feature_importance FROM ml_models WHERE id=?", (mid,))
         m = cur.fetchone()
         assert (m["status"], m["figi"]) == ("candidate", "UNIVERSAL_V2")
+        imp = json.loads(m["feature_importance"])
+        assert isinstance(imp, dict) and imp and all(isinstance(v, float) for v in imp.values())   # словарь, как у прежних моделей
         cur.execute("SELECT verdict, report_json FROM ml_training_reports WHERE model_id=?", (mid,))
         r = cur.fetchone()
         assert r["verdict"].startswith("на истории подтверждено") and "oof_pred" not in json.loads(r["report_json"])

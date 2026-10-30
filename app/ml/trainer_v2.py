@@ -290,7 +290,9 @@ def save_candidate(bundle: Bundle, report: dict, n_rows: int) -> int:
         cur.execute("""INSERT INTO ml_models(figi, ticker, strategy_id, trained_at, model_data, feature_importance,
                            accuracy, precision_, recall, n_training_samples, status)
                        VALUES ('UNIVERSAL_V2', 'ALL', 0, ?, ?, ?, 0, 0, 0, ?, 'candidate')""",
-                    (now, pickle.dumps(bundle), json.dumps(rep.get("importance", []), ensure_ascii=False), n_rows))
+                    (now, pickle.dumps(bundle),
+                     # тот же формат, что у прежних моделей: словарь {признак: важность}
+                     json.dumps({i["feature"]: i["drop"] for i in rep.get("importance", [])}, ensure_ascii=False), n_rows))
         mid = cur.lastrowid
         cur.execute("""INSERT INTO ml_training_reports(created_at, horizon, n_rows, n_blocks, verdict, model_id, report_json)
                        VALUES (?,?,?,?,?,?,?)""",

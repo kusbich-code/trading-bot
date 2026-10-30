@@ -3858,16 +3858,22 @@ function _buildLearningHtml(data) {
 
   const fStat = data.features_stats || {};
   const dCounts = data.decision_counts || {};
-  const models = data.trained_models || [];
+  const models = (data.trained_models || []).filter(m => m.figi !== "UNIVERSAL_V2");   // кандидат v2 показывается отдельным разделом
   const decisions = data.decisions || [];
   const states = data.states || [];
   const logData = data.log || [];
   const catalog = data.feature_catalog || [];
   const sample = data.sample_feature || null;
 
-  const univ = models.find(m => m.figi === "UNIVERSAL" || m.ticker === "ALL");
+  // Показываем ту универсальную модель, которая реально выдаёт вероятности (status='active'); свежее слабое
+  // переобучение остаётся в статусе learning и прежнюю активную не отключает.
+  const univLatest = models.find(m => m.figi === "UNIVERSAL" || m.ticker === "ALL");
+  const univ = data.active_universal || univLatest;
   const instrModels = models.filter(m => m.figi !== "UNIVERSAL" && m.ticker !== "ALL");
   const univActive = univ?.status === "active";
+  const enforce = !!data.ml_enforce;                 // применяет ли модель решения к торговле (иначе — теневой режим)
+  const nFeat = catalog.length || 30;
+  const nUse = data.trainable_labeled || 0;          // строк, реально пригодных для обучения (выходы по SL/TP)
   const totalDecisions = Object.values(dCounts).reduce((a,b)=>a+b,0);
   const winRate = fStat.labeled ? (fStat.wins / fStat.labeled * 100) : 0;
 
@@ -3876,17 +3882,25 @@ function _buildLearningHtml(data) {
   const acc  = univ?.accuracy   || 0;
   const nTrain = univ?.n_training_samples || 0;
   const readyPct = Math.min(100, Math.round(fStat.labeled / 30 * 100));
-  const statusBanner = univActive
+  const smallSample = `Проверочная часть — десятки примеров, поэтому precision и accuracy ненадёжны: на такой выборке они легко скачут от 0% до 100%.`;
+  const statusBanner = !enforce
+    ? `<div style="background:rgba(122,176,232,.1);border:1px solid #7ab0e8;border-radius:8px;padding:14px 18px">
+         <div style="font-size:16px;font-weight:700;color:#7ab0e8">🕶 Теневой режим — модель на торговлю не влияет</div>
+         <div class="muted" style="font-size:12.5px;margin-top:6px;line-height:1.6">
+           Модель считает вероятности и записывает свои решения (вход, ранний выход), но <b>не блокирует входы и не закрывает позиции</b>
+           (настройка <code>ml_enforce=0</code>). Это нужно, чтобы данные для обучения не сужались решениями самой модели.
+           ${univ ? `Модель, выдающая вероятности: ${univActive ? "активная" : "последняя"}, precision <b>${(prec*100).toFixed(0)}%</b> на ${nTrain} примерах. ` : ""}${smallSample}
+         </div>
+       </div>`
+    : univActive
     ? `<div style="background:rgba(47,163,107,.12);border:1px solid #2fa36b;border-radius:8px;padding:14px 18px">
          <div style="font-size:16px;font-weight:700;color:#2fa36b">🟢 Модель активна — влияет на реальные сделки</div>
-         <div class="muted" style="font-size:12px;margin-top:4px">Точность достаточна (precision ≥ 50%). Модель фильтрует входы и закрывает убыточные позиции досрочно.</div>
+         <div class="muted" style="font-size:12px;margin-top:4px">Модель фильтрует входы и закрывает убыточные позиции досрочно (ml_enforce=1). ${smallSample}</div>
        </div>`
     : `<div style="background:rgba(240,192,74,.1);border:1px solid #f0c04a;border-radius:8px;padding:14px 18px">
          <div style="font-size:16px;font-weight:700;color:#f0c04a">⏳ Модель учится (мягкий режим)</div>
          <div class="muted" style="font-size:12.5px;margin-top:6px;line-height:1.6">
-           Модель уже собирает данные и предсказывает, но <b>пока не влияет на сделки</b> — её решения только логируются.
-           Она активируется автоматически, когда точность (precision) достигнет <b>50%</b>.
-           Сейчас precision = <b style="color:#f0c04a">${(prec*100).toFixed(0)}%</b> на ${nTrain} примерах.
+           Модель пока не активна — её решения только логируются. Сейчас precision = <b style="color:#f0c04a">${(prec*100).toFixed(0)}%</b> на ${nTrain} примерах. ${smallSample}
          </div>
        </div>`;
 
@@ -3909,7 +3923,7 @@ function _buildLearningHtml(data) {
       ${arrow}
       ${stage("🔮","4. Предсказание",(prec*100).toFixed(0)+"%","precision",prec>=0.5?"#2fa36b":"#f0c04a")}
       ${arrow}
-      ${stage("⚖️","5. Решения",totalDecisions,"принято всего","#2fa36b")}
+      ${stage("⚖️","5. Решения",totalDecisions,enforce ? "записано (применяются)" : "записано (в тени, не применяются)","#2fa36b")}
       ${arrow}
       ${stage("♻️","6. Дообучение","каждые 10","новых сделок","#7ab0e8")}
     </div>`;
@@ -3988,11 +4002,49 @@ function _buildLearningHtml(data) {
       <div class="muted" style="font-size:11px;margin-top:6px">Итог считается после комиссии 0.04% с каждой стороны и спреда. «Реальная» — по бумаге в этот момент была открыта настоящая позиция.
         Пока вы не включили модель в бой (ml_enforce), эти сделки — основной источник новых меток.</div>`;
 
+  // ── Оценка тренера v2: хронологическая проверка на доходности вперёд ────────
+  const v2 = data.v2_report || null;
+  const v2Num = (x, d = 3) => (x === null || x === undefined || Number.isNaN(Number(x))) ? "—" : (Number(x) >= 0 ? "+" : "") + Number(x).toFixed(d) + "%";
+  const v2Block = !v2
+    ? `<div class="muted" style="font-size:12px">Оценка ещё не запускалась (на сервере: <code>scripts/train_v2.py --apply</code>).</div>`
+    : (() => {
+        const proven = String(v2.verdict || "").startsWith("на истории подтверждено");
+        const pooledRows = (v2.pooled || []).map(p => `<tr>
+          <td>верхние ${Math.round(p.q * 100)}%</td><td>${p.n}</td>
+          <td style="${vCol(p.net)}"><b>${v2Num(p.net)}</b></td>
+          <td class="muted">${v2Num(p.ci_lo)} … ${v2Num(p.ci_hi)}</td>
+          <td>${v2Num(p.gross)}</td><td>${(p.win * 100).toFixed(1)}%</td><td>${p.folds_positive} из ${p.folds}</td></tr>`).join("");
+        const foldRows = (v2.folds || []).map(f => `<tr>
+          <td>${esc(f.test_from)} … ${esc(f.test_to)}</td><td>${f.n_train}</td><td>${f.n_test}</td>
+          <td>${Number(f.spearman).toFixed(3)}</td><td style="${vCol(f.all_net)}">${v2Num(f.all_net)}</td></tr>`).join("");
+        const modeRows = (v2.per_mode || []).map(m => `<tr><td>${esc(MODE_RU[m.mode] || m.mode)}</td><td>${m.n}</td>
+          <td style="${vCol(m.net)}"><b>${v2Num(m.net)}</b></td><td class="muted">${v2Num(m.ci_lo)} … ${v2Num(m.ci_hi)}</td></tr>`).join("");
+        const imp = (v2.importance || []).slice(0, 6).map(i => `${esc(i.feature)} ${Number(i.drop).toFixed(3)}`).join(", ");
+        return `
+          <div style="border-radius:8px;padding:12px 16px;margin-bottom:10px;border:1px solid ${proven ? "#2fa36b" : "#f0c04a"};background:${proven ? "rgba(47,163,107,.1)" : "rgba(240,192,74,.08)"}">
+            <div style="font-size:14px;font-weight:700;color:${proven ? "#2fa36b" : "#f0c04a"}">${proven ? "✅" : "⚠️"} Вердикт: ${esc(v2.verdict || "—")}</div>
+            <div class="muted" style="font-size:11.5px;margin-top:4px">Цель — доходность через ${v2.horizon} мин после сигнала; строк ${v2.n_rows}, независимых блоков ${v2.n_blocks}; ${esc(v2.cost_note || "")}. Оценка от ${esc((v2.created_at || "").slice(0, 16))}.
+              Средний итог всех сделок теста: ${v2Num(v2.all_net)} чистыми (${v2Num(v2.all_gross)} до издержек).</div>
+          </div>
+          <div style="display:flex;gap:14px;flex-wrap:wrap">
+            <div style="flex:2;min-width:380px"><div style="font-size:12px;font-weight:700;color:#c4dcff;margin:6px 0 4px">Что даёт отбор лучших сделок по прогнозу (чистый итог на сделку после комиссии и спреда)</div>
+              <div class="table-wrap"><table><thead><tr><th>Отбор</th><th>Сделок</th><th>Чистый итог</th><th>90%-интервал</th><th>До издержек</th><th>Побед</th><th>Фолдов &gt; 0</th></tr></thead><tbody>${pooledRows}</tbody></table></div></div>
+            <div style="flex:1;min-width:300px"><div style="font-size:12px;font-weight:700;color:#c4dcff;margin:6px 0 4px">Хронологические фолды</div>
+              <div class="table-wrap"><table><thead><tr><th>Тест</th><th>Обучение</th><th>Тест, n</th><th>Корреляция</th><th>Все сделки</th></tr></thead><tbody>${foldRows}</tbody></table></div></div>
+          </div>
+          ${modeRows ? `<div style="font-size:12px;font-weight:700;color:#c4dcff;margin:10px 0 4px">Внутри режима (верхние 5% по прогнозу)</div>
+            <div class="table-wrap"><table><thead><tr><th>Режим</th><th>Сделок</th><th>Чистый итог</th><th>90%-интервал</th></tr></thead><tbody>${modeRows}</tbody></table></div>` : ""}
+          <div class="muted" style="font-size:11.5px;margin-top:8px">Главные признаки (падение корреляции при перемешивании): ${imp || "—"}.
+            Как читать: итог отобранных сделок должен быть <b>выше нуля с запасом</b> (нижняя граница интервала &gt; 0) почти во всех фолдах, иначе преимущество не доказано.
+            «Корреляция» — Спирмен прогноза с фактической доходностью: у случайной модели около 0.</div>`;
+      })();
+
   // ── 2. Глоссарий ─────────────────────────────────────────────────────────
   const glossary = [
-    ["Признак (feature)","Одно измеримое свойство рынка в момент сделки — RSI, тренд, объём. Модель видит мир как набор из 31 числа."],
-    ["Вектор признаков","Все 31 признак вместе — это «фотография» рынка в момент входа. Именно её анализирует модель."],
-    ["Метка (label)","Результат сделки: 1 = прибыль, 0 = убыток. Модель учится связывать признаки с результатом."],
+    ["Признак (feature)",`Одно измеримое свойство рынка в момент сделки — RSI, тренд, объём. Модель видит мир как набор из ${nFeat} чисел.`],
+    ["Вектор признаков",`Все ${nFeat} признаков вместе — это «фотография» рынка в момент входа. Именно её анализирует модель.`],
+    ["Метка (label)","Результат сделки: 1 = прибыль, 0 = убыток. Модель учится связывать признаки с результатом. Для новой оценки (v2) используется не метка, а доходность через 15/30/60 минут после сигнала: она не зависит от того, как закрылась сделка."],
+    ["Теневой режим","Модель считает и записывает решения, но торговлю не меняет (ml_enforce=0). Включать её в бой стоит только после подтверждения на новых данных."],
     ["Обучение","Модель ищет закономерности: «при каких признаках сделки были прибыльными»."],
     ["Precision (точность)","Из сделок, которые модель назвала прибыльными — сколько реально оказались прибыльными. Главная метрика."],
     ["Accuracy","Доля всех верных предсказаний (и прибыль, и убыток). Может быть обманчива при перекосе классов."],
@@ -4041,8 +4093,12 @@ function _buildLearningHtml(data) {
 
   // ── 5. Feature importance ──────────────────────────────────────────────────
   let importance = {};
-  try { importance = typeof univ?.feature_importance === "string" ? JSON.parse(univ.feature_importance) : (univ?.feature_importance||{}); } catch(e){}
-  const impTop = Object.entries(importance).sort((a,b)=>b[1]-a[1]).slice(0,12);
+  try {
+    let raw = typeof univ?.feature_importance === "string" ? JSON.parse(univ.feature_importance) : (univ?.feature_importance||{});
+    if (Array.isArray(raw)) raw = Object.fromEntries(raw.map(i => [i.feature, i.drop]));   // формат тренера v2: список {feature, drop}
+    importance = raw || {};
+  } catch(e){}
+  const impTop = Object.entries(importance).filter(([, v]) => typeof v === "number" && isFinite(v)).sort((a,b)=>b[1]-a[1]).slice(0,12);
   const impMax = impTop.length ? impTop[0][1] : 1;
   const catMap = {}; catalog.forEach(f => catMap[f.name]=f);
   const impHtml = impTop.length ? impTop.map(([name,val]) => `
@@ -4059,6 +4115,7 @@ function _buildLearningHtml(data) {
     "entry_allowed":"✅ Вход разрешён","entry_blocked":"🚫 Вход заблокирован",
     "entry_soft_allow":"📊 Мягкий вход (учусь)","entry_soft_block":"📊 Мягкий блок (учусь)",
     "early_exit":"⚡ Ранний выход","early_exit_soft":"📊 Мягкий выход (учусь)",
+    "entry_shadow_block":"🕶 Теневой блок (вход не заблокирован)",
   };
   const decCountHtml = Object.entries(dCounts).sort((a,b)=>b[1]-a[1]).map(([k,v]) =>
     `<div style="background:rgba(255,255,255,.04);border-radius:6px;padding:6px 12px;font-size:12px">
@@ -4103,6 +4160,8 @@ function _buildLearningHtml(data) {
 
     ${sec(h2("🧪 Виртуальные сделки","Каждый новый сигнал отрабатывается без брокера, исход идёт в обучение. Одна серия подряд идущих сигналов считается одним эпизодом.") + virtualBlock)}
 
+    ${sec(h2("🔬 Честная проверка модели (тренер v2)","Хронологическая оценка на доходности вперёд: учится на прошлом, проверяется на более позднем периоде с зазором в сутки.") + v2Block)}
+
     ${sec(h2("🔄 Как работает модель — полный цикл","Каждый этап с живыми данными вашей модели. Стрелки показывают поток данных.") + pipeline +
       edu("💡 <b>Принцип машинного обучения:</b> модель не знает торговых правил. Она смотрит на тысячи примеров «вот так выглядел рынок → вот что вышло» и сама находит закономерности. Чем больше размеченных сделок — тем умнее модель. Это тот же принцип, что и в нейросетях; здесь используется <b>GradientBoosting</b> — ансамбль из 150 решающих деревьев, который часто точнее нейросети на табличных данных."))}
 
@@ -4113,21 +4172,21 @@ function _buildLearningHtml(data) {
           <div class="muted" style="font-size:11.5px;line-height:1.5">${d}</div></div>`).join("")}
       </div>`)}
 
-    ${sec(h2("📥 Этап 1 — Сбор признаков","31 число описывают рынок в момент каждого входа. Это «органы чувств» модели.") +
-      edu("При каждом открытии позиции бот делает «снимок» рынка — записывает 31 признак в базу. Собрано уже <b>${fStat.total||0}</b> снимков. Ниже — все признаки по группам с описанием. Справа — значения из реального примера.") +
+    ${sec(h2("📥 Этап 1 — Сбор признаков",`${nFeat} чисел описывают рынок в момент каждого входа. Это «органы чувств» модели.`) +
+      edu(`При каждом открытии реальной позиции бот делает «снимок» рынка — записывает ${nFeat} признаков в базу. Собрано <b>${fStat.total||0}</b> снимков реальных сделок (виртуальные и исторические считаются в разделе выше). Ниже — все признаки по группам с описанием. Справа — значения из реального примера. Признаки <code>regime</code> и <code>position_minutes</code> сейчас всегда равны 0 и ничего не сообщают модели.`) +
       sampleHeader + catalogHtml)}
 
     ${sec(h2("🏷️ Этап 2 — Разметка результатов","Когда сделка закрывается, ей ставится метка: прибыль или убыток.") +
-      edu("Модель учится только на <b>закрытых</b> сделках — у них известен исход. Из ${fStat.total||0} снимков размечено <b>${fStat.labeled||0}</b>. Баланс классов важен: если убытков сильно больше, модель склонна всё называть убытком — поэтому при обучении мы дублируем прибыльные примеры (oversampling).") +
+      edu(`Модель учится только на <b>закрытых</b> сделках — у них известен исход. Из ${fStat.total||0} снимков размечено <b>${fStat.labeled||0}</b>, из них для обучения пригодно <b>${nUse}</b>: берутся только выходы по стоп-лоссу и тейк-профиту (и строки с неизвестной причиной), а ранние выходы самой модели, ручные закрытия и ремонт учёта исключены — они не отражают качества входа. Баланс классов важен: если убытков сильно больше, модель склонна всё называть убытком — поэтому при обучении мы дублируем прибыльные примеры (oversampling).`) +
       balanceBar)}
 
     ${sec(h2("🎓 Этап 3 — Обучение модели","GradientBoosting + калибровка Платта на размеченных данных.") +
-      edu(`<b>Почему «обучено на ${nTrain}», а размечено ${fStat.labeled}?</b> Это деление <u>исторических закрытых сделок</u> (НЕ открытых позиций!). Из ${fStat.labeled} размеченных: <b>80% (${nTrain}) — обучение</b>, <b>20% (${(fStat.labeled||0)-nTrain}) — проверка</b> на примерах, которые модель не видела. Без этого метрики были бы ложными. <b>Precision</b> меряется на проверочной части. Модель включается при precision ≥ 50%.`) +
+      edu(`<b>Почему «обучено на ${nTrain}», а размечено ${fStat.labeled}?</b> Модель обучалась в момент ${esc((univ?.trained_at||"—").slice(0,16))}, когда пригодных сделок было меньше, чем сейчас (сейчас пригодно ${nUse}). Они делятся по времени: примерно <b>80% — обучение</b> (${nTrain}), <b>20% — проверка</b> на более поздних сделках, которых модель не видела. <b>Precision</b> меряется на проверочной части, а она крошечная. Статус «активна» присваивается, когда precision ≥ 50% на проверке минимум из 10 примеров, но в теневом режиме это ни на что не влияет.`) +
       `<div style="display:flex;height:24px;border-radius:6px;overflow:hidden;margin:8px 0;max-width:480px">
         <div style="width:80%;background:#9b7ae8;display:flex;align-items:center;justify-content:center;font-size:11px;color:#fff;font-weight:600">обучение ${nTrain}</div>
-        <div style="width:20%;background:#4c8dff;display:flex;align-items:center;justify-content:center;font-size:11px;color:#fff;font-weight:600">проверка ${(fStat.labeled||0)-nTrain}</div>
+        <div style="width:20%;background:#4c8dff;display:flex;align-items:center;justify-content:center;font-size:11px;color:#fff;font-weight:600">проверка ≈20%</div>
       </div>
-      <div class="muted" style="font-size:11px;margin-bottom:6px">⚠️ «Проверка ${(fStat.labeled||0)-nTrain}» — это срез истории сделок для валидации, а НЕ открытые позиции.</div>` +
+      <div class="muted" style="font-size:11px;margin-bottom:6px">⚠️ ${smallSample} Последнее переобучение: ${univLatest ? `${esc((univLatest.trained_at||"").slice(0,16))}, статус «${esc(univLatest.status)}», precision ${((univLatest.precision_||0)*100).toFixed(0)}%` : "—"}.</div>` +
       `<div style="display:flex;gap:24px;flex-wrap:wrap;margin:10px 0">
         <div><div class="label" style="font-size:11px">Статус</div><div style="font-weight:700;color:${univActive?'#2fa36b':'#f0c04a'}">${univActive?'✅ Активна':'⏳ Учится'}</div></div>
         <div><div class="label" style="font-size:11px">Обучена на</div><div style="font-size:15px;font-weight:700">${nTrain} примерах</div></div>
@@ -4136,7 +4195,7 @@ function _buildLearningHtml(data) {
         <div><div class="label" style="font-size:11px">Обновлена</div><div class="muted" style="font-size:12px">${esc((univ?.trained_at||"—").slice(0,16))}</div></div>
       </div>` +
       `<div style="font-size:12px;font-weight:700;color:#7ab0e8;margin:12px 0 6px">📊 Важность признаков — что модель считает главным</div>` +
-      edu("Модель сама определяет, какие из 31 признака сильнее всего влияют на результат. Чем длиннее полоса — тем важнее признак для предсказания.") +
+      edu(`Модель сама определяет, какие из ${nFeat} признаков сильнее всего влияют на результат. Чем длиннее полоса — тем важнее признак для предсказания. На маленькой выборке это грубая оценка.`) +
       impHtml)}
 
     ${instrModels.length>0 ? sec(h2("📌 Специализированные модели по инструментам","Когда по тикеру накопится 30+ сделок — обучается отдельная, более точная модель.") +
@@ -4148,7 +4207,7 @@ function _buildLearningHtml(data) {
           <td style="font-size:12px">${m.accuracy?(m.accuracy*100).toFixed(0)+"%":"—"}</td>
           <td class="muted" style="font-size:11px">${esc((m.trained_at||"").slice(0,16))}</td></tr>`).join("")}</tbody></table></div>`) : ""}
 
-    ${sec(h2("⚖️ Этап 4 — Решения модели","4 способа, которыми модель влияет на торговлю.") +
+    ${sec(h2("⚖️ Этап 4 — Решения модели",enforce ? "4 способа, которыми модель влияет на торговлю." : "4 способа, которыми модель может влиять на торговлю. Сейчас включён теневой режим: решения только записываются, вход не блокируется и позиции не закрываются.") +
       `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:8px;margin-bottom:10px">
         <div style="background:rgba(255,255,255,.03);border-radius:6px;padding:10px 12px"><div style="font-weight:700;font-size:12.5px;color:#2fa36b">1. Фильтр входа</div><div class="muted" style="font-size:11.5px;line-height:1.5">Мета-стратегия «2 из 3»: сигнал + ML-вероятность ≥ 60% + 1ч-тренд. Слабые входы блокируются.</div></div>
         <div style="background:rgba(255,255,255,.03);border-radius:6px;padding:10px 12px"><div style="font-weight:700;font-size:12.5px;color:#f0c04a">2. Ранний выход</div><div class="muted" style="font-size:11.5px;line-height:1.5">Если P падает &lt; 30% и позиция в убытке — закрывает досрочно, не дожидаясь стопа.</div></div>
@@ -4160,7 +4219,7 @@ function _buildLearningHtml(data) {
 
     ${sec(h2("📊 Этап 5 — Самооптимизация параметров (Phase 1)","Отдельный механизм: подбирает лучшие SL/TP/режим для каждого инструмента по истории сделок.") +
       `<div style="display:flex;gap:24px;flex-wrap:wrap;margin-bottom:8px">
-        <div><div class="label" style="font-size:11px">Последняя оптимизация</div><div style="font-size:14px;font-weight:600">${esc((data.last_rebalance||"никогда")).slice(0,16)}</div></div>
+        <div><div class="label" style="font-size:11px">Последнее изменение параметров</div><div style="font-size:14px;font-weight:600">${esc((data.last_rebalance||"никогда")).slice(0,16)}</div></div>
         <div><div class="label" style="font-size:11px">Инструментов настроено</div><div style="font-size:14px;font-weight:600">${states.length}</div></div>
         <div><div class="label" style="font-size:11px">Изменений в истории</div><div style="font-size:14px;font-weight:600">${logData.length}</div></div>
       </div>` +
@@ -4170,7 +4229,8 @@ function _buildLearningHtml(data) {
           "3. Если вариант реально лучше текущего (на заметную маржу) — параметр меняется, иначе остаётся.<br>" +
           "4. <b>Thompson Sampling</b> выбирает лучший режим (возврат к средней / пробой / тренд).<br>" +
           "<b>Уверенность</b> растёт с числом сделок: 0.5+ → меняет SL/TP, 0.65+ → меняет режим. Запускается ночью в 00:00 МСК и по кнопке выше.") +
-      `<div class="table-wrap"><table><thead><tr><th>Тикер</th><th>Режим</th><th>SL</th><th>TP</th><th>Win%</th><th>Ожид. прибыль</th><th>Уверенность</th></tr></thead><tbody>${instrRows}</tbody></table></div>`)}
+      `<div class="table-wrap"><table><thead><tr><th>Тикер</th><th>Режим</th><th>SL</th><th>TP</th><th>Win%</th><th>Ожид. прибыль, ₽/сделка</th><th>Уверенность</th></tr></thead><tbody>${instrRows}</tbody></table></div>
+      <div class="muted" style="font-size:11px;margin-top:6px">Сделок здесь меньше, чем в журнале сделок: учитываются только сделки с записанным контекстом входа.</div>`)}
 
     ${sec(h2("📜 История решений оптимизатора","Что, когда и почему было изменено — на русском.") +
       `<div class="table-wrap"><table><thead><tr><th>Время</th><th>Тикер</th><th>Параметр</th><th>Решение</th><th>Причина (данные · варианты · итог)</th></tr></thead><tbody>${logRows}</tbody></table></div>`)}
