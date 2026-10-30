@@ -4,6 +4,7 @@ app/__pycache__/
 services/__pycache__/
 __pycache__/
 *.pyc
+.pytest_cache/
 
 # Секреты и конфиги окружения
 .env
@@ -34,6 +35,8 @@ data/*.sqlite3
 data/*.sqlite3.backup
 data/*.db
 *.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
 *.db
 bot.db
 backups/
