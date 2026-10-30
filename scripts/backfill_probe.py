@@ -88,8 +88,15 @@ def bb_last(closes, n=20, mult=2.0):
     return m + mult * sd, m - mult * sd
 
 
-def tech(client, figi, kind, start, end, **kw):
-    req = GetTechAnalysisRequest(indicator_type=kind, instrument_uid=figi, from_=start, to=end,
+def get_uid(client, figi):
+    """UID инструмента: GetTechAnalysis принимает именно его, а не FIGI."""
+    from t_tech.invest import InstrumentIdType
+    r = client.instruments.get_instrument_by(id_type=InstrumentIdType.INSTRUMENT_ID_TYPE_FIGI, id=figi)
+    return r.instrument.uid
+
+
+def tech(client, uid, kind, start, end, **kw):
+    req = GetTechAnalysisRequest(indicator_type=kind, instrument_uid=uid, from_=start, to=end,
                                  interval=IndicatorInterval.INDICATOR_INTERVAL_ONE_MINUTE,
                                  type_of_price=TypeOfPrice.TYPE_OF_PRICE_CLOSE, **kw)
     return client.market_data.get_tech_analysis(request=req).technical_indicators
@@ -112,6 +119,29 @@ def main():
                 print(f"  {days:4d} дн назад ({start.date()}): ОШИБКА {str(e)[:150]}")
             time.sleep(PAUSE)
 
+        uid = get_uid(client, figi)
+        print(f"\nUID инструмента: {uid}")
+
+        print("\n== 1б. Контроль: GetTechAnalysis как в боевом пути (последние 3 часа)")
+        now = datetime.now(timezone.utc)
+        for hours in (3,):
+            time.sleep(PAUSE)
+            try:
+                pts = tech(client, uid, IndicatorType.INDICATOR_TYPE_RSI, now - timedelta(hours=hours), now, length=14)
+                print(f"  RSI за {hours} ч: {len(pts)} точек" + (f", {pts[0].timestamp.strftime('%d %H:%M')}..{pts[-1].timestamp.strftime('%d %H:%M')} UTC" if pts else ""))
+            except Exception as e:
+                print(f"  RSI за {hours} ч: ОШИБКА {str(e)[:160]}")
+
+        print("\n== 1в. Перебор длины диапазона в прошлом (RSI, 1 минута)")
+        day0 = weekday_back(5)
+        for hours in (1, 3, 6, 12, 17, 24):
+            time.sleep(PAUSE)
+            try:
+                pts = tech(client, uid, IndicatorType.INDICATOR_TYPE_RSI, day0, day0 + timedelta(hours=hours), length=14)
+                print(f"  {hours:2d} ч: {len(pts)} точек")
+            except Exception as e:
+                print(f"  {hours:2d} ч: ОШИБКА {str(e)[:100]}")
+
         print("\n== 2. GetTechAnalysis за прошлые даты (один день, 1-минутный интервал)")
         day = weekday_back(5)
         end = day + timedelta(hours=17)
@@ -126,7 +156,7 @@ def main():
         ):
             time.sleep(PAUSE)
             try:
-                pts = tech(client, figi, kind, day, end, **kw)
+                pts = tech(client, uid, kind, day, end, **kw)
                 series[name] = pts
                 if pts:
                     print(f"  {name}: {len(pts)} точек, {pts[0].timestamp.strftime('%H:%M')}..{pts[-1].timestamp.strftime('%H:%M')} UTC")
@@ -138,7 +168,7 @@ def main():
         print("\n== 3. Длинный диапазон (3 суток) одним запросом: потолок точек")
         time.sleep(PAUSE)
         try:
-            pts = tech(client, figi, IndicatorType.INDICATOR_TYPE_RSI, day - timedelta(days=2), end, length=14)
+            pts = tech(client, uid, IndicatorType.INDICATOR_TYPE_RSI, day - timedelta(days=2), end, length=14)
             print(f"  RSI за 3 суток: {len(pts)} точек, {pts[0].timestamp} .. {pts[-1].timestamp}" if pts else "  0 точек")
         except Exception as e:
             print(f"  ОШИБКА {str(e)[:200]}")
