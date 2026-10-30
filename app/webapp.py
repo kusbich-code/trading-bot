@@ -3264,6 +3264,9 @@ def api_ml_summary():
                 from app.ml.virtual_trades import counters as _vt_counters
                 data["virtual_stats"] = dict(_vt_counters())
                 data["virtual_stats"]["enabled"] = str(get_setting("virtual_trades_enabled", "1")) != "0"
+                from app.ml.virtual_trades import recent as _vt_recent, summary as _vt_summary
+                data["virtual_recent"] = _vt_recent(100)
+                data["virtual_summary"] = _vt_summary()
             except Exception as _vte:
                 data["virtual_stats"] = {"error": str(_vte)}
 

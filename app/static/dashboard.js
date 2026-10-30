@@ -3918,6 +3918,47 @@ function _buildLearningHtml(data) {
   const vStat = data.virtual_stats || {};
   const vDone = (vStat.wins || 0) + (vStat.losses || 0);
   const vWin = vDone ? Math.round((vStat.wins || 0) / vDone * 100) : 0;
+  const vSum = data.virtual_summary || {};
+  const vRecent = data.virtual_recent || [];
+  const MODE_RU = {trend: "Тренд", mean_reversion: "Возврат к средней", breakout: "Пробой"};
+  const REASON_RU = {STOP_LOSS: "Стоп-лосс", TAKE_PROFIT: "Тейк-профит", TIMEOUT: "Таймаут 2 ч", SESSION_END: "Конец сессии"};
+  const FILTER_RU = {passed: "прошёл фильтры", min_score: "ниже порога score"};
+  const ML_RU = {p_ok: "модель: P ≥ 0.6", p_low: "модель: P < 0.6", none: "модели не было"};
+  const STATUS_RU = {OPEN: "в работе", CLOSED: "закрыта", ABORTED: "прервана"};
+  const vPct = (x, d = 2) => (x === null || x === undefined) ? "—" : (x >= 0 ? "+" : "") + Number(x).toFixed(d) + "%";
+  const vCol = (x) => (x === null || x === undefined) ? "" : (x > 0 ? "color:#2fa36b" : (x < 0 ? "color:#ff7b7b" : ""));
+  const vWr = (w, l) => (w + l) ? Math.round(w / (w + l) * 100) + "%" : "—";
+  const vGroup = (title, rows, nameFn) => !rows || !rows.length ? "" : `
+    <div style="flex:1;min-width:340px">
+      <div style="font-size:12px;font-weight:700;color:#c4dcff;margin:10px 0 4px">${title}</div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Группа</th><th>Всего</th><th>Закрыто</th><th>✓</th><th>✗</th><th>Win%</th><th>Ср. итог</th><th>MFE</th><th>MAE</th></tr></thead>
+        <tbody>${rows.map(r => `<tr>
+          <td>${esc(nameFn(r.grp))}</td><td>${r.n}</td><td>${r.closed||0}</td><td>${r.wins||0}</td><td>${r.losses||0}</td>
+          <td>${vWr(r.wins||0, r.losses||0)}</td><td style="${vCol(r.avg_pnl)}">${vPct(r.avg_pnl)}</td>
+          <td>${vPct(r.avg_mfe)}</td><td>${vPct(r.avg_mae)}</td></tr>`).join("")}</tbody>
+      </table></div>
+    </div>`;
+  const vTradeRows = vRecent.map(t => {
+    const closed = t.status === "CLOSED";
+    const label = t.label === 1 ? `<span style="color:#2fa36b">✓ прибыль</span>` : (t.label === 0 ? `<span style="color:#ff7b7b">✗ убыток</span>` : "—");
+    return `<tr>
+      <td>${esc((t.created_at||"").slice(5,16))}</td><td><b>${esc(t.ticker)}</b></td>
+      <td>${esc(MODE_RU[t.strategy_mode] || t.strategy_mode)}</td>
+      <td style="color:${t.direction==="BUY"?"#2fa36b":"#ff7b7b"}">${t.direction==="BUY"?"Покупка":"Продажа"}</td>
+      <td>${Math.round(t.signal_score||0)}</td>
+      <td>${t.filter_stage ? `<span class="muted">${esc(FILTER_RU[t.filter_stage] || t.filter_stage)}</span>` : "✓"}</td>
+      <td>${t.ml_p === null || t.ml_p === undefined ? "—" : Number(t.ml_p).toFixed(2)}</td>
+      <td>${t.real_trade ? "да" : "—"}</td>
+      <td>${t.entry_price ? Number(t.entry_price).toFixed(2) : "—"}</td>
+      <td>${((t.sl_pct||0)*100).toFixed(1)} / ${((t.tp_pct||0)*100).toFixed(1)}</td>
+      <td>${esc(STATUS_RU[t.status] || t.status)}${t.ind_missing ? ` <span class="muted" title="индикаторы API недоступны">·без инд.</span>` : ""}</td>
+      <td>${closed ? esc(REASON_RU[t.exit_reason] || t.exit_reason || "") : "—"}</td>
+      <td style="${vCol(t.pnl_pct)}"><b>${closed ? vPct(t.pnl_pct) : "—"}</b></td>
+      <td>${closed ? vPct(t.mfe_pct, 1) + " / " + vPct(t.mae_pct, 1) : "—"}</td>
+      <td>${closed ? Math.round(t.hold_min||0) + " мин" : "—"}</td>
+      <td>${label}</td></tr>`;
+  }).join("");
   const virtualBlock = vStat.enabled === false
     ? `<div class="muted" style="font-size:12px">Выключено (настройка virtual_trades_enabled=0).</div>`
     : `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:stretch">
@@ -3925,7 +3966,24 @@ function _buildLearningHtml(data) {
         ${stage("⏳","Открыто сейчас",vStat.open_n||0,"в работе","#c4dcff")}
         ${stage("🏁","Закрыто",vStat.closed_n||0,`${vStat.wins||0}✓ / ${vStat.losses||0}✗ (${vWin}%)`,"#2fa36b")}
         ${stage("📊","Всего записей",vStat.n||0,"включая прерванные","#9b7ae8")}
-      </div>`;
+      </div>
+      <div style="display:flex;gap:14px;flex-wrap:wrap">
+        ${vGroup("По режимам", vSum.by_mode, g => MODE_RU[g] || g)}
+        ${vGroup("По причине выхода", vSum.by_reason, g => REASON_RU[g] || g || "—")}
+      </div>
+      <div style="display:flex;gap:14px;flex-wrap:wrap">
+        ${vGroup("Прошёл ли сигнал фильтры реальной торговли", vSum.by_filter, g => FILTER_RU[g] || g)}
+        ${vGroup("Что думала модель в момент сигнала (было бы вето правым?)", vSum.by_ml, g => ML_RU[g] || g)}
+      </div>
+      <div style="display:flex;gap:14px;flex-wrap:wrap">${vGroup("По бумагам", vSum.by_ticker, g => g)}</div>
+      <div style="font-size:12px;font-weight:700;color:#c4dcff;margin:14px 0 4px">Последние ${vRecent.length} виртуальных сделок</div>
+      ${vRecent.length ? `<div class="table-wrap" style="max-height:460px;overflow:auto"><table>
+        <thead><tr><th>Время</th><th>Бумага</th><th>Режим</th><th>Напр.</th><th>Score</th><th>Фильтры</th><th>P модели</th>
+          <th>Реальная</th><th>Вход</th><th>SL / TP %</th><th>Статус</th><th>Выход</th><th>Итог (чист.)</th><th>MFE / MAE</th><th>Время в сделке</th><th>Метка</th></tr></thead>
+        <tbody>${vTradeRows}</tbody></table></div>`
+        : `<div class="muted" style="font-size:12px">Пока нет виртуальных сделок: они появляются, когда на торговой сессии приходят сигналы.</div>`}
+      <div class="muted" style="font-size:11px;margin-top:6px">Итог считается после комиссии 0.04% с каждой стороны и спреда. «Реальная» — по бумаге в этот момент была открыта настоящая позиция.
+        Пока вы не включили модель в бой (ml_enforce), эти сделки — основной источник новых меток.</div>`;
 
   // ── 2. Глоссарий ─────────────────────────────────────────────────────────
   const glossary = [

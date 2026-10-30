@@ -346,6 +346,49 @@ def prune_paths(days: int = 30) -> int:
         return cur.rowcount or 0
 
 
+def recent(limit: int = 100) -> list:
+    """Последние виртуальные сделки для дашборда (новые сверху)."""
+    from app.db import db_cursor
+    limit = max(1, min(int(limit), 500))
+    with db_cursor() as cur:
+        cur.execute("""
+            SELECT id, created_at, ticker, strategy_mode, direction, signal_score, filter_stage, ml_p, ml_decision,
+                   real_trade, entry_price, fill_src, sl_pct, tp_pct, status, closed_at, exit_price, exit_reason,
+                   pnl_pct, mfe_pct, mae_pct, hold_min, label, ind_missing
+            FROM ml_virtual_trades ORDER BY id DESC LIMIT ?
+        """, (limit,))
+        return [dict(r) for r in cur.fetchall()]
+
+
+_SUMMARY_COLS = """COUNT(*) n, COUNT(DISTINCT episode_id) episodes, SUM(status='CLOSED') closed,
+    SUM(label=1) wins, SUM(label=0) losses,
+    AVG(CASE WHEN status='CLOSED' THEN pnl_pct END) avg_pnl,
+    AVG(CASE WHEN status='CLOSED' THEN mfe_pct END) avg_mfe,
+    AVG(CASE WHEN status='CLOSED' THEN mae_pct END) avg_mae,
+    AVG(CASE WHEN status='CLOSED' THEN hold_min END) avg_hold"""
+
+
+def summary() -> dict:
+    """Срезы виртуальных сделок: по режимам, причинам выхода, фильтрам, решению модели и бумагам."""
+    from app.db import db_cursor
+
+    def group(cur, expr: str, where: str = "", limit: int = 50) -> list:
+        cur.execute(f"SELECT {expr} AS grp, {_SUMMARY_COLS} FROM ml_virtual_trades {where} "
+                    f"GROUP BY grp ORDER BY n DESC LIMIT {int(limit)}")
+        return [dict(r) for r in cur.fetchall()]
+
+    with db_cursor() as cur:
+        return {
+            "by_mode": group(cur, "strategy_mode"),
+            "by_reason": group(cur, "exit_reason", "WHERE status='CLOSED'"),
+            # прошёл ли сигнал фильтры реальной торговли: ответ на вопрос «не отсекаем ли мы прибыльное»
+            "by_filter": group(cur, "CASE WHEN filter_stage='' THEN 'passed' ELSE filter_stage END"),
+            # что думала модель: p_ok / p_low / '' (модели не было) — «вето было право?»
+            "by_ml": group(cur, "CASE WHEN ml_decision='' THEN 'none' ELSE ml_decision END"),
+            "by_ticker": group(cur, "ticker", "", 20),
+        }
+
+
 def counters() -> dict:
     """Сводка для дашборда: сколько виртуальных сделок, эпизодов и меток."""
     from app.db import db_cursor

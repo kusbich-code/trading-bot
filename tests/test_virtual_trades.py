@@ -282,6 +282,31 @@ def test_abort_open_on_start_and_counters(tmp_db):
     assert c["n"] == 2 and c["open_n"] == 0 and c["closed_n"] == 0
 
 
+def test_recent_and_summary(tmp_db):
+    e = vt.VirtualEngine()
+    a = open_trade(e, "BUY", bid=99.95, ask=100.0, filter_stage="", ml_decision="p_ok")
+    vt.store_open(a)
+    b = vt.VirtualEngine()
+    s = open_trade(b, "SELL", bid=100.0, ask=100.05, filter_stage="min_score", ml_decision="p_low", sl=0.01, tp=0.02)
+    vt.store_open(s)
+    e.on_tick("F1", 102.5, at(1))                        # a: тейк
+    vt.store_closed(e.drain_closed()[0])
+    b.on_tick("F1", 102.0, at(1))                        # s: стоп
+    vt.store_closed(b.drain_closed()[0])
+    rows = vt.recent(10)
+    assert [r["id"] for r in rows] == [s.id, a.id]       # новые сверху
+    assert rows[0]["status"] == "CLOSED" and rows[1]["label"] == 1
+    sm = vt.summary()
+    mode = {r["grp"]: r for r in sm["by_mode"]}["mean_reversion"]
+    assert (mode["n"], mode["closed"], mode["wins"], mode["losses"]) == (2, 2, 1, 1)
+    flt = {r["grp"]: r for r in sm["by_filter"]}
+    assert flt["passed"]["wins"] == 1 and flt["min_score"]["losses"] == 1
+    ml = {r["grp"]: r for r in sm["by_ml"]}
+    assert ml["p_ok"]["wins"] == 1 and ml["p_low"]["losses"] == 1
+    assert {r["grp"] for r in sm["by_reason"]} == {"TAKE_PROFIT", "STOP_LOSS"}
+    assert vt.recent(1)[0]["id"] == s.id
+
+
 def test_prune_paths_keeps_trades(tmp_db):
     e = vt.VirtualEngine()
     t = open_trade(e, sl=0.001, tp=0.5)
