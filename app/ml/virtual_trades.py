@@ -27,7 +27,10 @@ log = logging.getLogger("ml.virtual")
 
 MSK = timezone(timedelta(hours=3))
 
-COMMISSION_PCT = 0.04          # комиссия за одну сторону, % (как estimated_commission_pct = 0.0004 у бота)
+COMMISSION_PCT = 0.05          # комиссия за одну сторону, %: факт брокера (251 операция, ровно 0.0500%); оценка бота 0.04% занижена
+HORIZONS_MIN = (15, 30, 60)    # горизонты «доходности вперёд»: цель обучения, не зависящая от того, чем закрылась сделка
+FWD_MAX_LATE_MIN = 5           # тик позже горизонта больше чем на столько минут уже не годится (малоликвидные бумаги)
+FWD_TAIL_MAX_MIN = 65          # сколько минут после входа дослеживать цену ради доходности вперёд
 MAX_HOLD_MIN = 120             # максимальное время жизни виртуальной сделки, минут
 EPISODE_GAP_SEC = 150          # столько секунд без сигнала — и следующий сигнал считается новым эпизодом
 CHECKPOINTS_MIN = (5, 15, 30, 60)
@@ -96,6 +99,9 @@ class VTrade:
     last_price: float = 0.0
     bars: List[list] = field(default_factory=list)            # [минута_epoch, open, high, low, close]
     checkpoints: Dict[int, Optional[float]] = field(default_factory=lambda: {m: None for m in CHECKPOINTS_MIN})
+    # доходность вперёд, % от цены рынка в момент сигнала, в сторону сделки, без издержек и независимо от SL/TP
+    fwd: Dict[int, Optional[float]] = field(default_factory=lambda: {m: None for m in HORIZONS_MIN})
+    session_end: Optional[datetime] = None
     # итог
     closed_at: Optional[datetime] = None
     exit_price: Optional[float] = None
@@ -131,6 +137,8 @@ class VirtualEngine:
         self._open: Dict[str, List[VTrade]] = {}
         self._episodes: Dict[Tuple[str, str, str], dict] = {}
         self._closed: List[VTrade] = []
+        self._tails: Dict[str, List[VTrade]] = {}      # закрытые сделки, у которых ещё досчитывается доходность вперёд
+        self._tails_done: List[VTrade] = []
         self.stats = {"signals": 0, "episodes": 0, "opened": 0, "closed": 0, "skipped_cap": 0, "skipped_session": 0}
 
     # ── открытие ──────────────────────────────────────────────────────────────
@@ -182,6 +190,7 @@ class VirtualEngine:
                    commission_pct=self.commission_pct, filter_stage=filter_stage, ml_p=ml_p, ml_decision=ml_decision,
                    real_trade=real_trade, ind_missing=ind_missing, feature_id=feature_id)
         t.hi = t.lo = t.last_price = fill
+        t.session_end = sess if sess is not None else deadline
         with self._lock:
             self._open.setdefault(figi, []).append(t)
             self.stats["opened"] += 1
@@ -195,6 +204,7 @@ class VirtualEngine:
         if price is None or price <= 0:
             return
         with self._lock:
+            self._update_tails(figi, (price,), now)
             trades = self._open.get(figi)
             if not trades:
                 return
@@ -210,6 +220,7 @@ class VirtualEngine:
         пессимистичный: для покупки сначала минимум (стоп), потом максимум (тейк); для продажи наоборот.
         Так при касании и стопа, и тейка в одной свече засчитывается стоп, и добивка не завышает долю прибыльных."""
         with self._lock:
+            self._update_tails(figi, (o, l, h, c), now)
             trades = self._open.get(figi)
             if not trades:
                 return
@@ -239,11 +250,18 @@ class VirtualEngine:
                         n += 1
                 if not trades:
                     self._open.pop(figi, None)
+            self._expire_tails(now)
         return n
 
     def drain_closed(self) -> List[VTrade]:
         with self._lock:
             out, self._closed = self._closed, []
+            return out
+
+    def drain_tails_done(self) -> List[VTrade]:
+        """Закрытые сделки, у которых доходность вперёд досчитана (или срок дослеживания истёк)."""
+        with self._lock:
+            out, self._tails_done = self._tails_done, []
             return out
 
     def open_count(self) -> int:
@@ -270,6 +288,7 @@ class VirtualEngine:
         for cp in CHECKPOINTS_MIN:
             if t.checkpoints.get(cp) is None and elapsed_min >= cp:
                 t.checkpoints[cp] = t.side * (price - t.entry_fill) / t.entry_fill * 100.0
+        self._fwd_update(t, price, now)
         if t.side == 1:
             if price <= t.sl_price:
                 self._close(t, "STOP_LOSS", price, now, market=True, bid=bid, ask=ask)
@@ -304,6 +323,52 @@ class VirtualEngine:
         t.label = decide_label(t.pnl_pct)
         self._closed.append(t)
         self.stats["closed"] += 1
+        self._maybe_tail(t, now)
+
+    # ── доходность вперёд: не зависит от SL/TP, поэтому сделку после закрытия дослеживаем до нужных горизонтов ──
+
+    def _fwd_update(self, t: VTrade, price: float, now: datetime) -> None:
+        if t.session_end is not None and now > t.session_end:
+            return                                       # цена после конца сессии (перерыв, ночь) к сигналу не относится
+        elapsed = (now - t.opened_at).total_seconds() / 60.0
+        for h in HORIZONS_MIN:
+            if t.fwd.get(h) is None and h <= elapsed <= h + FWD_MAX_LATE_MIN:
+                t.fwd[h] = t.side * (price - t.entry_mid) / t.entry_mid * 100.0
+
+    def _fwd_pending(self, t: VTrade, now: datetime) -> bool:
+        if all(t.fwd.get(h) is not None for h in HORIZONS_MIN):
+            return False
+        if t.session_end is not None and now > t.session_end:
+            return False
+        return (now - t.opened_at).total_seconds() / 60.0 <= FWD_TAIL_MAX_MIN
+
+    def _maybe_tail(self, t: VTrade, now: datetime) -> None:
+        if self._fwd_pending(t, now):
+            self._tails.setdefault(t.figi, []).append(t)
+
+    def _update_tails(self, figi: str, prices, now: datetime) -> None:
+        tails = self._tails.get(figi)
+        if not tails:
+            return
+        for t in list(tails):
+            for price in prices:
+                if price and price > 0:
+                    self._fwd_update(t, price, now)
+            if not self._fwd_pending(t, now):
+                tails.remove(t)
+                self._tails_done.append(t)
+        if not tails:
+            self._tails.pop(figi, None)
+
+    def _expire_tails(self, now: datetime) -> None:
+        for figi in list(self._tails):
+            tails = self._tails[figi]
+            for t in list(tails):
+                if not self._fwd_pending(t, now):
+                    tails.remove(t)
+                    self._tails_done.append(t)
+            if not tails:
+                self._tails.pop(figi, None)
 
 
 # ── хранение ──────────────────────────────────────────────────────────────────
@@ -334,16 +399,40 @@ def store_closed(t: VTrade) -> None:
     with db_cursor() as cur:
         cur.execute("""
             UPDATE ml_virtual_trades SET status='CLOSED', closed_at=?, exit_price=?, exit_reason=?, pnl_pct=?,
-                mfe_pct=?, mae_pct=?, hold_min=?, ret_5m=?, ret_15m=?, ret_30m=?, ret_60m=?, label=?
+                mfe_pct=?, mae_pct=?, hold_min=?, ret_5m=?, ret_15m=?, ret_30m=?, ret_60m=?, label=?,
+                fwd_ret_15m=?, fwd_ret_30m=?, fwd_ret_60m=?
             WHERE id=?
         """, (msk_str(t.closed_at), t.exit_price, t.exit_reason, t.pnl_pct, t.mfe_pct, t.mae_pct, t.hold_min,
               t.checkpoints.get(5), t.checkpoints.get(15), t.checkpoints.get(30), t.checkpoints.get(60),
-              t.label, t.id))
+              t.label, t.fwd.get(15), t.fwd.get(30), t.fwd.get(60), t.id))
         cur.execute("INSERT OR REPLACE INTO ml_virtual_paths(virtual_id, path_json) VALUES (?, ?)",
                     (t.id, json.dumps(t.bars, separators=(",", ":"))))
         if t.feature_id:
             cur.execute("UPDATE ml_features SET pnl=?, quality_score=?, label=?, exit_reason=? WHERE id=?",
                         (t.pnl_pct, t.pnl_pct / 100.0, t.label, t.exit_reason, t.feature_id))
+
+
+def store_forward(t: VTrade) -> None:
+    """Досчитанная после закрытия сделки доходность вперёд (сделка закрылась по SL/TP раньше горизонта)."""
+    from app.db import db_cursor
+    if not t.id:
+        return
+    with db_cursor() as cur:
+        cur.execute("UPDATE ml_virtual_trades SET fwd_ret_15m=?, fwd_ret_30m=?, fwd_ret_60m=? WHERE id=?",
+                    (t.fwd.get(15), t.fwd.get(30), t.fwd.get(60), t.id))
+
+
+def refresh_forward_targets(items: List[Tuple["VTrade", dict]]) -> int:
+    """Проставляет доходность вперёд уже записанным эпизодам добивки (по episode_id); новых строк не создаёт."""
+    from app.db import db_cursor
+    n = 0
+    with db_cursor() as cur:
+        for t, _ in items:
+            cur.execute("UPDATE ml_virtual_trades SET fwd_ret_15m=?, fwd_ret_30m=?, fwd_ret_60m=? "
+                        "WHERE episode_id=? AND source='BACKFILL'",
+                        (t.fwd.get(15), t.fwd.get(30), t.fwd.get(60), t.episode_id))
+            n += cur.rowcount or 0
+    return n
 
 
 def abort_open_on_start() -> int:
@@ -456,13 +545,14 @@ def store_backfill_batch(items: List[Tuple["VTrade", dict]]) -> int:
                     signal_score, filter_stage, ml_p, ml_decision, real_trade, entry_mid, entry_price, fill_src,
                     spread_pct, sl_pct, tp_pct, commission_pct, ind_missing, status, closed_at, exit_price,
                     exit_reason, pnl_pct, mfe_pct, mae_pct, hold_min, ret_5m, ret_15m, ret_30m, ret_60m, label,
-                    feature_id, source)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'CLOSED',?,?,?,?,?,?,?,?,?,?,?,?,?,'BACKFILL')
+                    feature_id, fwd_ret_15m, fwd_ret_30m, fwd_ret_60m, source)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'CLOSED',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'BACKFILL')
             """, (msk_str(t.opened_at), t.figi, t.ticker, t.mode, t.direction, t.episode_id, t.score, t.filter_stage,
                   t.ml_p, t.ml_decision, int(t.real_trade), t.entry_mid, t.entry_fill, t.fill_src, t.spread_pct,
                   t.sl_pct, t.tp_pct, t.commission_pct, int(t.ind_missing), msk_str(t.closed_at), t.exit_price,
                   t.exit_reason, t.pnl_pct, t.mfe_pct, t.mae_pct, t.hold_min, t.checkpoints.get(5),
-                  t.checkpoints.get(15), t.checkpoints.get(30), t.checkpoints.get(60), t.label, fid))
+                  t.checkpoints.get(15), t.checkpoints.get(30), t.checkpoints.get(60), t.label, fid,
+                  t.fwd.get(15), t.fwd.get(30), t.fwd.get(60)))
             vid = cur.lastrowid
             cur.execute("UPDATE ml_features SET virtual_id=? WHERE id=?", (vid, fid))
             if t.bars:

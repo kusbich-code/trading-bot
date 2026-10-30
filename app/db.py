@@ -503,10 +503,29 @@ def init_db():
             cur.execute("ALTER TABLE ml_virtual_trades ADD COLUMN source TEXT DEFAULT 'LIVE'")
         except Exception:
             pass
+        for _col in ("fwd_ret_15m", "fwd_ret_30m", "fwd_ret_60m"):
+            try:
+                # доходность через N минут после сигнала, % в сторону сделки, без издержек и независимо от SL/TP/таймаута
+                cur.execute(f"ALTER TABLE ml_virtual_trades ADD COLUMN {_col} REAL")
+            except Exception:
+                pass
         cur.execute("CREATE INDEX IF NOT EXISTS idx_mlvt_episode ON ml_virtual_trades(episode_id)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_mlvt_status ON ml_virtual_trades(status)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_mlvt_created ON ml_virtual_trades(created_at)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_mlvt_figi_mode ON ml_virtual_trades(figi, strategy_mode, direction)")
+        # отчёты тренера v2: хронологическая проверка модели, чистый итог отобранных сделок, вердикт
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS ml_training_reports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT NOT NULL,
+            horizon INTEGER,
+            n_rows INTEGER,
+            n_blocks INTEGER,
+            verdict TEXT DEFAULT '',
+            model_id INTEGER,
+            report_json TEXT NOT NULL
+        )
+        """)
         # поминутный путь цены (open/high/low/close) для пересчёта исходов с другими SL/TP; очищается через N дней
         cur.execute("""
         CREATE TABLE IF NOT EXISTS ml_virtual_paths (

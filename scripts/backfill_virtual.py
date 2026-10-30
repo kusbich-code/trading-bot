@@ -156,6 +156,8 @@ def main() -> int:
     ap.add_argument("--days", type=int, default=60)
     ap.add_argument("--tickers", default="")
     ap.add_argument("--apply", action="store_true")
+    ap.add_argument("--refresh-targets", action="store_true",
+                    help="проставить доходность вперёд (fwd_ret_*) уже записанным эпизодам добивки; новых строк не создаёт")
     ap.add_argument("--rpm", type=int, default=100)
     ap.add_argument("--cache-dir", default="data/backfill_cache")
     args = ap.parse_args()
@@ -183,12 +185,15 @@ def main() -> int:
     load_first = (start - timedelta(days=bf.WARMUP_DAYS)).date()
     load_last = now.date()
     n_days = (load_last - load_first).days + 1
-    print(f"Режим: {'ЗАПИСЬ' if args.apply else 'пробный прогон (БД не меняется)'}")
+    do_write = args.apply or args.refresh_targets
+    mode_name = ("ОБНОВЛЕНИЕ целей fwd_ret_* у записанных эпизодов" if args.refresh_targets
+                 else "ЗАПИСЬ" if args.apply else "пробный прогон (БД не меняется)")
+    print(f"Режим: {mode_name}")
     print(f"Сигналы: {start:%Y-%m-%d} .. {end:%Y-%m-%d %H:%M} UTC (разогрев с {load_first}); инструментов: {len(universe)}")
     print(f"Свечи: до {n_days} дн × {len(figis)} бумаг = {n_days * len(figis)} запросов при пустом кеше, "
           f"~{n_days * len(figis) / max(1, args.rpm):.0f} мин при {args.rpm} запросов/мин")
 
-    if args.apply:
+    if do_write:
         from app.db import init_db
         print("Бэкап БД:", backup_db(settings.DB_PATH))
         init_db()                                    # миграции (колонка source) идемпотентны; бот делает то же при старте
@@ -220,7 +225,10 @@ def main() -> int:
             one.add(res)
             one.print(f"{u['ticker']} (свечей {len(series.times)})")
             total.add(res)
-            if args.apply:
+            if args.refresh_targets:
+                for i in range(0, len(res), BATCH):
+                    written += vt.refresh_forward_targets(res[i:i + BATCH])
+            elif args.apply:
                 for i in range(0, len(res), BATCH):
                     written += vt.store_backfill_batch(res[i:i + BATCH])
             del res
@@ -234,7 +242,9 @@ def main() -> int:
     print(f"  запросов свечей: {fetcher.requests}, пропущенных дней: {len(fetcher.failed_days)}, время {time.time() - t0:.0f} с")
     if fetcher.failed_days:
         print("  ПРОПУЩЕНЫ (повторите запуск — кеш подхватит остальное):", fetcher.failed_days[:10])
-    if args.apply:
+    if args.refresh_targets:
+        print(f"  обновлено эпизодов в БД: {written}")
+    elif args.apply:
         print(f"  записано в БД новых эпизодов: {written} (остальные уже были)")
     else:
         print("  Это пробный прогон. Для записи добавьте --apply (перед ним будет снят бэкап).")

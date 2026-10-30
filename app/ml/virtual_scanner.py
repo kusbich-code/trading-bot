@@ -143,3 +143,9 @@ class VirtualScanner:
             except Exception as e:
                 self.errors += 1
                 log.warning("запись итога виртуальной сделки %s: %s", t.id, e)
+        for t in self.engine.drain_tails_done():          # доходность вперёд, досчитанная после закрытия по SL/TP
+            try:
+                vt.store_forward(t)
+            except Exception as e:
+                self.errors += 1
+                log.warning("запись доходности вперёд %s: %s", t.id, e)

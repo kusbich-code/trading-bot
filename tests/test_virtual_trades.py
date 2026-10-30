@@ -141,7 +141,7 @@ def test_buy_take_profit():
     e.on_tick("F1", 102.5, at(2))                               # перелетели цель: исполнение по уровню
     assert t.status == "CLOSED" and t.exit_reason == "TAKE_PROFIT"
     assert t.exit_price == pytest.approx(102.0)
-    assert t.pnl_pct == pytest.approx(2.0 - 0.08)
+    assert t.pnl_pct == pytest.approx(2.0 - 2 * vt.COMMISSION_PCT)
     assert t.label == 1
     assert e.open_count() == 0 and e.drain_closed() == [t] and e.drain_closed() == []
 
@@ -151,7 +151,7 @@ def test_buy_stop_loss_with_book():
     t = open_trade(e, "BUY", bid=99.95, ask=100.0)
     e.on_tick("F1", 98.9, at(3), bid=98.85, ask=98.95)
     assert t.exit_reason == "STOP_LOSS" and t.exit_price == 98.85
-    assert t.pnl_pct == pytest.approx((98.85 - 100.0) / 100.0 * 100 - 0.08)
+    assert t.pnl_pct == pytest.approx((98.85 - 100.0) / 100.0 * 100 - 2 * vt.COMMISSION_PCT)
     assert t.label == 0
 
 
@@ -168,7 +168,7 @@ def test_sell_take_profit_and_stop_loss():
     t = open_trade(e, "SELL", bid=100.0, ask=100.05)
     e.on_tick("F1", 97.9, at(1))
     assert t.exit_reason == "TAKE_PROFIT" and t.exit_price == pytest.approx(98.0)
-    assert t.pnl_pct == pytest.approx(2.0 - 0.08) and t.label == 1
+    assert t.pnl_pct == pytest.approx(2.0 - 2 * vt.COMMISSION_PCT) and t.label == 1
 
     e2 = vt.VirtualEngine()
     t2 = open_trade(e2, "SELL", bid=100.0, ask=100.05)
@@ -226,6 +226,69 @@ def test_bar_without_touch_keeps_trade_and_tracks_extremes():
     assert t.status == "OPEN"
 
 
+# ── доходность вперёд (цель обучения, не зависит от SL/TP) ──────────────────────
+
+def test_fwd_set_at_horizons_for_open_trade():
+    e = vt.VirtualEngine()
+    t = open_trade(e, "BUY", bid=99.95, ask=100.0, sl=0.5, tp=0.5, mid=100.0)    # уровни далеко: сделка не закроется
+    e.on_tick("F1", 100.4, at(15.2))
+    e.on_tick("F1", 100.9, at(30.5))
+    e.on_tick("F1", 99.0, at(60.1))
+    assert t.fwd[15] == pytest.approx(0.4) and t.fwd[30] == pytest.approx(0.9) and t.fwd[60] == pytest.approx(-1.0)
+
+
+def test_fwd_short_is_signed_by_direction():
+    e = vt.VirtualEngine()
+    t = open_trade(e, "SELL", bid=100.0, ask=100.05, sl=0.5, tp=0.5, mid=100.0)
+    e.on_tick("F1", 99.0, at(15.1))
+    assert t.fwd[15] == pytest.approx(1.0)                       # цена упала - для шорта это плюс
+
+
+def test_fwd_is_filled_after_stop_loss_closes_the_trade():
+    """Главное: сделка закрылась стопом на 3-й минуте, но доходность через 15/30/60 минут всё равно досчитывается."""
+    e = vt.VirtualEngine()
+    t = open_trade(e, "BUY", bid=99.95, ask=100.0, sl=0.01, tp=0.05, mid=100.0)
+    e.on_tick("F1", 98.9, at(3))                                  # стоп
+    assert t.status == "CLOSED" and t.fwd[15] is None
+    assert e.drain_tails_done() == []                              # дослеживание идёт
+    e.on_tick("F1", 101.0, at(15.5))
+    e.on_tick("F1", 102.0, at(31))
+    e.on_tick("F1", 103.0, at(60.5))
+    assert (t.fwd[15], t.fwd[30], t.fwd[60]) == (pytest.approx(1.0), pytest.approx(2.0), pytest.approx(3.0))
+    assert e.drain_tails_done() == [t] and e.drain_tails_done() == []
+
+
+def test_fwd_not_set_by_late_tick_or_after_session_end():
+    e = vt.VirtualEngine()
+    t = open_trade(e, "BUY", bid=99.95, ask=100.0, sl=0.5, tp=0.5, mid=100.0)
+    e.on_tick("F1", 101.0, at(25))                                # первый тик через 10 минут после горизонта 15: не годится
+    assert t.fwd[15] is None and t.fwd[30] is None
+    late = datetime(2026, 10, 30, 15, 40, tzinfo=UTC)             # 18:40 МСК, до конца окна 5 минут, но claim разрешит: >= 5 минут
+    e2 = vt.VirtualEngine()
+    ep = e2.claim("F2", "trend", "BUY", late - timedelta(minutes=1))
+    t2 = e2.open(figi="F2", ticker="X", mode="trend", direction="BUY", episode_id=ep, score=1, now=late - timedelta(minutes=1),
+                 mid=100.0, sl_pct=0.5, tp_pct=0.5)
+    e2.on_tick("F2", 101.0, datetime(2026, 10, 30, 15, 50, tzinfo=UTC))     # 18:50 МСК - уже после конца окна 18:45
+    assert t2.fwd[15] is None
+
+
+def test_tail_gives_up_after_limit_and_on_expire():
+    e = vt.VirtualEngine()
+    t = open_trade(e, "BUY", bid=99.95, ask=100.0, sl=0.01, tp=0.05, mid=100.0)
+    e.on_tick("F1", 98.9, at(3))                                  # закрыта стопом, дослеживание
+    e.expire(at(70))                                               # прошло больше FWD_TAIL_MAX_MIN, цены не было
+    assert e.drain_tails_done() == [t] and t.fwd[60] is None
+
+
+def test_fwd_replay_on_bars_matches_horizons():
+    e = vt.VirtualEngine()
+    t = open_trade(e, "BUY", bid=99.95, ask=100.0, sl=0.5, tp=0.5, mid=100.0)
+    for minute in range(1, 70):
+        px = 100.0 + minute * 0.01
+        e.on_bar("F1", px, px + 0.005, px - 0.005, px, at(minute, 30))
+    assert t.fwd[15] == pytest.approx(0.15, abs=0.02) and t.fwd[60] == pytest.approx(0.60, abs=0.02)
+
+
 # ── MFE / MAE / контрольные точки ────────────────────────────────────────────
 
 def test_mfe_mae_and_checkpoints():
@@ -267,7 +330,7 @@ def test_expire_at_session_end_flat_price_is_a_loss_after_costs():
     t = open_trade(e, now=late, bid=99.99, ask=100.0)
     assert e.expire(datetime(2026, 10, 30, 15, 45, tzinfo=UTC), {"F1": 100.0}) == 1
     assert t.exit_reason == "SESSION_END"
-    assert t.pnl_pct < -0.08 and t.label == 0                   # цена не двигалась, но комиссия и спред съели результат
+    assert t.pnl_pct < -2 * vt.COMMISSION_PCT and t.label == 0                   # цена не двигалась, но комиссия и спред съели результат
 
 
 def test_expire_uses_last_tick_when_no_price_given():
@@ -302,7 +365,7 @@ def test_store_roundtrip(tmp_db):
         r = cur.fetchone()
         assert (r["status"], r["exit_reason"], r["label"], r["filter_stage"], r["ml_decision"]) == \
                ("CLOSED", "TAKE_PROFIT", 1, "min_score", "shadow_block")
-        assert r["pnl_pct"] == pytest.approx(2.0 - 0.08) and r["feature_id"] == fid
+        assert r["pnl_pct"] == pytest.approx(2.0 - 2 * vt.COMMISSION_PCT) and r["feature_id"] == fid
         assert r["ret_5m"] == pytest.approx(1.0) or r["ret_5m"] is not None
         cur.execute("SELECT label, exit_reason, virtual_id, pnl FROM ml_features WHERE id=?", (fid,))
         f = cur.fetchone()

@@ -97,6 +97,22 @@ def test_cache_prevents_repeat_requests(env, tmp_db, monkeypatch):
     assert all(d == today for _, d in env[first:])
 
 
+def test_refresh_targets_updates_existing_episodes_only(env, tmp_db, monkeypatch, capsys):
+    assert run_cli(monkeypatch, "--apply") == 0
+    n, _ = counts(tmp_db)
+    with tmp_db.db_cursor() as cur:
+        cur.execute("UPDATE ml_virtual_trades SET fwd_ret_15m=NULL, fwd_ret_30m=NULL, fwd_ret_60m=NULL")
+    assert run_cli(monkeypatch, "--refresh-targets") == 0
+    out = capsys.readouterr().out.split("ИТОГО")[-1]
+    assert f"обновлено эпизодов в БД: {n}" in out
+    assert counts(tmp_db) == (n, n)                                  # новых строк нет
+    with tmp_db.db_cursor() as cur:
+        cur.execute("SELECT COUNT(*) n, SUM(fwd_ret_60m IS NOT NULL) f60, SUM(fwd_ret_15m IS NOT NULL) f15 "
+                    "FROM ml_virtual_trades WHERE source='BACKFILL'")
+        r = cur.fetchone()
+    assert r["f15"] > 0.8 * r["n"] and r["f60"] > 0.5 * r["n"]       # у большинства есть, кроме позднего вечера и конца данных
+
+
 def test_stops_when_memory_is_low(env, tmp_db, monkeypatch, capsys):
     monkeypatch.setattr(cli, "mem_available_mb", lambda *a, **k: 100)
     assert run_cli(monkeypatch, "--apply") == 0
