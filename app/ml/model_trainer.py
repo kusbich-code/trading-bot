@@ -18,6 +18,12 @@ MIN_TEST_SAMPLES = 10   # precision на меньшей отложенной в�
 MIN_PRED_POSITIVES = 3  # и при меньшем числе предсказанных «прибыльных» тоже
 MIN_PRECISION_ACTIVATE = 0.50  # минимальная precision для активации универсальной модели
 
+# Метка «прибыль/убыток» осмысленна только для штатных выходов по SL/TP. Ранний выход самой модели,
+# ручное закрытие, чистка осиротевших позиций и т.п. не отражают качества входа (ранний выход к тому же
+# всегда даёт убыток по построению). NULL — причина не известна (старые строки), их не отбрасываем.
+POLICY_EXIT_REASONS = ("STOP_LOSS", "TAKE_PROFIT")
+_CLEAN_LABEL_SQL = "(exit_reason IS NULL OR exit_reason IN ('STOP_LOSS','TAKE_PROFIT'))"
+
 
 def _balance_classes(X_train: list, y_train: list) -> Tuple[list, list]:
     """Oversample миноритарного класса до уровня мажоритарного (детерминированно)."""
@@ -63,7 +69,7 @@ def get_all_labeled_features() -> Tuple[list, list]:
             col_list = ", ".join(FEATURE_NAMES)
             cur.execute(f"""
                 SELECT {col_list}, label FROM ml_features
-                WHERE label IS NOT NULL
+                WHERE label IS NOT NULL AND {_CLEAN_LABEL_SQL}
                 ORDER BY timestamp ASC
             """)
             rows = cur.fetchall()
@@ -190,7 +196,7 @@ def get_training_data(figi: str, strategy_id: int) -> Tuple[list, list]:
             col_list = ", ".join(FEATURE_NAMES)
             cur.execute(f"""
                 SELECT {col_list}, label FROM ml_features
-                WHERE figi=? AND strategy_id=? AND label IS NOT NULL
+                WHERE figi=? AND strategy_id=? AND label IS NOT NULL AND {_CLEAN_LABEL_SQL}
                 ORDER BY timestamp ASC
             """, (figi, strategy_id))
             rows = cur.fetchall()

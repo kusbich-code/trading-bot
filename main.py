@@ -881,7 +881,7 @@ def _handle_manual_close(bp: dict, market_map: dict, client=None):
         if _feat_id_mc:
             _inv_mc = abs(float(entry_price) * qty)
             _q_mc = float(pnl) / max(0.001, _inv_mc)
-            _lf_mc(_feat_id_mc, float(pnl), _q_mc)
+            _lf_mc(_feat_id_mc, float(pnl), _q_mc, reason)
         _otc_mc(figi, float(pnl))
         from app.ml.experience import record_exit as _re_mc
         _re_mc(figi, float(pnl))   # закрываем контекст сделки в ml_trade_context
@@ -2815,7 +2815,7 @@ def process_instrument(client, item,
                 from app.ml.model_predictor import invalidate_cache as _ic
                 if _feat_id:
                     _quality = float(pnl) / max(0.001, abs(float(entry_price) * exec_qty_shares))
-                    _lf(_feat_id, float(pnl), _quality)
+                    _lf(_feat_id, float(pnl), _quality, close_reason)
                 if _sr(figi, _strategy_id or 0):
                     import threading
                     threading.Thread(target=lambda: (

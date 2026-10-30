@@ -333,9 +333,11 @@ def store_features(figi: str, ticker: str, strategy_id: int,
         return 0
 
 
-def label_features(feature_id: int, pnl: float, quality_score: float) -> None:
+def label_features(feature_id: int, pnl: float, quality_score: float, exit_reason: str = "") -> None:
     """
-    Размечает результат сделки. Градуированные метки:
+    Размечает результат сделки. exit_reason — как закрыта позиция (STOP_LOSS, TAKE_PROFIT, ML_EARLY_EXIT,
+    MANUAL_CLOSE ...): обучающая выборка берёт только штатные выходы по SL/TP, см. model_trainer.
+    Градуированные метки:
       pnl >> 0  → label=2  (отличная сделка, выше среднего TP)
       pnl > 0   → label=1  (хорошая)
       pnl < 0 (небольшой) → label=-1 (плохая)
@@ -351,8 +353,8 @@ def label_features(feature_id: int, pnl: float, quality_score: float) -> None:
         from app.db import db_cursor
         with db_cursor() as cur:
             cur.execute("""
-                UPDATE ml_features SET pnl=?, quality_score=?, label=? WHERE id=?
-            """, (pnl, quality_score, label, feature_id))
+                UPDATE ml_features SET pnl=?, quality_score=?, label=?, exit_reason=? WHERE id=?
+            """, (pnl, quality_score, label, exit_reason or None, feature_id))
     except Exception as e:
         log.warning("label_features %d: %s", feature_id, e)
 

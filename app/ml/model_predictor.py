@@ -28,6 +28,30 @@ _entry_log_ts: Dict[str, float] = {}  # figi → monotonic timestamp после�
 # Кеш точности универсальной модели (precision), обновляется раз в 5 мин
 _univ_precision_cache: dict = {"ts": 0.0, "value": 0.0}
 
+# Кеш настройки ml_enforce: читается на каждом сигнале и каждом цикле открытой позиции
+_ENFORCE_TTL = 15.0
+_enforce_cache: dict = {"ts": 0.0, "value": False}
+
+
+def _enforce_enabled() -> bool:
+    """Применяет ли модель свои решения к торговле (настройка ml_enforce, по умолчанию выключено).
+
+    Выключено — «теневой» режим: решения считаются и пишутся в ml_decisions, но не блокируют вход
+    и не закрывают позиции. Иначе заблокированные сигналы не получают меток, и модель перестаёт учиться.
+    """
+    import time as _t
+    if _t.monotonic() - _enforce_cache["ts"] < _ENFORCE_TTL:
+        return _enforce_cache["value"]
+    value = False
+    try:
+        from app.db import get_setting
+        value = str(get_setting("ml_enforce", "0")).strip().lower() in ("1", "true", "yes")
+    except Exception as e:
+        log.debug("ml_enforce: %s", e)
+    _enforce_cache["ts"] = _t.monotonic()
+    _enforce_cache["value"] = value
+    return value
+
 
 def _universal_model_precision() -> float:
     """Precision активной универсальной модели (кеш 5 мин)."""
@@ -223,7 +247,8 @@ def should_enter(figi: str, ticker: str, strategy_id: int, features: Dict,
     """
     Фильтр входа.
     Soft mode (не обучена): логирует но не блокирует.
-    Hard mode (обучена): блокирует при P < threshold.
+    Hard mode (обучена и ml_enforce=1): блокирует при P < threshold.
+    Тень (обучена, ml_enforce=0): считает решение и пишет entry_shadow_*, но вход не блокирует.
     """
     p = predict_probability(figi, strategy_id, features)
     if p is None:
@@ -243,9 +268,21 @@ def should_enter(figi: str, ticker: str, strategy_id: int, features: Dict,
     # (раньше два других условия из трёх пропускали вход при любом P).
     hard_veto = active and (not allow) and _model_samples(figi, strategy_id) >= HARD_VETO_MIN_SAMPLES
 
-    if active and (hard_veto or not meta_allow):
-        block_reason = (f"ML-вето: P={p:.2f} < {ENTRY_THRESHOLD}" if hard_veto and meta_allow
-                        else f"Meta 2/3: {meta_score}/3 условий (ML={cond_ml}) — {meta_reason}")
+    would_block = active and (hard_veto or not meta_allow)
+    block_reason = (f"ML-вето: P={p:.2f} < {ENTRY_THRESHOLD}" if hard_veto and meta_allow
+                    else f"Meta 2/3: {meta_score}/3 условий (ML={cond_ml}) — {meta_reason}")
+
+    if would_block and not _enforce_enabled():
+        # Тень: решение модели записываем, но вход не блокируем — сигнал пойдёт в торговлю и получит метку
+        import time as _ts
+        _now_sh = _ts.monotonic()
+        if _now_sh - _entry_log_ts.get(figi, 0) >= 60:
+            log_decision(figi, ticker, "entry_shadow_block", p, ENTRY_THRESHOLD, True,
+                         f"тень: {block_reason}", features)
+            _entry_log_ts[figi] = _now_sh
+        return True, p, f"ML тень: P={p:.2f} (не блокирует)"
+
+    if would_block:
         # Дедуп: Telegram + запись в БД не чаще раз в 60 сек на figi (иначе спам каждые ~5с)
         import time as _tb
         _now_tb = _tb.monotonic()
@@ -303,10 +340,11 @@ def should_exit_early(figi: str, ticker: str, strategy_id: int, features: Dict,
     if direction == "SELL":
         pnl_pct = -pnl_pct
 
-    # Hard-режим только если модель достаточно точная. Иначе — soft (лог, не закрываем).
+    # Hard-режим только если модель достаточно точная и ml_enforce=1. Иначе — soft (лог, не закрываем):
+    # досрочный выход модели сам ставил метку «убыток» позициям, которые могли отыграться.
     model_prec = _universal_model_precision()
     hard_mode = (is_active(figi, strategy_id) or _get_universal_model()[0] is not None) \
-                and model_prec >= MIN_EXIT_PRECISION
+                and model_prec >= MIN_EXIT_PRECISION and _enforce_enabled()
 
     # Закрываем досрочно ТОЛЬКО убыточные позиции при низком P.
     # Прибыльные не трогаем — пусть идут до TP (не режем выигрыши).
@@ -319,6 +357,7 @@ def should_exit_early(figi: str, ticker: str, strategy_id: int, features: Dict,
                          f"P={p:.3f}<{EXIT_THRESHOLD} pnl={pnl_pct:.2f}% prec={model_prec:.2f}", features)
             return True, p
         else:
+            _exit_decided[figi] = _now_ts  # не писать одно и то же решение каждый цикл (5 мин)
             log_decision(figi, ticker, "early_exit_soft", p, EXIT_THRESHOLD, False,
                          f"soft P={p:.3f} pnl={pnl_pct:.2f}% prec={model_prec:.2f}", features)
             return False, p

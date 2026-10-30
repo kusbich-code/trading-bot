@@ -449,6 +449,11 @@ def init_db():
             cur.execute("ALTER TABLE ml_features ADD COLUMN short_carry_risk REAL DEFAULT 0")
         except Exception:
             pass
+        try:
+            # как закрыта сделка (STOP_LOSS, TAKE_PROFIT, ML_EARLY_EXIT, MANUAL_CLOSE ...); NULL — выход не известен
+            cur.execute("ALTER TABLE ml_features ADD COLUMN exit_reason TEXT")
+        except Exception:
+            pass
 
         cur.execute("""
         CREATE TABLE IF NOT EXISTS ml_models (
