@@ -36,6 +36,28 @@ MODES = ("trend", "mean_reversion", "breakout")
 DERIVED = ["is_evening", "mode_trend", "mode_mean_reversion", "mode_breakout"]
 ALL_FEATURES = FEATURES_V2 + DERIVED
 
+# Группы признаков, которые можно исключить из обучения (--exclude time,h1), чтобы проверить их вклад
+TIME_FEATURES = ("hour_sin", "hour_cos", "is_morning", "is_close", "session_phase", "is_evening")
+H1_FEATURES = ("z_score_1h", "trend_1h", "volatility_1h", "trend_4h", "momentum_4h")
+FEATURE_GROUPS = {"time": TIME_FEATURES, "h1": H1_FEATURES}
+
+
+def resolve_exclude(spec) -> frozenset:
+    """'time,h1' или имена признаков через запятую -> множество имён признаков, которые не берутся в модель."""
+    names = set()
+    for part in ([] if not spec else (spec.split(",") if isinstance(spec, str) else spec)):
+        part = part.strip()
+        if not part:
+            continue
+        if part in FEATURE_GROUPS:
+            names |= set(FEATURE_GROUPS[part])
+        elif part in ALL_FEATURES:
+            names.add(part)
+        else:
+            raise ValueError(f"неизвестная группа или признак: {part}")
+    return frozenset(names)
+
+
 COMMISSION_SIDE_PCT = 0.05     # факт брокера (песочница): 0.0500% за сторону
 DEFAULT_SPREAD_PCT = 0.03      # спред для бумаг, по которым нет живых наблюдений
 TOP_QUANTILES = (0.5, 0.2, 0.1, 0.05, 0.02, 0.01)
@@ -163,13 +185,15 @@ def block_bootstrap_mean(block: np.ndarray, value: np.ndarray, n_boot: int = 500
     return float(np.quantile(means, 0.05)), float(np.quantile(means, 0.95))
 
 
-def evaluate(ds: dict, n_folds: int = 4, embargo_days: int = 1, min_train: int = 5000, min_test: int = 1000) -> dict:
-    """Хронологическая проверка. Все числа — проценты от цены сделки."""
+def evaluate(ds: dict, n_folds: int = 4, embargo_days: int = 1, min_train: int = 5000, min_test: int = 1000,
+             exclude: frozenset = frozenset()) -> dict:
+    """Хронологическая проверка. Все числа — проценты от цены сделки. exclude — признаки, которые не берутся в модель."""
     from scipy.stats import spearmanr
     X, y, ts, w, cost, block, mode = ds["X"], ds["y"], ds["ts"], ds["w"], ds["cost"], ds["block"], ds["mode"]
     folds = make_folds(ts, n_folds, embargo_days, min_train, min_test)
     report = dict(horizon=ds["horizon"], n_rows=int(len(y)), n_blocks=ds["n_blocks"], folds=[], pooled=[], per_mode=[],
-                  importance=[], cost_note="комиссия 2×%.2f%% + спред бумаги (среднее %.3f%%)" % (
+                  importance=[], excluded=sorted(exclude),
+                  cost_note="комиссия 2×%.2f%% + спред бумаги (среднее %.3f%%)" % (
                       COMMISSION_SIDE_PCT, float(cost.mean() - 2 * COMMISSION_SIDE_PCT) if len(cost) else 0.0))
     if not folds:
         report["verdict"] = "мало данных для хронологической проверки"
@@ -181,7 +205,7 @@ def evaluate(ds: dict, n_folds: int = 4, embargo_days: int = 1, min_train: int =
     fold_net: Dict[float, List[float]] = {q: [] for q in TOP_QUANTILES}
     last_model, last_cols, last_fold = None, None, None
     for f in folds:
-        cols = usable_columns(X, f["train"])
+        cols = [c for c in usable_columns(X, f["train"]) if ALL_FEATURES[c] not in exclude]
         model = fit_regressor(X[f["train"]], y[f["train"]], w[f["train"]], cols)
         te_idx = np.where(f["test"])[0]
         pred = model.predict(X[te_idx][:, cols])
@@ -271,9 +295,9 @@ class Bundle:
         return float(self.model.predict(row[:, self.cols])[0])
 
 
-def train_final(ds: dict, report: dict, q: float = 0.02) -> Bundle:
+def train_final(ds: dict, report: dict, q: float = 0.02, exclude: frozenset = frozenset()) -> Bundle:
     """Обучение на всех данных; порог — предсказание, оставляющее верхние q сделок по out-of-fold оценкам."""
-    cols = usable_columns(ds["X"], np.ones(len(ds["y"]), dtype=bool))
+    cols = [c for c in usable_columns(ds["X"], np.ones(len(ds["y"]), dtype=bool)) if ALL_FEATURES[c] not in exclude]
     model = fit_regressor(ds["X"], ds["y"], ds["w"], cols)
     oof = report.get("oof_pred")
     pool = oof[np.isfinite(oof)] if oof is not None else model.predict(ds["X"][:, cols])
@@ -303,6 +327,8 @@ def save_candidate(bundle: Bundle, report: dict, n_rows: int) -> int:
 
 def format_report(rep: dict) -> str:
     L = [f"Цель: доходность через {rep['horizon']} мин; строк {rep['n_rows']}, независимых блоков {rep['n_blocks']}; {rep['cost_note']}"]
+    if rep.get("excluded"):
+        L.append("Исключены из модели: " + ", ".join(rep["excluded"]))
     if not rep.get("folds"):
         return "\n".join(L + [rep.get("verdict", "")])
     L.append(f"Средний итог по всем сделкам теста: чистый {rep['all_net']:+.3f}%, валовый {rep['all_gross']:+.3f}%")

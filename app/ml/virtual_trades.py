@@ -130,10 +130,15 @@ class VirtualEngine:
     """Хранит открытые виртуальные сделки и эпизоды, обрабатывает тики цены. Потокобезопасен."""
 
     def __init__(self, commission_pct: float = COMMISSION_PCT, max_hold_min: int = MAX_HOLD_MIN,
-                 episode_gap_sec: int = EPISODE_GAP_SEC):
+                 episode_gap_sec: int = EPISODE_GAP_SEC, hold_until_exit: bool = False, light: bool = False):
+        """hold_until_exit — сделка не ограничена по времени: живёт до SL или TP, в том числе через ночь и выходные.
+        light — облегчённый режим для истории: без пути цены, контрольных точек и доходности вперёд, быстрая проверка
+        SL/TP по минутной свече (нужен, когда одновременно открыты сотни долгих сделок)."""
         self.commission_pct = commission_pct
         self.max_hold_min = max_hold_min
         self.episode_gap_sec = episode_gap_sec
+        self.hold_until_exit = hold_until_exit
+        self.light = light
         self._lock = threading.RLock()
         self._open: Dict[str, List[VTrade]] = {}
         self._episodes: Dict[Tuple[str, str, str], dict] = {}
@@ -161,7 +166,10 @@ class VirtualEngine:
             if ep["opened"]:
                 return None
             deadline = session_deadline(now)
-            if deadline is None or (deadline - now).total_seconds() < MIN_LIFETIME_MIN * 60:
+            # сделка без срока не доживает до конца сессии «обязательно», поэтому поздний вход допустим
+            too_late = (not self.hold_until_exit and deadline is not None
+                        and (deadline - now).total_seconds() < MIN_LIFETIME_MIN * 60)
+            if deadline is None or too_late:
                 self.stats["skipped_session"] += 1
                 return None            # эпизод остаётся «неоткрытым»: сделку можно открыть в начале следующей сессии
             if sum(len(v) for v in self._open.values()) >= MAX_OPEN_TOTAL:
@@ -181,7 +189,9 @@ class VirtualEngine:
         spread = (ask - bid) / mid * 100.0 if book and mid > 0 else None
         sess = session_deadline(now)
         hold_deadline = now + timedelta(minutes=self.max_hold_min)
-        if sess is not None and sess < hold_deadline:
+        if self.hold_until_exit:
+            deadline, reason, sess = datetime.max.replace(tzinfo=timezone.utc), "NONE", None   # срока нет: только SL/TP
+        elif sess is not None and sess < hold_deadline:
             deadline, reason = sess, "SESSION_END"
         else:
             deadline, reason = hold_deadline, "TIMEOUT"
@@ -221,16 +231,21 @@ class VirtualEngine:
         пессимистичный: для покупки сначала минимум (стоп), потом максимум (тейк); для продажи наоборот.
         Так при касании и стопа, и тейка в одной свече засчитывается стоп, и добивка не завышает долю прибыльных."""
         with self._lock:
-            self._update_tails(figi, (o, l, h, c), now)
+            if not self.light:
+                self._update_tails(figi, (o, l, h, c), now)
             trades = self._open.get(figi)
             if not trades:
                 return
             for t in list(trades):
-                for price in ((o, l, h, c) if t.side == 1 else (o, h, l, c)):
-                    if price and price > 0:
-                        self._update(t, price, now, None, None)
-                    if t.status != "OPEN":
-                        break
+                if self.light:
+                    self._light_bar(t, o, h, l, now)
+                else:
+                    for k, price in enumerate((o, l, h, c) if t.side == 1 else (o, h, l, c)):
+                        if price and price > 0:
+                            # внутри свечи стоп исполняется по уровню (после первой цены свечи); гэп на открытии — по цене открытия
+                            self._update(t, price, now, None, None, level_fill=k > 0)
+                        if t.status != "OPEN":
+                            break
                 if t.status != "OPEN":
                     trades.remove(t)
             if not trades:
@@ -288,7 +303,32 @@ class VirtualEngine:
 
     # ── внутреннее ────────────────────────────────────────────────────────────
 
-    def _update(self, t: VTrade, price: float, now: datetime, bid: Optional[float], ask: Optional[float]) -> None:
+    def _light_bar(self, t: VTrade, o: float, h: float, l: float, now: datetime) -> None:
+        """Быстрая проверка SL/TP по минутной свече. Порядок внутри свечи неизвестен: берём худший (стоп раньше тейка).
+        Гэп через стоп на открытии исполняется по цене открытия, иначе стоп — по уровню."""
+        if h > t.hi:
+            t.hi = h
+        if l < t.lo:
+            t.lo = l
+        if t.side == 1:
+            sl, tp = t.sl_price, t.tp_price
+            if o <= sl:
+                self._close(t, "STOP_LOSS", o, now, market=True)
+            elif l <= sl:
+                self._close(t, "STOP_LOSS", sl, now, market=True)
+            elif h >= tp:
+                self._close(t, "TAKE_PROFIT", tp, now, market=False)
+        else:
+            sl, tp = t.sl_price, t.tp_price
+            if o >= sl:
+                self._close(t, "STOP_LOSS", o, now, market=True)
+            elif h >= sl:
+                self._close(t, "STOP_LOSS", sl, now, market=True)
+            elif l <= tp:
+                self._close(t, "TAKE_PROFIT", tp, now, market=False)
+
+    def _update(self, t: VTrade, price: float, now: datetime, bid: Optional[float], ask: Optional[float],
+                level_fill: bool = False) -> None:
         t.last_price = price
         t.hi = max(t.hi, price)
         t.lo = min(t.lo, price)
@@ -305,12 +345,12 @@ class VirtualEngine:
         self._fwd_update(t, price, now)
         if t.side == 1:
             if price <= t.sl_price:
-                self._close(t, "STOP_LOSS", price, now, market=True, bid=bid, ask=ask)
+                self._close(t, "STOP_LOSS", t.sl_price if level_fill else price, now, market=True, bid=bid, ask=ask)
             elif price >= t.tp_price:
                 self._close(t, "TAKE_PROFIT", t.tp_price, now, market=False)
         else:
             if price >= t.sl_price:
-                self._close(t, "STOP_LOSS", price, now, market=True, bid=bid, ask=ask)
+                self._close(t, "STOP_LOSS", t.sl_price if level_fill else price, now, market=True, bid=bid, ask=ask)
             elif price <= t.tp_price:
                 self._close(t, "TAKE_PROFIT", t.tp_price, now, market=False)
 
@@ -337,7 +377,8 @@ class VirtualEngine:
         t.label = decide_label(t.pnl_pct)
         self._closed.append(t)
         self.stats["closed"] += 1
-        self._maybe_tail(t, now)
+        if not self.light:
+            self._maybe_tail(t, now)
 
     # ── доходность вперёд: не зависит от SL/TP, поэтому сделку после закрытия дослеживаем до нужных горизонтов ──
 

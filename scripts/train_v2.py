@@ -20,6 +20,9 @@ def main() -> int:
     ap.add_argument("--folds", type=int, default=4)
     ap.add_argument("--apply", action="store_true")
     ap.add_argument("--sources", default="BACKFILL,VIRTUAL")
+    ap.add_argument("--exclude", default="",
+                    help="группы или признаки, не берущиеся в модель: time (час, утро, закрытие, фаза сессии, вечер), "
+                         "h1 (1ч и 4ч признаки) или имена через запятую")
     args = ap.parse_args()
 
     from app.ml import trainer_v2 as t2
@@ -30,10 +33,11 @@ def main() -> int:
     if len(ds["y"]) < 6000:
         print("Слишком мало строк с известной доходностью вперёд для оценки.")
         return 1
-    rep = t2.evaluate(ds, n_folds=args.folds)
+    exclude = t2.resolve_exclude(args.exclude)
+    rep = t2.evaluate(ds, n_folds=args.folds, exclude=exclude)
     print(t2.format_report(rep))
     if args.apply:
-        bundle = t2.train_final(ds, rep)
+        bundle = t2.train_final(ds, rep, exclude=exclude)
         mid = t2.save_candidate(bundle, rep, len(ds["y"]))
         print(f"\nКандидат сохранён: ml_models.id={mid} (status=candidate), порог прогноза {bundle.thr_pred:+.4f}% "
               f"(верхние {bundle.q:.0%} по out-of-fold оценкам). В торговлю не включён.")

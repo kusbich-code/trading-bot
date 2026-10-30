@@ -96,6 +96,26 @@ def test_replay_produces_closed_labeled_trades(series):
         assert t.hold_min >= 0 and t.mfe_pct >= t.mae_pct
 
 
+def test_open_ended_replay_resolves_only_by_sl_or_tp(series):
+    out, _ = run(series, hold_until_exit=True)
+    assert len(out) > 20
+    assert {t.exit_reason for t, _ in out} <= {"STOP_LOSS", "TAKE_PROFIT"}           # ни таймаута, ни конца сессии
+    assert all(t.label == (1 if t.exit_reason == "TAKE_PROFIT" else 0) for t, _ in out)
+    holds = [t.hold_min for t, _ in out]
+    assert max(holds) > vt.MAX_HOLD_MIN                                            # есть сделки дольше прежнего потолка в 2 часа
+    assert all(t.bars == [] for t, _ in out)                                        # облегчённый режим пути не хранит
+
+
+def test_open_ended_features_do_not_look_into_the_future(series):
+    out, item = run(series, hold_until_exit=True)
+    for t, feats in [out[0], out[len(out) // 2], out[-1]]:
+        cut = bf.make_series("F1", "SBER", [d | {"is_complete": True} for d, tm in zip(series.dicts, series.times)
+                                            if tm < t.opened_at])
+        again = bf.replay_instrument(item, cut, None, start=t.opened_at - timedelta(minutes=1), include_open=True,
+                                     hold_until_exit=True)
+        assert [f for tr, f in again if tr.episode_id == t.episode_id][0] == feats
+
+
 def test_replay_respects_levels_and_filter_stage(series):
     out, _ = run(series)
     mr = [t for t, _ in out if t.mode == "mean_reversion"]

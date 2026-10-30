@@ -156,6 +156,32 @@ def test_train_final_save_and_predict_roundtrip(tmp_db):
         assert cur.fetchone()["n"] == 1
 
 
+def test_resolve_exclude_groups_and_names():
+    assert t2.resolve_exclude("") == frozenset() and t2.resolve_exclude(None) == frozenset()
+    assert t2.resolve_exclude("time") == frozenset(t2.TIME_FEATURES)
+    ex = t2.resolve_exclude("h1, rsi")
+    assert set(t2.H1_FEATURES) <= ex and "rsi" in ex
+    with pytest.raises(ValueError):
+        t2.resolve_exclude("нет_такого")
+
+
+def test_excluding_a_group_removes_exactly_its_signal(tmp_db):
+    """Сигнал спрятан в 1-часовом признаке: без группы h1 он исчезает, без группы time остаётся."""
+    populate(tmp_db, 0.5)
+    ds = t2.load_dataset(60)
+    kw = dict(n_folds=4, min_train=2000, min_test=500)
+    full = t2.evaluate(ds, **kw)
+    no_h1 = t2.evaluate(ds, exclude=t2.resolve_exclude("h1"), **kw)
+    no_time = t2.evaluate(ds, exclude=t2.resolve_exclude("time"), **kw)
+    assert full["verdict"].startswith("на истории подтверждено") and full["excluded"] == []
+    assert no_time["verdict"].startswith("на истории подтверждено")
+    assert no_h1["verdict"].startswith("преимущество не доказано") and "z_score_1h" in no_h1["excluded"]
+    assert "Исключены из модели" in t2.format_report(no_h1)
+    # финальная модель тоже не использует исключённые признаки
+    bundle = t2.train_final(ds, no_h1, exclude=t2.resolve_exclude("h1"))
+    assert t2.ALL_FEATURES.index("z_score_1h") not in bundle.cols
+
+
 def test_too_little_data_gives_clear_verdict(tmp_db):
     populate(tmp_db, 0.3, days=3, per_day=100)
     rep = t2.evaluate(t2.load_dataset(60), n_folds=4)

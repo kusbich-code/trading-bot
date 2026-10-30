@@ -65,7 +65,8 @@ class CandleFetcher:
                 time.sleep(pause)
         raise RuntimeError("не удалось загрузить день после 5 попыток")
 
-    def load(self, figi: str, first: date, last: date) -> list:
+    def load(self, figi: str, first: date, last: date, keep: bool = True) -> list:
+        """Загружает дни [first, last] в кеш. keep=False — только кеш, свечи в памяти не накапливаются (для длинных периодов)."""
         out = []
         today = datetime.now(UTC).date()
         d = first
@@ -84,7 +85,8 @@ class CandleFetcher:
                     if d < today:                      # прошедшие дни неизменны; сегодняшний неполон
                         path.parent.mkdir(parents=True, exist_ok=True)
                         path.write_text(json.dumps(day), encoding="utf-8")
-                out.extend(day)
+                if keep:
+                    out.extend(day)
             d += timedelta(days=1)
         return out
 
@@ -156,6 +158,8 @@ def main() -> int:
     ap.add_argument("--days", type=int, default=60)
     ap.add_argument("--tickers", default="")
     ap.add_argument("--apply", action="store_true")
+    ap.add_argument("--fetch-only", action="store_true",
+                    help="только загрузить свечи в кеш (без проигрыша и записи в БД): для длинной истории и офлайн-анализа")
     ap.add_argument("--refresh-targets", action="store_true",
                     help="проставить доходность вперёд (fwd_ret_*) уже записанным эпизодам добивки; новых строк не создаёт")
     ap.add_argument("--rpm", type=int, default=100)
@@ -204,6 +208,20 @@ def main() -> int:
     t0 = time.time()
     with with_client() as client:
         fetcher = CandleFetcher(client, args.rpm, cache_dir)
+        if args.fetch_only:
+            for fg in sorted(figis):
+                name = next((u["ticker"] for u in universe if u["figi"] == fg), fg)
+                free_mb = mem_available_mb()
+                if free_mb is not None and free_mb < MIN_FREE_MB:
+                    print(f"ОСТАНОВКА: свободной памяти {free_mb} МБ < {MIN_FREE_MB} МБ. Повторите запуск позже (кеш сохранён).")
+                    return 0
+                t1 = time.time()
+                fetcher.load(fg, load_first, load_last, keep=False)
+                print(f"[{name}] свечи за {n_days} дн в кеше ({time.time() - t1:.0f} с, запросов всего {fetcher.requests})", flush=True)
+            print(f"ГОТОВО: запросов {fetcher.requests}, пропущенных дней {len(fetcher.failed_days)}, время {time.time() - t0:.0f} с")
+            if fetcher.failed_days:
+                print("ПРОПУЩЕНЫ (повторите запуск):", fetcher.failed_days[:10])
+            return 0
         markers = {}
         for mfigi in _SECTOR_MARKERS:
             name = next((u["ticker"] for u in universe if u["figi"] == mfigi), mfigi)

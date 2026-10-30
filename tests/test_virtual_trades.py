@@ -301,6 +301,60 @@ def test_fwd_replay_on_bars_matches_horizons():
     assert t.fwd[15] == pytest.approx(0.15, abs=0.02) and t.fwd[60] == pytest.approx(0.60, abs=0.02)
 
 
+# ── сделки без ограничения по времени ────────────────────────────────────────
+
+def test_open_ended_trade_is_never_closed_by_time():
+    e = vt.VirtualEngine(hold_until_exit=True)
+    t = open_trade(e, "BUY", bid=99.95, ask=100.0, sl=0.01, tp=0.02, mid=100.0)
+    assert e.expire(at(60 * 24 * 3)) == 0 and t.status == "OPEN"                      # трое суток спустя всё ещё открыта
+    e.on_bar("F1", 100.0, 100.5, 99.5, 100.2, at(60 * 24 * 3 + 1))
+    assert t.status == "OPEN"
+    e.on_bar("F1", 100.5, 102.6, 100.4, 102.2, at(60 * 24 * 3 + 2))                    # взяли тейк
+    assert t.exit_reason == "TAKE_PROFIT" and t.label == 1 and t.hold_min > 4000
+
+
+def test_open_ended_allows_entry_near_session_close_and_in_session_only():
+    e = vt.VirtualEngine(hold_until_exit=True)
+    near_close = datetime(2026, 10, 30, 15, 43, tzinfo=UTC)                          # 18:43 МСК
+    assert e.claim("F1", "trend", "BUY", near_close) is not None                     # с ограничением по времени здесь отказ
+    night = datetime(2026, 10, 30, 2, 0, tzinfo=UTC)
+    assert e.claim("F2", "trend", "BUY", night) is None                              # новые сигналы всё равно только в торговой сессии
+
+
+def test_light_mode_applies_same_bar_rules():
+    for kw in ({}, {"light": True}):
+        e = vt.VirtualEngine(hold_until_exit=True, **kw)
+        both = open_trade(e, "BUY", bid=99.95, ask=100.0, sl=0.01, tp=0.02)
+        e.on_bar("F1", 100.0, 102.5, 98.5, 100.0, at(1))
+        assert both.exit_reason == "STOP_LOSS"                                      # задеты и стоп, и тейк: стоп раньше
+        e2 = vt.VirtualEngine(hold_until_exit=True, **kw)
+        gap = open_trade(e2, "BUY", bid=99.95, ask=100.0, sl=0.01, tp=0.02)
+        e2.on_bar("F1", 97.0, 97.5, 96.5, 97.2, at(1))
+        assert gap.exit_reason == "STOP_LOSS" and gap.exit_price < 97.0 + 1e-9      # гэп - по цене открытия
+        e3 = vt.VirtualEngine(hold_until_exit=True, **kw)
+        short = open_trade(e3, "SELL", bid=100.0, ask=100.05, sl=0.01, tp=0.02)
+        e3.on_bar("F1", 100.0, 100.8, 97.5, 98.0, at(1))                            # стоп не задет (101), тейк задет (98)
+        assert short.exit_reason == "TAKE_PROFIT" and short.label == 1
+
+
+def test_light_mode_keeps_no_path_but_tracks_extremes():
+    e = vt.VirtualEngine(hold_until_exit=True, light=True)
+    t = open_trade(e, "BUY", bid=99.95, ask=100.0, sl=0.05, tp=0.05)
+    e.on_bar("F1", 100.0, 100.9, 99.4, 100.3, at(1))
+    assert t.bars == [] and t.hi == 100.9 and t.lo == 99.4 and t.status == "OPEN"
+    e.on_bar("F1", 100.3, 105.5, 100.1, 105.0, at(2))
+    assert t.exit_reason == "TAKE_PROFIT" and t.mfe_pct == pytest.approx(5.5) and t.mae_pct == pytest.approx(-0.6)
+    assert e.drain_tails_done() == []                                                # в облегчённом режиме доходность вперёд не ведётся
+
+
+def test_bar_stop_inside_candle_fills_at_level_not_at_candle_low():
+    e = vt.VirtualEngine()
+    t = open_trade(e, "BUY", bid=99.95, ask=100.05, sl=0.01, tp=0.05)               # SL 99.04, спред 0.1%
+    e.on_bar("F1", 100.0, 100.2, 98.0, 98.5, at(1))                                 # свеча пробила стоп глубоко (минимум 98.0)
+    assert t.exit_reason == "STOP_LOSS"
+    assert t.exit_price == pytest.approx(t.sl_price * (1 - 0.1 / 200.0), rel=1e-6)  # по уровню стопа (+ полспреда), а не по минимуму
+
+
 # ── MFE / MAE / контрольные точки ────────────────────────────────────────────
 
 def test_mfe_mae_and_checkpoints():

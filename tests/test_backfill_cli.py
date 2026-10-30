@@ -113,6 +113,19 @@ def test_refresh_targets_updates_existing_episodes_only(env, tmp_db, monkeypatch
     assert r["f15"] > 0.8 * r["n"] and r["f60"] > 0.5 * r["n"]       # у большинства есть, кроме позднего вечера и конца данных
 
 
+def test_fetch_only_fills_cache_without_replay_or_db_writes(env, tmp_db, monkeypatch, capsys):
+    assert run_cli(monkeypatch, "--fetch-only") == 0
+    out = capsys.readouterr().out
+    assert "ГОТОВО" in out and "эпизодов" not in out.split("ГОТОВО")[0].split("Свечи:")[-1]
+    assert counts(tmp_db) == (0, 0) and not Path("backups").exists()
+    cached = list(Path("data/backfill_cache").rglob("*.json"))
+    assert cached                                                       # прошедшие дни лежат в кеше
+    first = len(env)
+    assert run_cli(monkeypatch, "--fetch-only") == 0                    # повтор берёт из кеша
+    today = datetime.now(UTC).date().isoformat()
+    assert all(d == today for _, d in env[first:])
+
+
 def test_stops_when_memory_is_low(env, tmp_db, monkeypatch, capsys):
     monkeypatch.setattr(cli, "mem_available_mb", lambda *a, **k: 100)
     assert run_cli(monkeypatch, "--apply") == 0

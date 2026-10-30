@@ -162,7 +162,7 @@ def _set_sector_returns(markers: Dict[str, Series], own_figi: str, t_close: date
 
 def replay_instrument(item: dict, series: Series, markers: Optional[Dict[str, Series]] = None, *,
                       start: datetime, end: Optional[datetime] = None, spread_pct: float = SPREAD_PCT,
-                      include_open: bool = False, keep_paths: bool = False,
+                      include_open: bool = False, keep_paths: bool = False, hold_until_exit: bool = False,
                       build: Callable[..., dict] = build_features) -> List[Tuple[vt.VTrade, dict]]:
     """Проигрывает историю одной бумаги. start/end — границы моментов сигнала (UTC); свечи до start служат разогревом.
 
@@ -171,10 +171,12 @@ def replay_instrument(item: dict, series: Series, markers: Optional[Dict[str, Se
     (include_open=True добавляет их — для проверки отсутствия заглядывания в будущее).
     keep_paths=False — поминутный путь цены после закрытия не хранится (его можно пересчитать из кеша свечей;
     на десятках тысяч сделок он занимал бы сотни мегабайт памяти и БД).
+    hold_until_exit=True — сделки без ограничения по времени: живут до SL или TP, в том числе через ночь и выходные;
+    исход чистый («тейк раньше стопа»), без смещения от срока жизни. Сделки, не дошедшие до SL/TP к концу данных, отбрасываются.
     """
     markers = markers or {}
     figi, ticker = item["figi"], item.get("ticker", "")
-    engine = vt.VirtualEngine()
+    engine = vt.VirtualEngine(hold_until_exit=hold_until_exit, light=hold_until_exit)
     out: List[Tuple[vt.VTrade, dict]] = []
     pending: Dict[str, dict] = {}
     hourly: List[dict] = []                      # завершённые часы
@@ -187,7 +189,8 @@ def replay_instrument(item: dict, series: Series, markers: Optional[Dict[str, Se
 
         # 1) бар проживается открытыми сделками, затем срок жизни
         engine.on_bar(figi, o, h, l, c, t_open + timedelta(seconds=30))
-        engine.expire(t_close, {figi: c})
+        if not hold_until_exit:
+            engine.expire(t_close, {figi: c})
         for t in engine.drain_closed():
             if not keep_paths:
                 t.bars = []
