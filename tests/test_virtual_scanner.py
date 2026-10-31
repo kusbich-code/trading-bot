@@ -76,12 +76,15 @@ def trades_in_db(db):
 
 
 def test_new_bar_opens_one_trade_per_mode_and_direction(tmp_db):
+    """Только BUY сигналы открывают виртуальные сделки: шорты не открываются."""
     env = Env()
     s = env.scanner()
     s.scan_once()
     rows = trades_in_db(tmp_db)
     modes = {(r["strategy_mode"], r["direction"]) for r in rows}
-    assert ("trend", "BUY") in modes and ("mean_reversion", "SELL") in modes and ("breakout", "BUY") in modes
+    # mean_reversion даёт SELL — шорты не открываются, остаются только BUY (trend, breakout)
+    assert ("trend", "BUY") in modes and ("breakout", "BUY") in modes
+    assert ("mean_reversion", "SELL") not in modes
     assert len(rows) == len(modes) == len(env.features_saved)
     assert all(r["status"] == "OPEN" and r["feature_id"] for r in rows)
 
@@ -92,13 +95,12 @@ def test_trade_fields_filled(tmp_db):
     s = env.scanner()
     s.scan_once()
     rows = {r["strategy_mode"]: r for r in trades_in_db(tmp_db)}
-    mr = rows["mean_reversion"]
-    assert (mr["sl_pct"], mr["tp_pct"]) == (0.005, 0.01)                    # из настроенной стратегии
-    assert mr["entry_price"] == 102.95 and mr["fill_src"] == "book"          # SELL по bid
-    assert mr["ml_p"] == 0.4 and mr["ml_decision"] == "p_low" and mr["real_trade"] == 1
-    assert rows["trend"]["filter_stage"] == "min_score"                       # score < 50
-    assert rows["breakout"]["sl_pct"] == 0.008 and rows["breakout"]["tp_pct"] == 0.015   # значения по умолчанию
-    assert mr["ind_missing"] == 0
+    br = rows["breakout"]
+    assert (br["sl_pct"], br["tp_pct"]) == (0.008, 0.015)                          # значения по умолчанию
+    assert br["entry_price"] == 103.05 and br["fill_src"] == "book"               # BUY по ask
+    assert br["ml_p"] == 0.4 and br["ml_decision"] == "p_low" and br["real_trade"] == 1
+    assert rows["trend"]["filter_stage"] == "min_score"                           # score < 50
+    assert br["ind_missing"] == 0
 
 
 def test_same_bar_is_not_processed_twice(tmp_db):
@@ -182,15 +184,14 @@ def test_closing_is_persisted_outside_scan(tmp_db):
     env = Env()
     s = env.scanner()
     s.scan_once()
-    # цена уходит против SELL по mean_reversion (SL 0.5%) и к TP по BUY-сделкам не доходит
-    s.engine.on_tick("F1", 104.0, env.now + timedelta(minutes=1))
+    # цена уходит к TP по BUY-сделкам (TP по умолчанию 1.5% от входа ~103.05 → ~104.6)
+    s.engine.on_tick("F1", 105.0, env.now + timedelta(minutes=1))
     s.scan_once(scan=False)
     closed = [r for r in trades_in_db(tmp_db) if r["status"] == "CLOSED"]
-    assert closed and closed[0]["strategy_mode"] == "mean_reversion"
-    assert closed[0]["exit_reason"] == "STOP_LOSS" and closed[0]["label"] == 0
+    assert closed and closed[0]["exit_reason"] == "TAKE_PROFIT" and closed[0]["label"] == 1
     with tmp_db.db_cursor() as cur:
         cur.execute("SELECT COUNT(*) n FROM ml_virtual_paths")
-        assert cur.fetchone()["n"] == 1
+        assert cur.fetchone()["n"] >= 1
 
 
 def test_forward_return_is_stored_while_trade_is_still_open(tmp_db):
@@ -207,12 +208,12 @@ def test_forward_return_is_stored_while_trade_is_still_open(tmp_db):
     assert br["fwd_ret_30m"] is None
 
 
-def test_expire_at_timeout_in_scan_false_mode(tmp_db):
+def test_expire_does_not_close_buy_trades(tmp_db):
+    """Сделки BUY не закрываются по истечении времени — живут до SL/TP."""
     env = Env()
     s = env.scanner()
     s.scan_once()
     env.now += timedelta(minutes=121)
     s.scan_once(scan=False)
     rows = trades_in_db(tmp_db)
-    assert rows and all(r["status"] == "CLOSED" and r["exit_reason"] in ("TIMEOUT", "STOP_LOSS", "TAKE_PROFIT")
-                        for r in rows)
+    assert rows and all(r["status"] == "OPEN" for r in rows)

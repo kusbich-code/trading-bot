@@ -79,16 +79,16 @@ def test_enforce_flag_follows_setting(client, tmp_db):
     assert client.get("/api/ml/summary").json()["ml_enforce"] is True
 
 
-def test_trainable_labeled_counts_only_policy_exits_of_real_rows(client, tmp_db):
+def test_trainable_labeled_counts_all_policy_exits(client, tmp_db):
     add_feature(tmp_db, 1, exit_reason="TAKE_PROFIT")
     add_feature(tmp_db, 0, exit_reason="STOP_LOSS")
     add_feature(tmp_db, 0, exit_reason=None)                              # причина неизвестна - берётся
     add_feature(tmp_db, 0, exit_reason="ML_EARLY_EXIT")                   # ранний выход модели - нет
     add_feature(tmp_db, 0, exit_reason="MANUAL_CLOSE")
-    add_feature(tmp_db, 1, source="VIRTUAL")                              # виртуальные - нет
+    add_feature(tmp_db, 1, source="VIRTUAL", exit_reason="TAKE_PROFIT")   # виртуальные тоже пригодны для обучения
     data = client.get("/api/ml/summary").json()
-    assert data["trainable_labeled"] == 3
-    assert data["features_stats"]["labeled"] == 5                         # реальные размеченные, без виртуальных
+    assert data["trainable_labeled"] == 4                                 # все источники, только POLICY_EXIT_REASONS
+    assert data["features_stats"]["labeled"] == 5                         # статистика признаков только по REAL
 
 
 def test_v2_report_is_returned_with_date(client, tmp_db):

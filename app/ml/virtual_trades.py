@@ -1,16 +1,17 @@
 """Виртуальные сделки: сигнал отрабатывается без брокера, исход (прибыль/убыток) идёт в обучение модели.
 
-Зачем. Метку «прибыль/убыток» раньше получали только реальные сделки, а их мало (лимиты позиций, паузы,
-решения самой модели). Заблокированные моделью сигналы меток не получали, и модель перестала учиться.
-Виртуальная сделка создаётся на каждый новый сигнал независимо от фильтров и решений модели, живёт по тем же
-правилам SL/TP и закрывается в конце сессии или по таймауту.
+Зачем. Метку «прибыль/убыток» раньше получали только реальные сделки, а их мало. Виртуальная сделка создаётся
+на каждый новый сигнал BUY независимо от фильтров и решений модели, живёт по тем же правилам SL/TP и закрывается
+только по стопу или тейку (времени жизни нет — нет границ по таймауту и концу сессии). Шорты не открываются
+абсолютно; открытый шорт (если попадёт извне) закрывается в конце текущего торгового дня (23:50 МСК), если не
+закрылся по SL/TP раньше.
 
 Правила, от которых зависит качество данных:
   • один эпизод = одна сделка. Пока сигнал держится (повторяется каждую минуту), новых сделок не создаётся;
-    новый эпизод начинается после паузы EPISODE_GAP_SEC без сигнала. Иначе «10 000 сделок» были бы сотней
-    событий, повторённых много раз;
+    новый эпизод начинается после паузы EPISODE_GAP_SEC без сигнала.
   • результат считается чистым: комиссия с обеих сторон, вход по ask/bid, выход «по рынку» с учётом спреда;
-  • сделка не переносится через перерыв и ночь (гэпы и стоимость переноса шорта не моделируются);
+  • сделка живёт до SL/TP, без временного ограничения (нет таймаута, нет конца сессии);
+  • шорты не открываются; шорт закрывается в конце торгового дня (END_OF_DAY) если не сработал SL/TP;
   • сохраняются MFE/MAE, результат через 5/15/30/60 минут и поминутный путь цены: исход можно пересчитать
     для других SL/TP без новых сделок.
 
@@ -27,33 +28,28 @@ log = logging.getLogger("ml.virtual")
 
 MSK = timezone(timedelta(hours=3))
 
-COMMISSION_PCT = 0.05          # комиссия за одну сторону, %: факт брокера (251 операция, ровно 0.0500%); оценка бота 0.04% занижена
-HORIZONS_MIN = (15, 30, 60)    # горизонты «доходности вперёд»: цель обучения, не зависящая от того, чем закрылась сделка
-FWD_MAX_LATE_MIN = 5           # тик позже горизонта больше чем на столько минут уже не годится (малоликвидные бумаги)
+COMMISSION_PCT = 0.05          # комиссия за одну сторону, %: факт брокера (251 операция, ровно 0.0500%)
+HORIZONS_MIN = (15, 30, 60)    # горизонты «доходности вперёд»: цель обучения
+FWD_MAX_LATE_MIN = 5           # тик позже горизонта больше чем на столько минут уже не годится
 FWD_TAIL_MAX_MIN = 65          # сколько минут после входа дослеживать цену ради доходности вперёд
-MAX_HOLD_MIN = 120             # максимальное время жизни виртуальной сделки, минут
 EPISODE_GAP_SEC = 150          # столько секунд без сигнала — и следующий сигнал считается новым эпизодом
 CHECKPOINTS_MIN = (5, 15, 30, 60)
 MAX_OPEN_TOTAL = 600           # защита памяти: больше открытых виртуальных сделок не держим
-MIN_LIFETIME_MIN = 5           # в последние минуты сессии новые сделки не открываем: исход не успеет сложиться
-# окна, в которых сделка может жить (минуты от полуночи МСК): основная сессия и вечерняя; в конце окна — закрытие
-SESSION_WINDOWS = ((10 * 60, 18 * 60 + 45), (19 * 60 + 5, 23 * 60 + 45))
+# конец торгового дня МСК, в который закрываются незакрытые шорты (в минутах от полуночи)
+END_OF_DAY_MIN = 23 * 60 + 50  # 23:50 МСК
 
-CLOSE_REASONS_POLICY = ("STOP_LOSS", "TAKE_PROFIT", "TIMEOUT", "SESSION_END")
+# только SL/TP — нет таймаута, нет конца сессии
+CLOSE_REASONS_POLICY = ("STOP_LOSS", "TAKE_PROFIT", "END_OF_DAY")
 
 
 def msk_str(dt: datetime) -> str:
     return dt.astimezone(MSK).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
 
 
-def session_deadline(now: datetime) -> Optional[datetime]:
-    """Момент закрытия текущей сессии (МСК) или None, если сейчас вне окон жизни сделок (выходной не проверяется)."""
+def end_of_day_deadline(now: datetime) -> datetime:
+    """Момент конца торгового дня (23:50 МСК) — шорты, не закрытые к этому моменту, закрываются."""
     n = now.astimezone(MSK)
-    minutes = n.hour * 60 + n.minute
-    for start, end in SESSION_WINDOWS:
-        if start <= minutes < end:
-            return n.replace(hour=end // 60, minute=end % 60, second=0, microsecond=0)
-    return None
+    return n.replace(hour=END_OF_DAY_MIN // 60, minute=END_OF_DAY_MIN % 60, second=0, microsecond=0)
 
 
 def net_pnl_pct(side: int, entry_fill: float, exit_fill: float, commission_pct: float = COMMISSION_PCT) -> float:
@@ -129,15 +125,12 @@ class VTrade:
 class VirtualEngine:
     """Хранит открытые виртуальные сделки и эпизоды, обрабатывает тики цены. Потокобезопасен."""
 
-    def __init__(self, commission_pct: float = COMMISSION_PCT, max_hold_min: int = MAX_HOLD_MIN,
-                 episode_gap_sec: int = EPISODE_GAP_SEC, hold_until_exit: bool = False, light: bool = False):
-        """hold_until_exit — сделка не ограничена по времени: живёт до SL или TP, в том числе через ночь и выходные.
-        light — облегчённый режим для истории: без пути цены, контрольных точек и доходности вперёд, быстрая проверка
-        SL/TP по минутной свече (нужен, когда одновременно открыты сотни долгих сделок)."""
+    def __init__(self, commission_pct: float = COMMISSION_PCT,
+                 episode_gap_sec: int = EPISODE_GAP_SEC, light: bool = False):
+        """Все сделки живут до SL/TP, без ограничения по времени (нет таймаута, нет конца сессии).
+        light — облегчённый режим для истории: без пути цены, контрольных точек и доходности вперёд."""
         self.commission_pct = commission_pct
-        self.max_hold_min = max_hold_min
         self.episode_gap_sec = episode_gap_sec
-        self.hold_until_exit = hold_until_exit
         self.light = light
         self._lock = threading.RLock()
         self._open: Dict[str, List[VTrade]] = {}
@@ -145,15 +138,20 @@ class VirtualEngine:
         self._closed: List[VTrade] = []
         self._tails: Dict[str, List[VTrade]] = {}      # закрытые сделки, у которых ещё досчитывается доходность вперёд
         self._tails_done: List[VTrade] = []
-        self.stats = {"signals": 0, "episodes": 0, "opened": 0, "closed": 0, "skipped_cap": 0, "skipped_session": 0}
+        self.stats = {"signals": 0, "episodes": 0, "opened": 0, "closed": 0, "skipped_cap": 0,
+                      "skipped_session": 0, "skipped_short": 0}
 
     # ── открытие ──────────────────────────────────────────────────────────────
 
     def claim(self, figi: str, mode: str, direction: str, now: datetime) -> Optional[str]:
         """Учитывает сигнал. Возвращает id эпизода, если по нему нужно открыть сделку, иначе None.
 
-        Вызывать до построения признаков: так дорогие запросы (индикаторы API) делаются только для нового эпизода.
+        Шорты не открываются (направление SELL всегда пропускается). Нет ограничений по времени: вход
+        допустим в любой момент торгового дня.
         """
+        if direction == "SELL":
+            self.stats["skipped_short"] += 1
+            return None            # шорты не открываем вообще
         key = (figi, mode, direction)
         with self._lock:
             self.stats["signals"] += 1
@@ -165,13 +163,6 @@ class VirtualEngine:
             ep["last"] = now
             if ep["opened"]:
                 return None
-            deadline = session_deadline(now)
-            # сделка без срока не доживает до конца сессии «обязательно», поэтому поздний вход допустим
-            too_late = (not self.hold_until_exit and deadline is not None
-                        and (deadline - now).total_seconds() < MIN_LIFETIME_MIN * 60)
-            if deadline is None or too_late:
-                self.stats["skipped_session"] += 1
-                return None            # эпизод остаётся «неоткрытым»: сделку можно открыть в начале следующей сессии
             if sum(len(v) for v in self._open.values()) >= MAX_OPEN_TOTAL:
                 self.stats["skipped_cap"] += 1
                 return None
@@ -182,26 +173,27 @@ class VirtualEngine:
              mid: float, sl_pct: float, tp_pct: float, bid: Optional[float] = None, ask: Optional[float] = None,
              filter_stage: str = "", ml_p: Optional[float] = None, ml_decision: str = "", real_trade: bool = False,
              ind_missing: bool = False, feature_id: Optional[int] = None) -> VTrade:
-        """Регистрирует сделку после claim(). Вход: BUY по ask, SELL по bid; нет стакана — по последней цене."""
+        """Регистрирует сделку после claim(). Вход: BUY по ask; нет стакана — по последней цене.
+        Сделка живёт до SL/TP, без дедлайна по времени. Шорт (direction == SELL) получает дедлайн конца суток
+        (END_OF_DAY) — закроется к концу дня, если SL/TP не сработает раньше."""
         side = 1 if direction == "BUY" else -1
         book = bool(bid and ask and bid > 0 and ask > 0)
         fill = (ask if side == 1 else bid) if book else mid
         spread = (ask - bid) / mid * 100.0 if book and mid > 0 else None
-        sess = session_deadline(now)
-        hold_deadline = now + timedelta(minutes=self.max_hold_min)
-        if self.hold_until_exit:
-            deadline, reason, sess = datetime.max.replace(tzinfo=timezone.utc), "NONE", None   # срока нет: только SL/TP
-        elif sess is not None and sess < hold_deadline:
-            deadline, reason = sess, "SESSION_END"
+        if direction == "SELL":
+            # шорт: закрываем в конце торгового дня, если не сработал SL/TP
+            deadline = end_of_day_deadline(now)
+            reason = "END_OF_DAY"
         else:
-            deadline, reason = hold_deadline, "TIMEOUT"
+            deadline = datetime.max.replace(tzinfo=timezone.utc)
+            reason = "NONE"
         t = VTrade(figi=figi, ticker=ticker, mode=mode, direction=direction, episode_id=episode_id, score=score,
                    opened_at=now, deadline=deadline, deadline_reason=reason, entry_mid=mid, entry_fill=fill,
                    fill_src="book" if book else "mid", spread_pct=spread, sl_pct=sl_pct, tp_pct=tp_pct,
                    commission_pct=self.commission_pct, filter_stage=filter_stage, ml_p=ml_p, ml_decision=ml_decision,
                    real_trade=real_trade, ind_missing=ind_missing, feature_id=feature_id)
         t.hi = t.lo = t.last_price = fill
-        t.session_end = sess if sess is not None else deadline
+        t.session_end = None
         with self._lock:
             self._open.setdefault(figi, []).append(t)
             self.stats["opened"] += 1
@@ -228,8 +220,7 @@ class VirtualEngine:
 
     def on_bar(self, figi: str, o: float, h: float, l: float, c: float, now: datetime) -> None:
         """Минутная свеча вместо тиков (историческая добивка). Порядок движения внутри свечи неизвестен, поэтому
-        пессимистичный: для покупки сначала минимум (стоп), потом максимум (тейк); для продажи наоборот.
-        Так при касании и стопа, и тейка в одной свече засчитывается стоп, и добивка не завышает долю прибыльных."""
+        пессимистичный: для покупки сначала минимум (стоп), потом максимум (тейк); для продажи наоборот."""
         with self._lock:
             if not self.light:
                 self._update_tails(figi, (o, l, h, c), now)
@@ -242,7 +233,6 @@ class VirtualEngine:
                 else:
                     for k, price in enumerate((o, l, h, c) if t.side == 1 else (o, h, l, c)):
                         if price and price > 0:
-                            # внутри свечи стоп исполняется по уровню (после первой цены свечи); гэп на открытии — по цене открытия
                             self._update(t, price, now, None, None, level_fill=k > 0)
                         if t.status != "OPEN":
                             break
@@ -252,14 +242,15 @@ class VirtualEngine:
                 self._open.pop(figi, None)
 
     def expire(self, now: datetime, prices: Optional[Dict[str, float]] = None) -> int:
-        """Закрывает сделки, у которых наступил срок (таймаут или конец сессии). prices — последние цены по figi."""
+        """Закрывает шорты, наступившие к концу торгового дня (END_OF_DAY). prices — последние цены по figi.
+        Сделки BUY не закрываются по времени — живут до SL/TP."""
         prices = prices or {}
         n = 0
         with self._lock:
             for figi in list(self._open):
                 trades = self._open[figi]
                 for t in list(trades):
-                    if now >= t.deadline:
+                    if t.direction == "SELL" and now >= t.deadline:
                         price = prices.get(figi) or t.last_price or t.entry_mid
                         self._close(t, t.deadline_reason, price, now, market=True)
                         trades.remove(t)
@@ -383,8 +374,6 @@ class VirtualEngine:
     # ── доходность вперёд: не зависит от SL/TP, поэтому сделку после закрытия дослеживаем до нужных горизонтов ──
 
     def _fwd_update(self, t: VTrade, price: float, now: datetime) -> None:
-        if t.session_end is not None and now > t.session_end:
-            return                                       # цена после конца сессии (перерыв, ночь) к сигналу не относится
         elapsed = (now - t.opened_at).total_seconds() / 60.0
         for h in HORIZONS_MIN:
             if t.fwd.get(h) is None and h <= elapsed <= h + FWD_MAX_LATE_MIN:
@@ -393,8 +382,6 @@ class VirtualEngine:
 
     def _fwd_pending(self, t: VTrade, now: datetime) -> bool:
         if all(t.fwd.get(h) is not None for h in HORIZONS_MIN):
-            return False
-        if t.session_end is not None and now > t.session_end:
             return False
         return (now - t.opened_at).total_seconds() / 60.0 <= FWD_TAIL_MAX_MIN
 

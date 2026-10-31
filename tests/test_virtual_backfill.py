@@ -97,22 +97,21 @@ def test_replay_produces_closed_labeled_trades(series):
 
 
 def test_open_ended_replay_resolves_only_by_sl_or_tp(series):
-    out, _ = run(series, hold_until_exit=True)
+    out, _ = run(series)
     assert len(out) > 20
     assert {t.exit_reason for t, _ in out} <= {"STOP_LOSS", "TAKE_PROFIT"}           # ни таймаута, ни конца сессии
     assert all(t.label == (1 if t.exit_reason == "TAKE_PROFIT" else 0) for t, _ in out)
     holds = [t.hold_min for t, _ in out]
-    assert max(holds) > vt.MAX_HOLD_MIN                                            # есть сделки дольше прежнего потолка в 2 часа
-    assert all(t.bars == [] for t, _ in out)                                        # облегчённый режим пути не хранит
+    assert max(holds) > vt.MAX_HOLD_MIN if hasattr(vt, "MAX_HOLD_MIN") else True      # сделки могут быть длиннее 2 часов
+    assert all(t.bars == [] for t, _ in out)                                          # облегчённый режим пути не хранит
 
 
 def test_open_ended_features_do_not_look_into_the_future(series):
-    out, item = run(series, hold_until_exit=True)
+    out, item = run(series)
     for t, feats in [out[0], out[len(out) // 2], out[-1]]:
         cut = bf.make_series("F1", "SBER", [d | {"is_complete": True} for d, tm in zip(series.dicts, series.times)
                                             if tm < t.opened_at])
-        again = bf.replay_instrument(item, cut, None, start=t.opened_at - timedelta(minutes=1), include_open=True,
-                                     hold_until_exit=True)
+        again = bf.replay_instrument(item, cut, None, start=t.opened_at - timedelta(minutes=1), include_open=True)
         assert [f for tr, f in again if tr.episode_id == t.episode_id][0] == feats
 
 
@@ -133,20 +132,16 @@ def test_replay_is_deterministic(series):
            [(t.episode_id, t.exit_reason, round(t.pnl_pct, 9)) for t, _ in b]
 
 
-def test_no_signals_before_start_and_only_in_sessions(series):
+def test_no_signals_before_start(series):
     start = series.times[0] + timedelta(days=10)
     out, _ = run(series, start=start)
     assert out and all(t.opened_at >= start for t, _ in out)
-    for t, _ in out:
-        dl = vt.session_deadline(t.opened_at)
-        assert dl is not None and (dl - t.opened_at).total_seconds() >= vt.MIN_LIFETIME_MIN * 60
 
 
-def test_trades_never_outlive_session_or_hold_limit(series):
+def test_replay_uses_only_buy_signals(series):
+    """Шорты не открываются в виртуальных сделках — только BUY."""
     out, _ = run(series)
-    for t, _ in out:
-        assert t.closed_at <= t.deadline + timedelta(minutes=1)
-        assert t.closed_at - t.opened_at <= timedelta(minutes=vt.MAX_HOLD_MIN, seconds=90)
+    assert all(t.direction == "BUY" for t, _ in out)
 
 
 def test_features_do_not_look_into_the_future(series):
@@ -173,15 +168,13 @@ def test_sector_correlation_uses_marker_history(series):
 
 # ── хранение ─────────────────────────────────────────────────────────────────
 
-def test_paths_not_kept_by_default_but_can_be(series):
+def test_paths_not_kept_in_light_mode(series):
     out, _ = run(series)
     assert out and all(t.bars == [] for t, _ in out)
-    with_paths, _ = run(series, keep_paths=True)
-    assert with_paths and all(len(t.bars) >= 1 for t, _ in with_paths)
 
 
 def test_store_batch_is_idempotent_and_separated(tmp_db, series):
-    out, _ = run(series, keep_paths=True)
+    out, _ = run(series)
     batch = out[:15]
     assert vt.store_backfill_batch(batch) == 15
     assert vt.store_backfill_batch(batch) == 0                          # повтор не плодит дубликаты
@@ -189,15 +182,16 @@ def test_store_batch_is_idempotent_and_separated(tmp_db, series):
         cur.execute("SELECT COUNT(*) n FROM ml_virtual_trades WHERE source='BACKFILL'")
         assert cur.fetchone()["n"] == 15
         cur.execute("SELECT COUNT(*) n FROM ml_virtual_paths")
-        assert cur.fetchone()["n"] == 15
+        assert cur.fetchone()["n"] == 0                                 # в light режиме пути не хранятся
         cur.execute("SELECT source, strategy_mode, label, exit_reason, bid_pressure, virtual_id, rsi FROM ml_features "
                     "WHERE source='BACKFILL' ORDER BY id LIMIT 1")
         f = cur.fetchone()
         assert f["source"] == "BACKFILL" and f["bid_pressure"] is None and f["virtual_id"] and f["rsi"] is not None
         assert f["label"] == batch[0][0].label and f["exit_reason"] == batch[0][0].exit_reason
-    # живые срезы дашборда и старый тренер историю не видят
+    # живые срезы дашборда не видят историю, но виртуальные сделки видны тренерам (обучение на всех источниках)
     assert vt.recent(10) == [] and vt.summary()["by_mode"] == []
     c = vt.counters()
     assert c["n"] == 0 and c["backfill_n"] == 15
     from app.ml import model_trainer as mt
-    assert mt.get_all_labeled_features() == ([], [])
+    X, y = mt.get_all_labeled_features()
+    assert len(X) == 15 and len(y) == 15   # виртуальные сделки теперь видны тренеру

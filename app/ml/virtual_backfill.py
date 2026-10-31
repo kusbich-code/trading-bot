@@ -162,21 +162,19 @@ def _set_sector_returns(markers: Dict[str, Series], own_figi: str, t_close: date
 
 def replay_instrument(item: dict, series: Series, markers: Optional[Dict[str, Series]] = None, *,
                       start: datetime, end: Optional[datetime] = None, spread_pct: float = SPREAD_PCT,
-                      include_open: bool = False, keep_paths: bool = False, hold_until_exit: bool = False,
+                      include_open: bool = False, keep_paths: bool = False, hold_until_exit: bool = True,
                       build: Callable[..., dict] = build_features) -> List[Tuple[vt.VTrade, dict]]:
     """Проигрывает историю одной бумаги. start/end — границы моментов сигнала (UTC); свечи до start служат разогревом.
 
     item: {"figi", "ticker", "levels": {режим: (sl, tp)}, "min_scores": {режим: порог}} — как у живого сканера.
     Возвращает пары (закрытая сделка, признаки); сделки, не успевшие закрыться к концу данных, отбрасываются
     (include_open=True добавляет их — для проверки отсутствия заглядывания в будущее).
-    keep_paths=False — поминутный путь цены после закрытия не хранится (его можно пересчитать из кеша свечей;
-    на десятках тысяч сделок он занимал бы сотни мегабайт памяти и БД).
-    hold_until_exit=True — сделки без ограничения по времени: живут до SL или TP, в том числе через ночь и выходные;
-    исход чистый («тейк раньше стопа»), без смещения от срока жизни. Сделки, не дошедшие до SL/TP к концу данных, отбрасываются.
+    Сделки живут до SL или TP, без ограничения по времени (нет таймаута, нет конца сессии). Шорты не открываются.
+    hold_until_exit оставлен для совместимости — все сделки теперь живут до SL/TP.
     """
     markers = markers or {}
     figi, ticker = item["figi"], item.get("ticker", "")
-    engine = vt.VirtualEngine(hold_until_exit=hold_until_exit, light=hold_until_exit)
+    engine = vt.VirtualEngine()
     out: List[Tuple[vt.VTrade, dict]] = []
     pending: Dict[str, dict] = {}
     hourly: List[dict] = []                      # завершённые часы
@@ -187,10 +185,9 @@ def replay_instrument(item: dict, series: Series, markers: Optional[Dict[str, Se
         v = series.dicts[i]["volume"]
         t_close = t_open + timedelta(minutes=1)
 
-        # 1) бар проживается открытыми сделками, затем срок жизни
+        # 1) бар проживается открытыми сделками, затем закрытие шортов по концу суток
         engine.on_bar(figi, o, h, l, c, t_open + timedelta(seconds=30))
-        if not hold_until_exit:
-            engine.expire(t_close, {figi: c})
+        engine.expire(t_close, {figi: c})
         for t in engine.drain_closed():
             if not keep_paths:
                 t.bars = []
@@ -208,16 +205,14 @@ def replay_instrument(item: dict, series: Series, markers: Optional[Dict[str, Se
         # 3) новые сигналы
         if t_close < start or (end is not None and t_close > end):
             continue
-        if vt.session_deadline(t_close) is None:
-            continue
         window = _window_dicts(series, t_close, i + 1)
         if len(window) < MIN_CANDLES:
             continue
         for mode in MODES:
             res = evaluate_signal(mode, window)
             action = res.get("action")
-            if action not in ("BUY", "SELL"):
-                continue
+            if action != "BUY":
+                continue            # шорты не открываем вообще
             ep = engine.claim(figi, mode, action, t_close)
             if not ep:
                 continue

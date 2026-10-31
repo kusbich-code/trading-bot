@@ -47,14 +47,14 @@ def test_training_data_excludes_non_policy_exits(tmp_db):
     assert len(X2) == 3
 
 
-def test_legacy_trainer_ignores_virtual_rows(tmp_db):
+def test_legacy_trainer_counts_all_sources(tmp_db):
     from app.ml import model_trainer as mt
     real = _add_feature(tmp_db, label=1, exit_reason="TAKE_PROFIT")
     virt = _add_feature(tmp_db, label=1, exit_reason="TAKE_PROFIT", ts="2026-10-20 10:05:00")
     with tmp_db.db_cursor() as cur:
         cur.execute("UPDATE ml_features SET source='VIRTUAL' WHERE id=?", (virt,))
     X, y = mt.get_all_labeled_features()
-    assert len(X) == 1 and real
+    assert len(X) == 2 and len(y) == 2  # виртуальные строки теперь участвуют в обучении
 
 
 def test_backfill_matches_positions_and_trades(tmp_db):

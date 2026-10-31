@@ -80,7 +80,7 @@ def ticker_spreads(cur) -> Dict[str, float]:
     return {r[0]: float(r[1]) for r in cur.fetchall()}
 
 
-def load_dataset(horizon: int = 60, sources: Tuple[str, ...] = ("BACKFILL", "VIRTUAL")) -> dict:
+def load_dataset(horizon: int = 60, sources: Tuple[str, ...] = ("BACKFILL", "VIRTUAL", "LIVE", "REAL")) -> dict:
     """Читает строки с известной доходностью вперёд. Возвращает массивы numpy (X с NaN, y, время, блоки, веса, стоимость)."""
     from app.db import db_cursor
     col = f"fwd_ret_{int(horizon)}m"
