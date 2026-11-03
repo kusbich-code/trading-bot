@@ -39,7 +39,7 @@ def _run(candles, mode, sl, tp, min_score=0):
     return run_backtest(
         candles=candles, mode=mode,
         stop_loss_pct=sl, take_profit_pct=tp,
-        commission_pct=0.0004, qty=1, min_signal_score=min_score,
+        commission_pct=0.0005, qty=1, min_signal_score=min_score,
     )
 
 

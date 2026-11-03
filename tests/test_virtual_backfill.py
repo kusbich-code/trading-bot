@@ -188,10 +188,10 @@ def test_store_batch_is_idempotent_and_separated(tmp_db, series):
         f = cur.fetchone()
         assert f["source"] == "BACKFILL" and f["bid_pressure"] is None and f["virtual_id"] and f["rsi"] is not None
         assert f["label"] == batch[0][0].label and f["exit_reason"] == batch[0][0].exit_reason
-    # живые срезы дашборда не видят историю, но виртуальные сделки видны тренерам (обучение на всех источниках)
+    # живые срезы дашборда не видят историю, и в обучение она не идёт: сделки обрезаны старым лимитом 2 часа
     assert vt.recent(10) == [] and vt.summary()["by_mode"] == []
     c = vt.counters()
     assert c["n"] == 0 and c["backfill_n"] == 15
     from app.ml import model_trainer as mt
     X, y = mt.get_all_labeled_features()
-    assert len(X) == 15 and len(y) == 15   # виртуальные сделки теперь видны тренеру
+    assert X == [] and y == []

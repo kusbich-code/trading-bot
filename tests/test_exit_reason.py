@@ -47,8 +47,9 @@ def test_training_data_excludes_non_policy_exits(tmp_db):
     assert len(X2) == 3
 
 
-def test_legacy_trainer_counts_all_sources(tmp_db):
+def test_legacy_trainer_counts_all_sources(tmp_db, monkeypatch):
     from app.ml import model_trainer as mt
+    monkeypatch.setattr(mt, "TRAIN_VIRTUAL_FROM", "2020-01-01 00:00:00")
     real = _add_feature(tmp_db, label=1, exit_reason="TAKE_PROFIT")
     virt = _add_feature(tmp_db, label=1, exit_reason="TAKE_PROFIT", ts="2026-10-20 10:05:00")
     with tmp_db.db_cursor() as cur:

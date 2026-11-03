@@ -37,7 +37,7 @@ class Settings:
 
     DEFAULT_STOP_LOSS_PCT = Decimal(os.getenv("DEFAULT_STOP_LOSS_PCT", "0.0025"))
     DEFAULT_TAKE_PROFIT_PCT = Decimal(os.getenv("DEFAULT_TAKE_PROFIT_PCT", "0.005"))
-    ESTIMATED_COMMISSION_PCT = Decimal(os.getenv("ESTIMATED_COMMISSION_PCT", "0.0004"))
+    ESTIMATED_COMMISSION_PCT = Decimal(os.getenv("ESTIMATED_COMMISSION_PCT", "0.0005"))
 
     TELEGRAM_ENABLED = os.getenv("TELEGRAM_ENABLED", "false").lower() == "true"
     TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()

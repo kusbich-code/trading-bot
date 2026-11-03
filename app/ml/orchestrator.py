@@ -73,7 +73,7 @@ def run_daily_rebalance() -> None:
 def _rank_instruments_daily(instruments: list) -> None:
     """Фаза 5: ранжирует инструменты по ML, временно отключает слабые."""
     from app.ml.model_predictor import rank_instruments as _rank, RANK_MIN_THRESHOLD
-    if not instruments:
+    if not instruments or not _auto_tune_enabled():
         return
     instr_dicts = [
         {"figi": figi, "ticker": ticker, "strategy_id": sid}
@@ -103,11 +103,27 @@ def _rank_instruments_daily(instruments: list) -> None:
             pass
 
 
+def _auto_tune_enabled() -> bool:
+    """Может ли ночной контур сам менять боевые настройки (ml_auto_tune, по умолчанию выключено).
+
+    Подбор режима и SL/TP на 90 днях часовых свечей идёт без проверки на отложенных данных: он подгоняется под
+    прошлое и ставит пороги, при которых стратегия перестаёт торговать. Настройки меняет человек, по результатам теста.
+    """
+    try:
+        from app.db import get_setting
+        return str(get_setting("ml_auto_tune", "0")).strip().lower() in ("1", "true", "yes")
+    except Exception as e:
+        log.debug("ml_auto_tune: %s", e)
+        return False
+
+
 def get_ml_params(figi: str, strategy_id: int) -> Optional[Dict]:
     """
     Возвращает выученные параметры для инструмента если confidence достаточная.
     Используется в параллельном воркере перед торговлей.
     """
+    if not _auto_tune_enabled():
+        return None
     try:
         from app.ml.analyzer import get_instrument_state
         state = get_instrument_state(figi, strategy_id)
@@ -220,7 +236,9 @@ def _deep_update(figi: str, ticker: str, strategy_id: int, current_params: Dict)
     # pnl не пересчитывался под новый стоп). Здесь движок реально проигрывает свечи.
     try:
         from app.ml.backtest_client import optimize_instrument as _bt_opt
-        if _optimized_recently(figi):
+        if not _auto_tune_enabled():
+            bt = None
+        elif _optimized_recently(figi):
             log.info("[ML] %s: параметры менялись менее %d дн. назад — бэктест-оптимизация пропущена",
                      ticker, OPT_COOLDOWN_DAYS)
             bt = None
@@ -399,7 +417,7 @@ def _check_concept_drift() -> None:
                 return  # Модель ещё не активирована — нечего проверять
             cur.execute("""
                 SELECT label FROM ml_features
-                WHERE label IS NOT NULL AND timestamp >= ?
+                WHERE label IS NOT NULL AND timestamp >= ? AND COALESCE(source, 'REAL') = 'REAL'
                 ORDER BY id DESC LIMIT 20
             """, (activation_date,))
             labels = [r[0] for r in cur.fetchall()]

@@ -85,9 +85,9 @@ def test_trainable_labeled_counts_all_policy_exits(client, tmp_db):
     add_feature(tmp_db, 0, exit_reason=None)                              # причина неизвестна - берётся
     add_feature(tmp_db, 0, exit_reason="ML_EARLY_EXIT")                   # ранний выход модели - нет
     add_feature(tmp_db, 0, exit_reason="MANUAL_CLOSE")
-    add_feature(tmp_db, 1, source="VIRTUAL", exit_reason="TAKE_PROFIT")   # виртуальные тоже пригодны для обучения
+    add_feature(tmp_db, 1, source="VIRTUAL", exit_reason="TAKE_PROFIT")   # виртуальная из окна с лимитом 2 часа: в обучение не идёт
     data = client.get("/api/ml/summary").json()
-    assert data["trainable_labeled"] == 4                                 # все источники, только POLICY_EXIT_REASONS
+    assert data["trainable_labeled"] == 3   # штатные выходы реальных сделок и строка без причины
     assert data["features_stats"]["labeled"] == 5                         # статистика признаков только по REAL
 
 

@@ -186,6 +186,13 @@ def compute_lot_scale(confidence: float) -> float:
     return 0.0
 
 
+def effective_lot_scale(confidence: float) -> float:
+    """Масштаб лота в торговле: в теневом режиме (ml_enforce=0) модель на размер позиции не влияет."""
+    if not _enforce_enabled():
+        return 1.0
+    return compute_lot_scale(confidence)
+
+
 def meta_strategy_check(features: Dict, signal_score: int,
                         signal_action: str, min_score: int) -> Tuple[bool, str]:
     """

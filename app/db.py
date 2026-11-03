@@ -35,7 +35,7 @@ STRATEGY_DEFAULTS = {
     "check_interval_sec": "5",
     "default_stop_loss_pct": "0.0025",
     "default_take_profit_pct": "0.005",
-    "estimated_commission_pct": "0.0004",
+    "estimated_commission_pct": "0.0005",
     "allow_long_global": "1",
     "allow_short_global": "1",
     "trade_only_session": "0",
@@ -702,7 +702,7 @@ def _seed_defaults(cur):
     seed_setting(cur, "check_interval_sec", "5")
     seed_setting(cur, "allow_short_global", "1")
     seed_setting(cur, "allow_long_global", "1")
-    seed_setting(cur, "estimated_commission_pct", "0.0004")
+    seed_setting(cur, "estimated_commission_pct", "0.0005")
     seed_setting(cur, "default_stop_loss_pct", "0.0025")
     seed_setting(cur, "default_take_profit_pct", "0.005")
     seed_setting(cur, "trade_only_session", "0")
@@ -793,7 +793,7 @@ def _seed_preset_strategies(cur):
                 "min_signal_score": "50",
                 "default_stop_loss_pct": "0.003",
                 "default_take_profit_pct": "0.006",
-                "estimated_commission_pct": "0.0004",
+                "estimated_commission_pct": "0.0005",
                 "max_trades_per_day": "8",
                 "max_open_positions": "2",
                 "max_daily_loss_rub": "500",
@@ -821,7 +821,7 @@ def _seed_preset_strategies(cur):
                 "min_signal_score": "50",
                 "default_stop_loss_pct": "0.004",
                 "default_take_profit_pct": "0.008",
-                "estimated_commission_pct": "0.0004",
+                "estimated_commission_pct": "0.0005",
                 "max_trades_per_day": "6",
                 "max_open_positions": "2",
                 "max_daily_loss_rub": "500",
@@ -850,7 +850,7 @@ def _seed_preset_strategies(cur):
                 "min_signal_score": "40",
                 "default_stop_loss_pct": "0.005",
                 "default_take_profit_pct": "0.01",
-                "estimated_commission_pct": "0.0004",
+                "estimated_commission_pct": "0.0005",
                 "max_trades_per_day": "5",
                 "max_open_positions": "1",
                 "max_daily_loss_rub": "300",
@@ -878,7 +878,7 @@ def _seed_preset_strategies(cur):
                 "min_signal_score": "55",
                 "default_stop_loss_pct": "0.0025",
                 "default_take_profit_pct": "0.005",
-                "estimated_commission_pct": "0.0004",
+                "estimated_commission_pct": "0.0005",
                 "max_trades_per_day": "15",
                 "max_open_positions": "3",
                 "max_daily_loss_rub": "300",

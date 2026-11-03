@@ -174,7 +174,7 @@ def replay_instrument(item: dict, series: Series, markers: Optional[Dict[str, Se
     """
     markers = markers or {}
     figi, ticker = item["figi"], item.get("ticker", "")
-    engine = vt.VirtualEngine()
+    engine = vt.VirtualEngine(keep_bars=keep_paths)  # без пути: сотни долгих сделок иначе занимают всю память
     out: List[Tuple[vt.VTrade, dict]] = []
     pending: Dict[str, dict] = {}
     hourly: List[dict] = []                      # завершённые часы

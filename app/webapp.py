@@ -299,7 +299,7 @@ def _strategy_settings_view(raw: dict) -> dict:
         "check_interval_sec": ss("check_interval_sec", "5"),
         "default_stop_loss_pct_ui": fmt_pct_fraction(ss("default_stop_loss_pct", "0.0025")),
         "default_take_profit_pct_ui": fmt_pct_fraction(ss("default_take_profit_pct", "0.005")),
-        "estimated_commission_pct_ui": fmt_pct_fraction(ss("estimated_commission_pct", "0.0004")),
+        "estimated_commission_pct_ui": fmt_pct_fraction(ss("estimated_commission_pct", "0.0005")),
         "allow_long_global": ss("allow_long_global", "1"),
         "allow_short_global": ss("allow_short_global", "1"),
         "trade_only_session": ss("trade_only_session", "0"),
@@ -1344,7 +1344,7 @@ def api_balance_check():
     s = get_all_settings()
     active_strategy_id = (s.get("active_strategy_id", "") or "").strip()
     is_sandbox = _is_sandbox_mode()
-    commission_pct = safe_decimal(s.get("estimated_commission_pct", "0.0004"))
+    commission_pct = safe_decimal(s.get("estimated_commission_pct", "0.0005"))
     market_map = get_instrument_market_state_map()
 
     instruments = list_strategy_instruments(int(active_strategy_id)) if active_strategy_id else []
@@ -1673,7 +1673,7 @@ def _bt_run_worker(strategy_ids: list, interval: str, days: int):
 
             cfg        = get_strategy_settings(sid)
             mode       = cfg.get("tradingmode", "trend")
-            comm_pct   = float(cfg.get("estimated_commission_pct", "0.0004"))
+            comm_pct   = float(cfg.get("estimated_commission_pct", "0.0005"))
             strat_name = strat.get("name", f"Стратегия {sid}")
 
             all_instr = list_strategy_instruments(sid)
@@ -1762,7 +1762,7 @@ def api_backtest_strategies():
             "tradingmode": cfg.get("tradingmode", "trend"),
             "stop_loss_pct": cfg.get("default_stop_loss_pct", "0.0025"),
             "take_profit_pct": cfg.get("default_take_profit_pct", "0.005"),
-            "commission_pct": cfg.get("estimated_commission_pct", "0.0004"),
+            "commission_pct": cfg.get("estimated_commission_pct", "0.0005"),
             "trailing_stop_enabled": cfg.get("trailing_stop_enabled", "0"),
             "instruments": [
                 {"figi": i["figi"], "ticker": i.get("ticker", ""), "name": i.get("name", "")}
@@ -1830,7 +1830,7 @@ async def api_backtest_run(request: Request):
 
         cfg        = get_strategy_settings(sid)
         mode       = cfg.get("tradingmode", "trend")
-        comm_pct   = float(cfg.get("estimated_commission_pct", "0.0004"))
+        comm_pct   = float(cfg.get("estimated_commission_pct", "0.0005"))
         strat_name = strat.get("name", f"Стратегия {sid}")
 
         # Берём первый включённый инструмент стратегии
@@ -2021,7 +2021,7 @@ def api_parallel_status():
             auto_lots_on  = int(instr.get("auto_lots", 0) or 0)
             last_price    = float(mkt.get("last_price", 0) or 0)
             if auto_lots_on and last_price > 0 and _parallel_cash > 0:
-                _commission_pct = safe_decimal(get_setting("estimated_commission_pct", "0.0004"))
+                _commission_pct = safe_decimal(get_setting("estimated_commission_pct", "0.0005"))
                 _cost_per_lot = Decimal(str(lot_size)) * Decimal(str(last_price)) * (1 + _commission_pct)
                 lot_count = max(1, int(_parallel_cash / _cost_per_lot)) if _cost_per_lot > 0 else 1
             else:
@@ -3248,7 +3248,8 @@ def api_ml_summary():
             data["active_universal"] = dict(zip([d[0] for d in _c.description], _am)) if _am else None
             # Применяет ли модель свои решения к торговле (теневой режим по умолчанию) и сколько строк пригодно для обучения
             data["ml_enforce"] = str(get_setting("ml_enforce", "0")).strip().lower() in ("1", "true", "yes")
-            from app.ml.model_trainer import _CLEAN_LABEL_SQL as _clean_sql
+            from app.ml.model_trainer import clean_label_sql as _clean_label_sql
+            _clean_sql = _clean_label_sql()
             _c.execute(f"SELECT COUNT(*) FROM ml_features WHERE label IS NOT NULL AND {_clean_sql}")
             data["trainable_labeled"] = _c.fetchone()[0] or 0
             _c.execute("""

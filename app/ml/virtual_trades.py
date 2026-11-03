@@ -34,6 +34,7 @@ FWD_MAX_LATE_MIN = 5           # тик позже горизонта больш
 FWD_TAIL_MAX_MIN = 65          # сколько минут после входа дослеживать цену ради доходности вперёд
 EPISODE_GAP_SEC = 150          # столько секунд без сигнала — и следующий сигнал считается новым эпизодом
 CHECKPOINTS_MIN = (5, 15, 30, 60)
+MAX_PATH_BARS = 240            # поминутный путь храним за первые 4 часа: сделка без срока иначе копит память бесконечно
 MAX_OPEN_TOTAL = 600           # защита памяти: больше открытых виртуальных сделок не держим
 # конец торгового дня МСК, в который закрываются незакрытые шорты (в минутах от полуночи)
 END_OF_DAY_MIN = 23 * 60 + 50  # 23:50 МСК
@@ -98,6 +99,7 @@ class VTrade:
     # доходность вперёд, % от цены рынка в момент сигнала, в сторону сделки, без издержек и независимо от SL/TP
     fwd: Dict[int, Optional[float]] = field(default_factory=lambda: {m: None for m in HORIZONS_MIN})
     session_end: Optional[datetime] = None
+    checkpoints_from: float = 0.0    # контрольные точки раньше этой минуты пропущены из-за перезапуска бота
     fwd_dirty: bool = False          # появились новые значения fwd, ещё не записанные в БД
     # итог
     closed_at: Optional[datetime] = None
@@ -126,9 +128,11 @@ class VirtualEngine:
     """Хранит открытые виртуальные сделки и эпизоды, обрабатывает тики цены. Потокобезопасен."""
 
     def __init__(self, commission_pct: float = COMMISSION_PCT,
-                 episode_gap_sec: int = EPISODE_GAP_SEC, light: bool = False):
+                 episode_gap_sec: int = EPISODE_GAP_SEC, light: bool = False, keep_bars: bool = True):
         """Все сделки живут до SL/TP, без ограничения по времени (нет таймаута, нет конца сессии).
-        light — облегчённый режим для истории: без пути цены, контрольных точек и доходности вперёд."""
+        light — облегчённый режим для истории: без пути цены, контрольных точек и доходности вперёд.
+        keep_bars=False — поминутный путь не хранится, доходность вперёд считается (историческая добивка)."""
+        self.keep_bars = keep_bars
         self.commission_pct = commission_pct
         self.episode_gap_sec = episode_gap_sec
         self.light = light
@@ -323,15 +327,16 @@ class VirtualEngine:
         t.last_price = price
         t.hi = max(t.hi, price)
         t.lo = min(t.lo, price)
-        minute = int(now.timestamp() // 60)
-        if t.bars and t.bars[-1][0] == minute:
-            bar = t.bars[-1]
-            bar[2], bar[3], bar[4] = max(bar[2], price), min(bar[3], price), price
-        else:
-            t.bars.append([minute, price, price, price, price])
+        if self.keep_bars:
+            minute = int(now.timestamp() // 60)
+            if t.bars and t.bars[-1][0] == minute:
+                bar = t.bars[-1]
+                bar[2], bar[3], bar[4] = max(bar[2], price), min(bar[3], price), price
+            elif len(t.bars) < MAX_PATH_BARS:
+                t.bars.append([minute, price, price, price, price])
         elapsed_min = (now - t.opened_at).total_seconds() / 60.0
         for cp in CHECKPOINTS_MIN:
-            if t.checkpoints.get(cp) is None and elapsed_min >= cp:
+            if cp >= t.checkpoints_from and t.checkpoints.get(cp) is None and elapsed_min >= cp:
                 t.checkpoints[cp] = t.side * (price - t.entry_fill) / t.entry_fill * 100.0
         self._fwd_update(t, price, now)
         if t.side == 1:
@@ -478,13 +483,35 @@ def refresh_forward_targets(items: List[Tuple["VTrade", dict]]) -> int:
     return n
 
 
-def abort_open_on_start() -> int:
-    """Сделки, оставшиеся OPEN после остановки бота, исход не получат: помечаем ABORTED (метки нет)."""
+def restore_open(engine: "VirtualEngine", now: Optional[datetime] = None) -> int:
+    """Возвращает в движок сделки, оставшиеся открытыми при остановке бота. Возвращает их число.
+
+    Сделка без срока живёт дольше промежутка между перезапусками: если её бросать, в обучении остаются только быстрые
+    исходы. Цены за время простоя неизвестны: первая цена после запуска проверяется по SL/TP как обычно.
+    """
     from app.db import db_cursor
+    now = now or datetime.now(timezone.utc)
     with db_cursor() as cur:
-        cur.execute("UPDATE ml_virtual_trades SET status='ABORTED', closed_at=? WHERE status='OPEN'",
-                    (msk_str(datetime.now(timezone.utc)),))
-        return cur.rowcount or 0
+        cur.execute("SELECT * FROM ml_virtual_trades WHERE status='OPEN' AND COALESCE(source, 'LIVE') = 'LIVE'")
+        rows = [dict(r) for r in cur.fetchall()]
+    with engine._lock:
+        for r in rows:
+            opened = datetime.strptime(r["created_at"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=MSK).astimezone(timezone.utc)
+            short = r["direction"] == "SELL"
+            t = VTrade(figi=r["figi"], ticker=r["ticker"], mode=r["strategy_mode"], direction=r["direction"],
+                       episode_id=r["episode_id"] or "", score=r["signal_score"] or 0.0, opened_at=opened,
+                       deadline=end_of_day_deadline(opened) if short else datetime.max.replace(tzinfo=timezone.utc),
+                       deadline_reason="END_OF_DAY" if short else "NONE", entry_mid=r["entry_mid"],
+                       entry_fill=r["entry_price"], fill_src=r["fill_src"] or "", spread_pct=r["spread_pct"],
+                       sl_pct=r["sl_pct"], tp_pct=r["tp_pct"], commission_pct=r["commission_pct"],
+                       filter_stage=r["filter_stage"] or "", ml_p=r["ml_p"], ml_decision=r["ml_decision"] or "",
+                       real_trade=bool(r["real_trade"]), ind_missing=bool(r["ind_missing"]), feature_id=r["feature_id"],
+                       id=r["id"])
+            t.hi = t.lo = t.last_price = t.entry_fill
+            t.fwd = {h: r.get(f"fwd_ret_{h}m") for h in HORIZONS_MIN}
+            t.checkpoints_from = (now - opened).total_seconds() / 60.0
+            engine._open.setdefault(t.figi, []).append(t)
+    return len(rows)
 
 
 def prune_paths(days: int = 30) -> int:

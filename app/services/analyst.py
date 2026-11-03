@@ -92,7 +92,7 @@ def _find_optimal_score(candles, mode, sl, tp, lots, budget_rub) -> int:
             res = run_backtest(
                 candles=candles, mode=mode,
                 stop_loss_pct=sl, take_profit_pct=tp,
-                commission_pct=0.0004,
+                commission_pct=0.0005,
                 initial_capital=float(budget_rub),
                 qty=lots,
                 min_signal_score=threshold,
@@ -278,7 +278,7 @@ def _worker(budget_rub, min_win_rate, min_trades, days, interval, min_pnl,
                     mode=mode,
                     stop_loss_pct=sl,
                     take_profit_pct=tp,
-                    commission_pct=0.0004,
+                    commission_pct=0.0005,
                     initial_capital=float(budget_rub),
                     qty=lots,
                 )
@@ -437,7 +437,7 @@ def _optimization_worker(budget_rub: float, days: int, interval: str):
                     mode=item["current_mode"],
                     stop_loss_pct=item["current_sl"],
                     take_profit_pct=item["current_tp"],
-                    commission_pct=0.0004,
+                    commission_pct=0.0005,
                     initial_capital=float(budget_rub),
                     qty=lots,
                 )
@@ -472,7 +472,7 @@ def _optimization_worker(budget_rub: float, days: int, interval: str):
                             res = run_backtest(
                                 candles=candles, mode=mode,
                                 stop_loss_pct=sl, take_profit_pct=tp,
-                                commission_pct=0.0004,
+                                commission_pct=0.0005,
                                 initial_capital=float(budget_rub),
                                 qty=lots,
                             )

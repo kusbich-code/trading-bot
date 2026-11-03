@@ -22,9 +22,35 @@ MIN_PRECISION_ACTIVATE = 0.50  # минимальная precision для акт�
 # ручное закрытие, чистка осиротевших позиций и т.п. не отражают качества входа (ранний выход к тому же
 # всегда даёт убыток по построению). NULL — причина не известна (старые строки), их не отбрасываем.
 POLICY_EXIT_REASONS = ("STOP_LOSS", "TAKE_PROFIT", "END_OF_DAY")
-# Тренер учится на реальных и виртуальных сделках (все источники): это даёт модель знания не только из
-# боевых сделок, но и из тысяч виртуальных épisodes, которые модель сама отсекала бы в торговле.
-_CLEAN_LABEL_SQL = ("(exit_reason IS NULL OR exit_reason IN ('STOP_LOSS','TAKE_PROFIT','END_OF_DAY'))")
+MIN_LIFT = 0.03  # насколько precision должна превышать долю прибыльных без отбора
+# Виртуальные сделки до снятия лимита 2 часа (запуск v5.14.0) и историческая добивка с тем же лимитом не годятся:
+# остаются только исходы, успевшие случиться за 2 часа (87% строк истории закрыты по времени и отброшены).
+TRAIN_VIRTUAL_FROM = "2026-10-31 15:00:00"
+# Свежие закрытые сделки — только быстрые исходы, долгие ещё открыты. Метку берём, когда выборка вызрела.
+VIRTUAL_MATURITY_DAYS = 5
+
+
+def clean_label_sql() -> str:
+    """Условие строк, пригодных для обучения: штатный выход, без исторической добивки, виртуальные только вызревшие."""
+    cutoff = (datetime.now(tz=_MSK) - timedelta(days=VIRTUAL_MATURITY_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
+    return ("(exit_reason IS NULL OR exit_reason IN ('STOP_LOSS','TAKE_PROFIT','END_OF_DAY')) "
+            "AND COALESCE(source, 'REAL') <> 'BACKFILL' "
+            f"AND (COALESCE(source, 'REAL') <> 'VIRTUAL' OR (timestamp >= '{TRAIN_VIRTUAL_FROM}' AND timestamp <= '{cutoff}'))")
+
+
+def passes_activation(y_test: list, y_pred: list, returns: list, min_precision: float) -> bool:
+    """Модель активируется, только если отобранные ею сделки на отложенном периоде лучше всех сделок и в плюсе в деньгах.
+
+    returns — чистая доходность сделки (доля от объёма). Одной precision мало: при доле прибыльных 70% её даёт и шум.
+    """
+    selected = [i for i, p in enumerate(y_pred) if p == 1]
+    if len(y_test) < MIN_TEST_SAMPLES or len(selected) < MIN_PRED_POSITIVES:
+        return False
+    precision = sum(y_test[i] for i in selected) / len(selected)
+    base_rate = sum(y_test) / len(y_test)
+    mean_selected = sum(returns[i] for i in selected) / len(selected)
+    mean_all = sum(returns) / len(returns)
+    return precision >= min_precision and precision >= base_rate + MIN_LIFT and mean_selected > 0 and mean_selected > mean_all
 
 
 def _balance_classes(X_train: list, y_train: list) -> Tuple[list, list]:
@@ -62,25 +88,33 @@ def _archive_active_models(cur, figi: str, strategy_id: int) -> None:
         log.debug("archive models %s: %s", figi, e)
 
 
-def get_all_labeled_features() -> Tuple[list, list]:
-    """Загружает ВСЕ размеченные признаки со всех инструментов (для универсальной модели)."""
+def load_labeled(where: str = "", params: tuple = ()) -> Tuple[list, list, list]:
+    """Размеченные строки для обучения: признаки, метки и чистая доходность сделки (доля от объёма)."""
     from app.db import db_cursor
     from app.ml.feature_builder import FEATURE_NAMES
     try:
         with db_cursor() as cur:
             col_list = ", ".join(FEATURE_NAMES)
             cur.execute(f"""
-                SELECT {col_list}, label FROM ml_features
-                WHERE label IS NOT NULL AND {_CLEAN_LABEL_SQL}
+                SELECT {col_list}, label, quality_score FROM ml_features
+                WHERE label IS NOT NULL AND {clean_label_sql()} {where}
                 ORDER BY timestamp ASC
-            """)
+            """, params)
             rows = cur.fetchall()
-        X = [[row[i] or 0.0 for i in range(len(FEATURE_NAMES))] for row in rows]
-        y = [int(row[-1]) for row in rows]
-        return X, y
+        n = len(FEATURE_NAMES)
+        X = [[row[i] or 0.0 for i in range(n)] for row in rows]
+        y = [int(row[n]) for row in rows]
+        returns = [float(row[n + 1] or 0.0) for row in rows]
+        return X, y, returns
     except Exception as e:
-        log.warning("get_all_labeled_features: %s", e)
-        return [], []
+        log.warning("load_labeled: %s", e)
+        return [], [], []
+
+
+def get_all_labeled_features() -> Tuple[list, list]:
+    """Загружает размеченные признаки со всех инструментов (для универсальной модели)."""
+    X, y, _ = load_labeled()
+    return X, y
 
 
 def train_universal_model() -> Optional[Dict]:
@@ -95,7 +129,7 @@ def train_universal_model() -> Optional[Dict]:
     except ImportError:
         return None
 
-    X, y = get_all_labeled_features()
+    X, y, returns = load_labeled()
     if len(X) < MIN_SAMPLES:
         log.info("Universal model: недостаточно данных (%d < %d)", len(X), MIN_SAMPLES)
         return None
@@ -103,6 +137,7 @@ def train_universal_model() -> Optional[Dict]:
     split_idx = int(len(X) * (1 - TEST_RATIO))
     X_train, X_test = X[:split_idx], X[split_idx:]
     y_train, y_test = y[:split_idx], y[split_idx:]
+    returns_test = returns[split_idx:]
 
     if len(set(y_train)) < 2:
         return None
@@ -119,8 +154,9 @@ def train_universal_model() -> Optional[Dict]:
     model.fit(X_bal, y_bal)
 
     metrics = {"n_train": len(X_train), "n_test": len(X_test), "universal": True}
+    y_pred = []
     if X_test and len(set(y_test)) >= 1:
-        y_pred = model.predict(X_test)
+        y_pred = [int(v) for v in model.predict(X_test)]
         metrics["accuracy"]  = round(accuracy_score(y_test, y_pred), 3)
         metrics["precision"] = round(precision_score(y_test, y_pred, zero_division=0), 3)
         metrics["recall"]    = round(recall_score(y_test, y_pred, zero_division=0), 3)
@@ -137,11 +173,10 @@ def train_universal_model() -> Optional[Dict]:
     top5 = sorted(importance.items(), key=lambda x: x[1], reverse=True)[:5]
     metrics["top_features"] = [(k, round(v, 3)) for k, v in top5]
 
-    # Активируем ТОЛЬКО при адекватной precision — иначе модель в "learning"
+    # Активируем только при подъёме над базой и плюсе в деньгах на отложенном периоде — иначе модель в "learning"
     # (soft-режим: логирует, но не блокирует входы и не закрывает позиции).
     prec = metrics.get("precision", 0)
-    reliable = metrics.get("n_test", 0) >= MIN_TEST_SAMPLES and metrics.get("pred_pos", 0) >= MIN_PRED_POSITIVES
-    is_ready = len(X_train) >= MIN_SAMPLES and prec >= MIN_PRECISION_ACTIVATE and reliable
+    is_ready = len(X_train) >= MIN_SAMPLES and passes_activation(y_test, y_pred, returns_test, MIN_PRECISION_ACTIVATE)
     univ_status = "active" if is_ready else "learning"
     model_bytes = pickle.dumps(model)
     now = datetime.now(tz=_MSK).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
@@ -191,23 +226,8 @@ def _notify_universal_ready(n: int, prec: float, metrics: dict) -> None:
 
 def get_training_data(figi: str, strategy_id: int) -> Tuple[list, list]:
     """Загружает размеченные признаки из ml_features."""
-    from app.db import db_cursor
-    from app.ml.feature_builder import FEATURE_NAMES
-    try:
-        with db_cursor() as cur:
-            col_list = ", ".join(FEATURE_NAMES)
-            cur.execute(f"""
-                SELECT {col_list}, label FROM ml_features
-                WHERE figi=? AND strategy_id=? AND label IS NOT NULL AND {_CLEAN_LABEL_SQL}
-                ORDER BY timestamp ASC
-            """, (figi, strategy_id))
-            rows = cur.fetchall()
-        X = [[row[i] or 0.0 for i in range(len(FEATURE_NAMES))] for row in rows]
-        y = [int(row[-1]) for row in rows]
-        return X, y
-    except Exception as e:
-        log.warning("get_training_data %s: %s", figi, e)
-        return [], []
+    X, y, _ = load_labeled("AND figi=? AND strategy_id=?", (figi, strategy_id))
+    return X, y
 
 
 def train_model(figi: str, ticker: str, strategy_id: int) -> Optional[Dict]:
@@ -223,7 +243,7 @@ def train_model(figi: str, ticker: str, strategy_id: int) -> Optional[Dict]:
         log.error("sklearn не установлен: pip install scikit-learn")
         return None
 
-    X, y = get_training_data(figi, strategy_id)
+    X, y, returns = load_labeled("AND figi=? AND strategy_id=?", (figi, strategy_id))
 
     if len(X) < MIN_SAMPLES:
         log.info("%s: недостаточно данных (%d < %d)", ticker, len(X), MIN_SAMPLES)
@@ -232,6 +252,7 @@ def train_model(figi: str, ticker: str, strategy_id: int) -> Optional[Dict]:
     split_idx = int(len(X) * (1 - TEST_RATIO))
     X_train, X_test = X[:split_idx], X[split_idx:]
     y_train, y_test = y[:split_idx], y[split_idx:]
+    returns_test = returns[split_idx:]
 
     if len(set(y_train)) < 2:
         log.warning("%s: только один класс в обучающей выборке", ticker)
@@ -254,8 +275,9 @@ def train_model(figi: str, ticker: str, strategy_id: int) -> Optional[Dict]:
 
     # Метрики
     metrics = {"n_train": len(X_train), "n_test": len(X_test)}
+    y_pred = []
     if X_test:
-        y_pred = model.predict(X_test)
+        y_pred = [int(v) for v in model.predict(X_test)]
         metrics["accuracy"]  = round(accuracy_score(y_test, y_pred), 3)
         metrics["precision"] = round(precision_score(y_test, y_pred, zero_division=0), 3)
         metrics["recall"]    = round(recall_score(y_test, y_pred, zero_division=0), 3)
@@ -273,8 +295,7 @@ def train_model(figi: str, ticker: str, strategy_id: int) -> Optional[Dict]:
 
     prec = metrics.get("precision", 0)
     n = len(X_train)
-    reliable = metrics.get("n_test", 0) >= MIN_TEST_SAMPLES and metrics.get("pred_pos", 0) >= MIN_PRED_POSITIVES
-    is_ready = prec >= 0.58 and n >= MIN_SAMPLES and reliable
+    is_ready = n >= MIN_SAMPLES and passes_activation(y_test, y_pred, returns_test, 0.58)
     instr_status = "active" if is_ready else "learning"
 
     # Сохранение в БД с корректным статусом сразу (без race condition)

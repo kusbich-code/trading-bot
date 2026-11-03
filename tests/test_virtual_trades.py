@@ -338,13 +338,12 @@ def test_store_roundtrip(tmp_db):
         assert len(__import__("json").loads(cur.fetchone()["path_json"])) >= 2
 
 
-def test_abort_open_on_start_and_counters(tmp_db):
+def test_counters_count_open_trades(tmp_db):
     e = vt.VirtualEngine()
     a = open_trade(e)
     vt.store_open(a)
-    assert vt.abort_open_on_start() == 1
     c = vt.counters()
-    assert c["n"] == 1 and c["open_n"] == 0 and c["closed_n"] == 0
+    assert c["n"] == 1 and c["open_n"] == 1 and c["closed_n"] == 0
 
 
 def test_recent_and_summary(tmp_db):

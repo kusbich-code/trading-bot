@@ -44,7 +44,7 @@ def run_backtest(
     mode: str = "trend",
     stop_loss_pct: float = 0.0025,
     take_profit_pct: float = 0.005,
-    commission_pct: float = 0.0004,
+    commission_pct: float = 0.0005,
     initial_capital: float = 100_000.0,
     qty: int = 1,
     min_signal_score: int = 0,

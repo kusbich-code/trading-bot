@@ -2907,7 +2907,7 @@ def process_instrument(client, item,
     _ml_lot_scale = 1.0  # масштаб от ML-уверенности
     if int(item.get("auto_lots", 0) or 0) and sig in ("BUY", "SELL"):
         _lot_size_v = int(item.get("lot", 1))
-        _comm_v     = Decimal(_cfg("estimated_commission_pct", "0.0004"))
+        _comm_v     = Decimal(_cfg("estimated_commission_pct", "0.0005"))
         _cost_1lot  = Decimal(str(_lot_size_v)) * price * (1 + _comm_v)
         if _cost_1lot > 0:
             # Делим капитал на max_open_positions — каждая позиция получает равную долю
@@ -2924,9 +2924,9 @@ def process_instrument(client, item,
             # поэтому скейлинг не применяем — используем полный auto_lots.
             if _ml_features_for_entry and _ml_conf is not None:
                 try:
-                    from app.ml.model_predictor import compute_lot_scale as _cls, ENTRY_THRESHOLD as _ET
+                    from app.ml.model_predictor import effective_lot_scale as _els, ENTRY_THRESHOLD as _ET
                     if float(_ml_conf) >= _ET:
-                        _ml_lot_scale = _cls(float(_ml_conf))
+                        _ml_lot_scale = _els(float(_ml_conf))
                         if _ml_lot_scale < 1.0:
                             _auto = max(1, int(_auto * _ml_lot_scale))
                     # else: P < порога → не скейлим, meta-strategy взяла управление
@@ -2942,7 +2942,7 @@ def process_instrument(client, item,
     # ── Проверка баланса перед ордером (для BUY и SHORT) ─────────────────────
     if sig in ("BUY", "SELL"):
         lot_size = item.get("lot", 1)
-        commission_pct = Decimal(_cfg("estimated_commission_pct", "0.0004"))
+        commission_pct = Decimal(_cfg("estimated_commission_pct", "0.0005"))
         # Запас на проскальзывание рыночного ордера (исполнение по ask/bid)
         _slippage = Decimal("0.002")  # 0.2%
         required = Decimal(str(lot)) * Decimal(str(lot_size)) * price * (1 + commission_pct + _slippage)
@@ -3600,11 +3600,11 @@ def _virtual_scanner_worker():
     """Фоновый поток виртуальных сделок: раз в ~5 с обходит инструменты и открывает сделки по новым сигналам,
     а также закрывает сделки по сроку и сохраняет итоги. Выключается настройкой virtual_trades_enabled=0."""
     from app.ml.feature_builder import build_features
-    from app.ml.virtual_trades import abort_open_on_start, prune_paths
+    from app.ml.virtual_trades import prune_paths, restore_open
     try:
-        aborted = abort_open_on_start()
+        restored = restore_open(_virtual_engine)
         pruned = prune_paths(30)
-        log.info("Виртуальные сделки: запуск (прервано незавершённых: %d, очищено путей: %d)", aborted, pruned)
+        log.info("Виртуальные сделки: запуск (восстановлено открытых: %d, очищено путей: %d)", restored, pruned)
     except Exception as e:
         log.warning("Виртуальные сделки: подготовка при запуске: %s", e)
     scanner = VirtualScanner(
