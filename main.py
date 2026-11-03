@@ -58,6 +58,7 @@ from app.db import (
     set_runtime,
     get_runtime,
     get_setting,
+    new_entries_enabled,
     list_active_strategy_instruments,
     add_trade,
     log_event,
@@ -2860,6 +2861,11 @@ def process_instrument(client, item,
             _save_signal(skip_reason="Аналитики T-Bank: BUY против SELL", skip_filter="signal_service")
             return
 
+    # ── Новые входы закрыты решением владельца: позиции выше уже сопровождены ────
+    if sig in ("BUY", "SELL") and not new_entries_enabled():
+        _save_signal(skip_reason="Новые входы закрыты (new_entries_enabled=0)", skip_filter="entries_closed")
+        return
+
     # ── ML фильтр входа (Фаза 2: soft/hard mode) ─────────────────────────────
     _ml_features_for_entry = None
     _ml_conf = None
@@ -3630,6 +3636,53 @@ def _virtual_scanner_worker():
             time.sleep(10)
 
 
+def _paper_daily_closes() -> dict:
+    """Закрытия завершённых рабочих дней по бумагам бумажного счёта (один запрос на бумагу, раз в неделю)."""
+    from app.ml.paper_daily import UNIVERSE
+    out = {}
+    now = datetime.now(timezone.utc)
+    with _bot_client_cls(settings.TINVEST_TOKEN) as client:
+        for ticker, figi in UNIVERSE.items():
+            _rate.record("GetCandles")
+            candles = client.market_data.get_candles(instrument_id=figi, from_=now - timedelta(days=200), to=now,
+                                                     interval=CandleInterval.CANDLE_INTERVAL_DAY).candles
+            done = [c for c in candles if c.is_complete and c.time.astimezone(MSK_TZ).weekday() < 5]
+            out[ticker] = [float(d["close"]) for d in _candles_to_dicts(done)]
+    return out
+
+
+def _paper_daily_prices() -> dict:
+    """Текущие цены из стрима (без запросов к API); бумаги без свежей цены отсутствуют."""
+    from app.ml.paper_daily import UNIVERSE
+    out = {}
+    for ticker, figi in UNIVERSE.items():
+        quote = _vs_quote(figi)
+        if quote and quote.get("price"):
+            out[ticker] = quote["price"]
+    return out
+
+
+def _paper_daily_worker():
+    """Фоновый поток бумажного счёта: раз в минуту проверяет, не пора ли недельный ребаланс. Ордеров не отправляет."""
+    from app.ml import paper_daily
+    from app.notify import notify as _notify
+    last_result = None
+    while True:
+        try:
+            if _bot_client_cls is not None and is_moex_session_open():
+                result = paper_daily.run_step(datetime.now(timezone.utc), _paper_daily_closes, _paper_daily_prices)
+                if result and result != last_result:
+                    log.info("Бумажный счёт: %s", result)
+                last_result = result
+                if result == "rebalanced":
+                    st = paper_daily.status()
+                    held = ", ".join(sorted(st["holdings"])) or "кеш"
+                    _notify(f"📄 Бумажный счёт: {held}\nИтог {st['equity']:,.0f} ₽, эталон {st['benchmark_equity']:,.0f} ₽")
+        except Exception as e:
+            log.warning("Бумажный счёт: %s", e)
+        time.sleep(60)
+
+
 def _refresh_parallel_workers():
     """
     Сравнивает текущую конфигурацию параллельных стратегий в БД с запущенными потоками.
@@ -3768,6 +3821,7 @@ def main():
     Thread(target=_market_data_stream_worker, daemon=True, name="market-data-stream").start()
     log.info("OrdersStream + MarketDataStream workers started")
     Thread(target=_virtual_scanner_worker, daemon=True, name="virtual-scanner").start()
+    Thread(target=_paper_daily_worker, daemon=True, name="paper-daily").start()
 
     # Инициализируем total_assets ДО запуска параллельных воркеров
     try:

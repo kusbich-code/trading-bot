@@ -528,6 +528,24 @@ def init_db():
         """)
         # поминутный путь цены (open/high/low/close) для пересчёта исходов с другими SL/TP; очищается через N дней
         cur.execute("""
+        CREATE TABLE IF NOT EXISTS paper_daily_account (
+            id INTEGER PRIMARY KEY,
+            state_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """)
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS paper_daily_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TEXT NOT NULL,
+            week_key TEXT NOT NULL,
+            target_json TEXT NOT NULL,
+            prices_json TEXT NOT NULL,
+            equity REAL NOT NULL,
+            benchmark_equity REAL NOT NULL
+        )
+        """)
+        cur.execute("""
         CREATE TABLE IF NOT EXISTS ml_virtual_paths (
             virtual_id INTEGER PRIMARY KEY,
             path_json TEXT NOT NULL
@@ -1024,6 +1042,14 @@ def set_setting(key, value):
         INSERT INTO bot_settings(key, value) VALUES (?, ?)
         ON CONFLICT(key) DO UPDATE SET value = excluded.value
         """, (key, str(value)))
+
+
+def new_entries_enabled() -> bool:
+    """Разрешены ли новые входы реальных сделок (по умолчанию нет: сигналы не лучше случайных, ревизия 2026-11-03).
+
+    Открытые позиции сопровождаются как обычно. Включить: настройка new_entries_enabled=1.
+    """
+    return str(get_setting("new_entries_enabled", "0")).strip().lower() in ("1", "true", "yes")
 
 
 def get_all_settings():
