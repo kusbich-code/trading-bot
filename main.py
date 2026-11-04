@@ -3720,7 +3720,7 @@ def _paper_dividends(client, instruments: dict, holdings: dict, since: str) -> f
 
 def _paper_daily_worker():
     """Фоновый поток бумажных счетов: раз в минуту проверяет, не пора ли недельный ребаланс. Ордеров не отправляет."""
-    from app.ml import paper_daily
+    from app.ml import paper_daily, paper_futures, paper_futures_feed
     from app.notify import notify as _notify
     last = {}
 
@@ -3747,6 +3747,7 @@ def _paper_daily_worker():
                         report("B", paper_daily.run_step(
                             now, lambda: _paper_b_closes(client, instruments), lambda: _paper_b_prices(client, instruments),
                             account="B", top=paper_daily.TOP_B, cash_ticker=paper_daily.CASH_TICKER, dividends=divs))
+                        report("C", paper_futures.run_step(now, lambda held: paper_futures_feed.load_market(client, held, _rate.record)))
         except Exception as e:
             log.warning("Бумажный счёт: %s", e)
         time.sleep(60)
