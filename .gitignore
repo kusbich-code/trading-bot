@@ -48,3 +48,4 @@ check_js.py
 
 # Правила Claude для проекта — только локально
 CLAUDE.md
+data/research/

@@ -1,8 +1,10 @@
-"""Бумажный счёт дневной стратегии: проверка правила на живых ценах без ордеров брокера.
+"""Бумажные счета дневной стратегии: проверка правил на живых ценах без ордеров брокера.
 
-Правило зафиксировано заранее и не подбирается по результатам (см. docs/superpowers/plans/2026-11-03-*.md):
-раз в неделю, если корзина бумаг выше своей средней за 50 дней, держим 3 бумаги с лучшей доходностью за 20 дней
-поровну, иначе кеш. Эталон — та же корзина, купить и держать. Данные передаются снаружи: модуль не знает про SDK.
+Правила зафиксированы заранее и не подбираются по результатам (см. docs/superpowers/plans/2026-11-03-*.md).
+Раз в неделю, если корзина бумаг выше своей средней за 50 дней, держим лидеров по доходности за 20 дней поровну.
+  Счёт A: 3 лидера из 12 бумаг, иначе кеш. Эталон: те же 12 бумаг, купить и держать.
+  Счёт B: 8 лидеров из 40 самых ликвидных, иначе фонд денежного рынка. Эталон: фонд денежного рынка.
+Данные передаются снаружи: модуль не знает про SDK.
 """
 import json
 from datetime import datetime, timedelta, timezone
@@ -13,6 +15,12 @@ MSK = timezone(timedelta(hours=3))
 MOMENTUM_DAYS = 20
 SMA_DAYS = 50
 TOP_N = 3
+TOP_B = 8                     # счёт B: сколько лидеров
+LIQUID_B = 40                 # счёт B: из скольких самых ликвидных бумаг
+ADV_DAYS = 60                 # окно среднего оборота
+ADV_MIN_DAYS = 40             # меньше дней истории — бумагу в список не берём
+CASH_TICKER = "LQDT"          # счёт B: где лежит кеш
+ACCOUNT_IDS = {"A": 1, "B": 2}
 COST = 0.00061                # издержки от оборота: комиссия 0.05% и половина спреда 0.011%
 START_EQUITY = 100000.0
 WINDOW_FROM_MIN = 10 * 60 + 5   # не в первые минуты сессии
@@ -26,18 +34,28 @@ UNIVERSE = {
 }
 
 
-def target_weights(closes: Dict[str, List[float]]) -> Optional[Dict[str, float]]:
+def select_liquid(bars: Dict[str, list], n: int = LIQUID_B) -> List[str]:
+    """Самые ликвидные бумаги по среднему обороту. bars: тикер -> [(закрытие, объём в лотах, лот), ...] по дням."""
+    turnover = {}
+    for ticker, rows in bars.items():
+        recent = rows[-ADV_DAYS:]
+        if len(recent) >= ADV_MIN_DAYS:
+            turnover[ticker] = sum(c * v * lot for c, v, lot in recent) / len(recent)
+    return sorted(turnover, key=turnover.get, reverse=True)[:n]
+
+
+def target_weights(closes: Dict[str, List[float]], top: int = TOP_N) -> Optional[Dict[str, float]]:
     """Целевые веса по закрытиям завершённых дней. None — истории не хватает, {} — кеш."""
     usable = {t: c for t, c in closes.items() if len(c) >= SMA_DAYS + 1}
-    if len(usable) < TOP_N:
+    if len(usable) < top:
         return None
     # корзина с равными весами, нормированная на начало окна средней
     index = [sum(c[-SMA_DAYS + i] / c[-SMA_DAYS] for c in usable.values()) / len(usable) for i in range(SMA_DAYS)]
     if index[-1] <= sum(index) / SMA_DAYS:
         return {}
     momentum = {t: c[-1] / c[-1 - MOMENTUM_DAYS] - 1.0 for t, c in usable.items()}
-    best = sorted(momentum, key=momentum.get, reverse=True)[:TOP_N]
-    return {t: 1.0 / TOP_N for t in best}
+    best = sorted(momentum, key=momentum.get, reverse=True)[:top]
+    return {t: 1.0 / top for t in best}
 
 
 def equity(state: dict, prices: Dict[str, float]) -> float:
@@ -87,67 +105,82 @@ def week_key(now: datetime) -> str:
 
 # ── хранение ──────────────────────────────────────────────────────────────────
 
-def _load() -> Optional[dict]:
+def _load(account: str = "A") -> Optional[dict]:
     from app.db import db_cursor
     with db_cursor() as cur:
-        cur.execute("SELECT state_json FROM paper_daily_account WHERE id=1")
+        cur.execute("SELECT state_json FROM paper_daily_account WHERE id=?", (ACCOUNT_IDS[account],))
         row = cur.fetchone()
     return json.loads(row[0]) if row else None
 
 
-def _save(account: dict, now: datetime, target: dict, prices: dict, eq: float, bench: float) -> None:
+def _save(name: str, account: dict, now: datetime, target: dict, prices: dict, eq: float, bench: float) -> None:
     from app.db import db_cursor
     stamp = now.astimezone(MSK).strftime("%Y-%m-%d %H:%M:%S")
     with db_cursor() as cur:
-        cur.execute("INSERT OR REPLACE INTO paper_daily_account(id, state_json, updated_at) VALUES (1, ?, ?)",
-                    (json.dumps(account), stamp))
-        cur.execute("INSERT INTO paper_daily_log(ts, week_key, target_json, prices_json, equity, benchmark_equity) "
-                    "VALUES (?,?,?,?,?,?)",
-                    (stamp, account["last_week"], json.dumps(target), json.dumps(prices), eq, bench))
+        cur.execute("INSERT OR REPLACE INTO paper_daily_account(id, state_json, updated_at) VALUES (?, ?, ?)",
+                    (ACCOUNT_IDS[name], json.dumps(account), stamp))
+        cur.execute("INSERT INTO paper_daily_log(ts, week_key, target_json, prices_json, equity, benchmark_equity, account) "
+                    "VALUES (?,?,?,?,?,?,?)",
+                    (stamp, account["last_week"], json.dumps(target), json.dumps(prices), eq, bench, name))
 
 
-def run_step(now: datetime, closes: Callable[[], Dict[str, List[float]]],
-             live_prices: Callable[[], Dict[str, float]]) -> Optional[str]:
-    """Один шаг: 'rebalanced', 'no_history', 'no_prices' или None (сейчас делать нечего)."""
+def run_step(now: datetime, closes: Callable[[], Dict[str, List[float]]], live_prices: Callable[[], Dict[str, float]],
+             account: str = "A", top: int = TOP_N, cash_ticker: Optional[str] = None,
+             dividends: Optional[Callable[[dict, str], float]] = None) -> Optional[str]:
+    """Один шаг счёта: 'rebalanced', 'no_history', 'no_prices' или None (сейчас делать нечего).
+
+    cash_ticker — кеш лежит в этом фонде, он же эталон; без него эталон — равные веса всех бумаг.
+    dividends(holdings, с_даты) — выплаты после налога за время с прошлого ребаланса, зачисляются до него.
+    """
     if not in_window(now):
         return None
-    account = _load()
+    name, state = account, _load(account)
     week = week_key(now)
-    if account and account["last_week"] == week:
+    if state and state["last_week"] == week:
         return None
     history = closes()
-    target = target_weights(history)
+    target = target_weights(history, top)
     if target is None:
         return "no_history"
+    if not target and cash_ticker:
+        target = {cash_ticker: 1.0}
     prices = live_prices()
-    known = set(history) | set(target) | set((account or {}).get("holdings", {}))
+    known = set(history) | set(target) | set((state or {}).get("holdings", {}))
+    if cash_ticker:
+        known.add(cash_ticker)
     if any(not prices.get(t) for t in known):
         return "no_prices"
-    if account is None:
-        account = {"cash": START_EQUITY, "holdings": {}, "last_week": None,
-                   "benchmark": {"cash": START_EQUITY, "holdings": {}}}
-        rebalance(account["benchmark"], {t: 1.0 / len(history) for t in history}, prices)
-    rebalance(account, target, prices)
-    account["last_week"] = week
-    _save(account, now, target, {t: prices[t] for t in known}, equity(account, prices), equity(account["benchmark"], prices))
+    if state is None:
+        state = {"cash": START_EQUITY, "holdings": {}, "last_week": None, "last_date": None,
+                 "benchmark": {"cash": START_EQUITY, "holdings": {}}}
+        bench = {cash_ticker: 1.0} if cash_ticker else {t: 1.0 / len(history) for t in history}
+        rebalance(state["benchmark"], bench, prices)
+    elif dividends and state.get("last_date"):
+        state["cash"] += dividends(state["holdings"], state["last_date"])
+        state["benchmark"]["cash"] += dividends(state["benchmark"]["holdings"], state["last_date"])
+    rebalance(state, target, prices)
+    state["last_week"] = week
+    state["last_date"] = now.astimezone(MSK).strftime("%Y-%m-%d")
+    _save(name, state, now, target, {t: prices[t] for t in known}, equity(state, prices), equity(state["benchmark"], prices))
     return "rebalanced"
 
 
-def status() -> Optional[dict]:
+def status(account: str = "A") -> Optional[dict]:
     """Состояние счёта на момент последнего ребаланса; None — счёт ещё не открыт."""
     from app.db import db_cursor
-    account = _load()
-    if account is None:
+    state = _load(account)
+    if state is None:
         return None
     with db_cursor() as cur:
-        cur.execute("SELECT ts, equity, benchmark_equity FROM paper_daily_log ORDER BY id DESC LIMIT 1")
+        cur.execute("SELECT ts, equity, benchmark_equity FROM paper_daily_log WHERE account=? ORDER BY id DESC LIMIT 1", (account,))
         row = cur.fetchone()
-    return {"holdings": account["holdings"], "cash": account["cash"], "last_week": account["last_week"],
+    return {"holdings": state["holdings"], "cash": state["cash"], "last_week": state["last_week"],
             "ts": row[0], "equity": row[1], "benchmark_equity": row[2]}
 
 
-def history() -> list:
+def history(account: str = "A") -> list:
     from app.db import db_cursor
     with db_cursor() as cur:
-        cur.execute("SELECT ts, week_key, target_json, equity, benchmark_equity FROM paper_daily_log ORDER BY id")
+        cur.execute("SELECT ts, week_key, target_json, equity, benchmark_equity FROM paper_daily_log WHERE account=? ORDER BY id",
+                    (account,))
         return [dict(r) for r in cur.fetchall()]

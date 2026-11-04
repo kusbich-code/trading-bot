@@ -545,6 +545,10 @@ def init_db():
             benchmark_equity REAL NOT NULL
         )
         """)
+        try:
+            cur.execute("ALTER TABLE paper_daily_log ADD COLUMN account TEXT DEFAULT 'A'")
+        except Exception:
+            pass
         cur.execute("""
         CREATE TABLE IF NOT EXISTS ml_virtual_paths (
             virtual_id INTEGER PRIMARY KEY,

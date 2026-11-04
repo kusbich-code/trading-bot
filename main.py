@@ -3662,22 +3662,90 @@ def _paper_daily_prices() -> dict:
     return out
 
 
+def _paper_instruments(client) -> dict:
+    """Тикер -> (uid, лот) для акций TQBR и фонда денежного рынка; кеш на время одного шага счёта."""
+    from app.ml.paper_daily import CASH_TICKER
+    out = {s.ticker: (s.uid, s.lot) for s in client.instruments.shares().instruments
+           if s.class_code == "TQBR" and s.currency == "rub"}
+    for e in client.instruments.etfs().instruments:
+        if e.ticker == CASH_TICKER and e.class_code == "TQTF":
+            out[e.ticker] = (e.uid, e.lot)
+    return out
+
+
+def _paper_b_closes(client, instruments: dict) -> dict:
+    """Закрытия 40 самых ликвидных акций. Раз в неделю: по запросу на бумагу с паузой, чтобы не мешать лимиту API."""
+    from app.ml.paper_daily import CASH_TICKER, LIQUID_B, select_liquid
+    now = datetime.now(timezone.utc)
+    bars, closes = {}, {}
+    for ticker, (uid, lot) in instruments.items():
+        if ticker == CASH_TICKER:
+            continue
+        _rate.throttle_if_needed()
+        _rate.record("GetCandles")
+        candles = client.market_data.get_candles(instrument_id=uid, from_=now - timedelta(days=200), to=now,
+                                                 interval=CandleInterval.CANDLE_INTERVAL_DAY).candles
+        done = [c for c in candles if c.is_complete and c.time.astimezone(MSK_TZ).weekday() < 5]
+        rows = _candles_to_dicts(done)
+        bars[ticker] = [(float(d["close"]), float(d.get("volume") or 0), lot) for d in rows]
+        closes[ticker] = [float(d["close"]) for d in rows]
+        time.sleep(0.6)
+    return {t: closes[t] for t in select_liquid(bars, LIQUID_B)}
+
+
+def _paper_b_prices(client, instruments: dict) -> dict:
+    """Последние цены всех бумаг счёта B одним запросом."""
+    from t_tech.invest.utils import quotation_to_decimal as _q
+    _rate.record("GetLastPrices")
+    by_uid = {uid: ticker for ticker, (uid, _) in instruments.items()}
+    resp = client.market_data.get_last_prices(instrument_id=list(by_uid))
+    return {by_uid[p.instrument_uid]: float(_q(p.price)) for p in resp.last_prices if p.instrument_uid in by_uid and float(_q(p.price)) > 0}
+
+
+def _paper_dividends(client, instruments: dict, holdings: dict, since: str) -> float:
+    """Выплаты после налога 13% по бумагам счёта с даты прошлого ребаланса. Последний день покупки попал в период владения."""
+    from t_tech.invest.utils import money_to_decimal as _m
+    start = datetime.strptime(since, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
+    total = 0.0
+    for ticker, qty in holdings.items():
+        if ticker not in instruments:
+            continue
+        for d in client.instruments.get_dividends(instrument_id=instruments[ticker][0], from_=start, to=now).dividends:
+            if d.last_buy_date and start <= d.last_buy_date <= now and d.dividend_net.currency == "rub":
+                total += float(_m(d.dividend_net)) * qty * 0.87
+    return total
+
+
 def _paper_daily_worker():
-    """Фоновый поток бумажного счёта: раз в минуту проверяет, не пора ли недельный ребаланс. Ордеров не отправляет."""
+    """Фоновый поток бумажных счетов: раз в минуту проверяет, не пора ли недельный ребаланс. Ордеров не отправляет."""
     from app.ml import paper_daily
     from app.notify import notify as _notify
-    last_result = None
+    last = {}
+
+    def report(name, result):
+        if result and result != last.get(name):
+            log.info("Бумажный счёт %s: %s", name, result)
+        last[name] = result
+        if result == "rebalanced":
+            st = paper_daily.status(name)
+            held = ", ".join(sorted(st["holdings"])) or "кеш"
+            _notify(f"📄 Бумажный счёт {name}: {held}\nИтог {st['equity']:,.0f} ₽, эталон {st['benchmark_equity']:,.0f} ₽")
+
     while True:
         try:
-            if _bot_client_cls is not None and is_moex_session_open():
-                result = paper_daily.run_step(datetime.now(timezone.utc), _paper_daily_closes, _paper_daily_prices)
-                if result and result != last_result:
-                    log.info("Бумажный счёт: %s", result)
-                last_result = result
-                if result == "rebalanced":
-                    st = paper_daily.status()
-                    held = ", ".join(sorted(st["holdings"])) or "кеш"
-                    _notify(f"📄 Бумажный счёт: {held}\nИтог {st['equity']:,.0f} ₽, эталон {st['benchmark_equity']:,.0f} ₽")
+            now = datetime.now(timezone.utc)
+            if _bot_client_cls is not None and is_moex_session_open() and paper_daily.in_window(now):
+                states = {n: paper_daily._load(n) for n in paper_daily.ACCOUNT_IDS}
+                week = paper_daily.week_key(now)
+                if any(not s or s["last_week"] != week for s in states.values()):
+                    with _bot_client_cls(settings.TINVEST_TOKEN) as client:
+                        instruments = _paper_instruments(client)
+                        divs = lambda holdings, since: _paper_dividends(client, instruments, holdings, since)
+                        report("A", paper_daily.run_step(now, _paper_daily_closes, _paper_daily_prices, dividends=divs))
+                        report("B", paper_daily.run_step(
+                            now, lambda: _paper_b_closes(client, instruments), lambda: _paper_b_prices(client, instruments),
+                            account="B", top=paper_daily.TOP_B, cash_ticker=paper_daily.CASH_TICKER, dividends=divs))
         except Exception as e:
             log.warning("Бумажный счёт: %s", e)
         time.sleep(60)

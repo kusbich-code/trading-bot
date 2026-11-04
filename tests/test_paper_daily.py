@@ -146,3 +146,74 @@ def test_new_entries_closed_by_default(tmp_db):
 def test_new_entries_open_when_enabled(tmp_db):
     tmp_db.set_setting("new_entries_enabled", "1")
     assert tmp_db.new_entries_enabled() is True
+
+
+# ── счёт B: топ-8 из 40 ликвидных, кеш в фонде денежного рынка, дивиденды ──
+
+def b_step(now, closes=None, px=None, dividends=None):
+    return pd.run_step(now, closes=closes or (lambda: series()), live_prices=px or (lambda: {**prices(), "LQDT": 10.0}),
+                       account="B", top=8, cash_ticker="LQDT", dividends=dividends)
+
+
+def falling():
+    return series(growth={t: -0.003 - 0.0001 * i for i, t in enumerate(TICKERS)})
+
+
+def test_account_b_holds_top_eight(tmp_db):
+    assert b_step(datetime(2026, 11, 5, 10, 5, tzinfo=MSK)) == "rebalanced"
+    s = pd.status("B")
+    assert sorted(s["holdings"]) == sorted(TICKERS[:8])
+
+
+def test_account_b_parks_cash_in_money_market_when_market_falls(tmp_db):
+    b_step(datetime(2026, 11, 5, 10, 5, tzinfo=MSK), closes=falling)
+    assert list(pd.status("B")["holdings"]) == ["LQDT"]
+
+
+def test_account_b_benchmark_is_money_market(tmp_db):
+    now = datetime(2026, 11, 5, 10, 5, tzinfo=MSK)
+    b_step(now)
+    b_step(now + timedelta(days=7), px=lambda: {**prices(), "LQDT": 11.0})
+    assert pd.status("B")["benchmark_equity"] == pytest.approx(pd.START_EQUITY * 1.1, rel=0.002)
+
+
+def test_accounts_are_independent(tmp_db):
+    now = datetime(2026, 11, 5, 10, 5, tzinfo=MSK)
+    step(now)
+    assert b_step(now) == "rebalanced"
+    assert len(pd.status("A")["holdings"]) == 3 and len(pd.status("B")["holdings"]) == 8
+    assert len(pd.history("A")) == 1 and len(pd.history("B")) == 1
+
+
+def test_dividends_credited_before_next_rebalance(tmp_db):
+    now = datetime(2026, 11, 5, 10, 5, tzinfo=MSK)
+    b_step(now)
+    before = pd.status("B")["equity"]
+    seen = []
+
+    def divs(holdings, since):
+        seen.append(since)
+        return 1000.0 if "T0" in holdings else 0.0
+    b_step(now + timedelta(days=7), dividends=divs)
+    assert pd.status("B")["equity"] > before + 900
+    assert seen[0] == "2026-11-05"
+
+
+def test_select_liquid_uses_turnover_and_needs_history():
+    bars = {"BIG": [(100.0, 1000, 1)] * 60, "SMALL": [(10.0, 10, 1)] * 60, "LOT": [(10.0, 1000, 100)] * 60,
+            "NEW": [(1000.0, 1000, 1)] * 10}
+    assert pd.select_liquid(bars, 2) == ["LOT", "BIG"]
+
+
+# ── дашборд виртуальных сделок: только сделки без срока ──
+
+def test_legacy_time_limited_rows_hidden_from_live_views(tmp_db):
+    from app.ml import virtual_trades as vt
+    with tmp_db.db_cursor() as cur:
+        for i, reason in enumerate(("TIMEOUT", "SESSION_END", "STOP_LOSS")):
+            cur.execute("INSERT INTO ml_virtual_trades(created_at, figi, ticker, strategy_mode, direction, entry_mid, entry_price, "
+                        "sl_pct, tp_pct, commission_pct, status, exit_reason, label, pnl_pct, source) "
+                        "VALUES ('2026-10-30 12:00:00','F','SBER','trend','BUY',100,100,0.01,0.02,0.05,'CLOSED',?,0,-0.1,'LIVE')", (reason,))
+    assert [r["exit_reason"] for r in vt.recent(10)] == ["STOP_LOSS"]
+    assert [r["grp"] for r in vt.summary()["by_reason"]] == ["STOP_LOSS"]
+    assert vt.counters()["n"] == 1
