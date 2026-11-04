@@ -30,9 +30,35 @@ TRAIN_VIRTUAL_FROM = "2026-10-31 15:00:00"
 VIRTUAL_MATURITY_DAYS = 5
 
 
+def _maturity_cutoff() -> str:
+    return (datetime.now(tz=_MSK) - timedelta(days=VIRTUAL_MATURITY_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def training_summary() -> dict:
+    """Для вкладки «Модель»: сколько строк идёт в обучение, сколько ждёт вызревания и что исключено."""
+    from app.db import db_cursor
+    from_, cutoff = TRAIN_VIRTUAL_FROM, _maturity_cutoff()
+    with db_cursor() as cur:
+        cur.execute(f"SELECT COALESCE(source, 'REAL'), COUNT(*) FROM ml_features WHERE label IS NOT NULL AND {clean_label_sql()} GROUP BY 1")
+        usable = {r[0]: r[1] for r in cur.fetchall()}
+        cur.execute("SELECT COUNT(*), MIN(timestamp) FROM ml_features WHERE source='VIRTUAL' AND label IS NOT NULL AND timestamp > ? AND timestamp >= ?",
+                    (cutoff, from_))
+        waiting, oldest = cur.fetchone()
+        cur.execute("SELECT COUNT(*) FROM ml_features WHERE source='BACKFILL' AND label IS NOT NULL")
+        backfill = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM ml_features WHERE source='VIRTUAL' AND label IS NOT NULL AND timestamp < ?", (from_,))
+        old_virtual = cur.fetchone()[0]
+    next_ready = None
+    if oldest:
+        next_ready = (datetime.strptime(oldest, "%Y-%m-%d %H:%M:%S") + timedelta(days=VIRTUAL_MATURITY_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
+    return {"real": usable.get("REAL", 0), "virtual_ready": usable.get("VIRTUAL", 0), "virtual_waiting": waiting or 0, "next_ready": next_ready,
+            "backfill_excluded": backfill or 0, "virtual_excluded": old_virtual or 0, "usable": sum(usable.values()),
+            "min_samples": MIN_SAMPLES, "maturity_days": VIRTUAL_MATURITY_DAYS, "min_lift_pct": int(MIN_LIFT * 100)}
+
+
 def clean_label_sql() -> str:
     """Условие строк, пригодных для обучения: штатный выход, без исторической добивки, виртуальные только вызревшие."""
-    cutoff = (datetime.now(tz=_MSK) - timedelta(days=VIRTUAL_MATURITY_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
+    cutoff = _maturity_cutoff()
     return ("(exit_reason IS NULL OR exit_reason IN ('STOP_LOSS','TAKE_PROFIT','END_OF_DAY')) "
             "AND COALESCE(source, 'REAL') <> 'BACKFILL' "
             f"AND (COALESCE(source, 'REAL') <> 'VIRTUAL' OR (timestamp >= '{TRAIN_VIRTUAL_FROM}' AND timestamp <= '{cutoff}'))")

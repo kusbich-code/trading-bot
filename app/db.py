@@ -1995,12 +1995,14 @@ def list_profile_parallel_strategies(profile_id: int) -> list:
         sid  = row["strategy_id"]
         cfg  = get_strategy_settings(sid)
         instr = list_strategy_instruments(sid)
+        # Бот торгует по уровням инструмента, а значения по умолчанию в настройках стратегии устаревают
+        live = next((i for i in instr if str(i.get("enabled", 1)) in ("1", "true") and i.get("stop_loss_pct")), {})
         result.append({
             "strategy_id":   sid,
             "name":          row["name"],
             "tradingmode":   cfg.get("tradingmode", "trend"),
-            "sl_pct":        cfg.get("default_stop_loss_pct", "0.0025"),
-            "tp_pct":        cfg.get("default_take_profit_pct", "0.005"),
+            "sl_pct":        live.get("stop_loss_pct") or cfg.get("default_stop_loss_pct", "0.0025"),
+            "tp_pct":        live.get("take_profit_pct") or cfg.get("default_take_profit_pct", "0.005"),
             "instruments":   [{"figi": i["figi"], "ticker": i.get("ticker",""), "name": i.get("name",""), "enabled": i.get("enabled",1)} for i in instr],
             "instrument_count": len(instr),
         })

@@ -1031,6 +1031,16 @@ def api_strategy_overview(quotes: int = 1):
     return JSONResponse(data)
 
 
+@app.post("/api/mode/set")
+async def api_mode_set(request: Request):
+    """Переключатель режима бота из дашборда. Менять можно только режимы из paper_view.MODE_CONTROLS."""
+    body = await request.json()
+    try:
+        return JSONResponse(paper_view.set_mode(str(body.get("key", "")), bool(body.get("enabled"))))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @app.get("/api/dashboard/summary")
 def api_dashboard_summary():
     return JSONResponse(summary_payload())
@@ -2502,6 +2512,17 @@ async def api_analyst_optimize_apply(result_id: int):
 
 # ── control ───────────────────────────────────────────────────────────────────
 
+@app.post("/api/control/dashboard-restart")
+def api_dashboard_restart():
+    """Перезапуск дашборда: процесс завершается, systemd поднимает его снова (Restart=always) с новым кодом."""
+    if platform.system() != "Linux":
+        return JSONResponse({"ok": False, "message": "Перезапуск работает только на сервере под systemd"})
+    from app.db import log_event as _log_event
+    _log_event("MODE", "Дашборд перезапущен из интерфейса", level="WARNING")
+    threading.Timer(1.0, os._exit, args=(0,)).start()
+    return JSONResponse({"ok": True, "message": "Дашборд перезапускается"})
+
+
 @app.post("/api/control/{action}")
 def api_control(action: str):
     return JSONResponse(run_control(action))
@@ -3329,6 +3350,8 @@ def api_ml_summary():
             data["active_universal"] = dict(zip([d[0] for d in _c.description], _am)) if _am else None
             # Применяет ли модель свои решения к торговле (теневой режим по умолчанию) и сколько строк пригодно для обучения
             data["ml_enforce"] = str(get_setting("ml_enforce", "0")).strip().lower() in ("1", "true", "yes")
+            from app.ml.model_trainer import training_summary as _training_summary
+            data["training_data"] = _training_summary()
             from app.ml.model_trainer import clean_label_sql as _clean_label_sql
             _clean_sql = _clean_label_sql()
             _c.execute(f"SELECT COUNT(*) FROM ml_features WHERE label IS NOT NULL AND {_clean_sql}")

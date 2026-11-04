@@ -281,3 +281,119 @@ def test_explain_starts_with_closed_entries(web, monkeypatch):
     monkeypatch.setattr(webapp, "get_unified_open_positions", lambda *a, **k: [])
     reasons = client.get("/api/dashboard/bot-explain").json()["reasons"]
     assert "входы по акциям закрыты" in reasons[0]
+
+
+# ── управление из интерфейса (правило владельца: всё через дашборд) ──
+
+def test_overview_lists_controls_with_state(tmp_db):
+    o = pv.overview(NOW)
+    c = {x["key"]: x for x in o["controls"]}
+    assert set(c) == {"new_entries_enabled", "ml_enforce", "ml_auto_tune", "virtual_trades_enabled", "md_stream_workers"}
+    assert c["new_entries_enabled"]["on"] is False and c["virtual_trades_enabled"]["on"] is True
+    assert all(x["label"] and x["hint"] and x["confirm_on"] and x["confirm_off"] for x in o["controls"])
+
+
+def test_set_mode_changes_setting_and_writes_journal(tmp_db):
+    pv.set_mode("new_entries_enabled", True)
+    assert tmp_db.new_entries_enabled() is True
+    pv.set_mode("new_entries_enabled", False)
+    assert tmp_db.new_entries_enabled() is False
+    with tmp_db.db_cursor() as cur:
+        cur.execute("SELECT message FROM event_logs WHERE event_type='MODE' ORDER BY id")
+        messages = [r[0] for r in cur.fetchall()]
+    assert len(messages) == 2 and "включено" in messages[0] and "выключено" in messages[1]
+
+
+def test_set_mode_refuses_other_settings(tmp_db):
+    with pytest.raises(ValueError):
+        pv.set_mode("bot_enabled", False)
+    assert tmp_db.get_setting("bot_enabled", "1") == "1"
+
+
+def test_api_mode_switch(web):
+    webapp, client = web
+    r = client.post("/api/mode/set", json={"key": "ml_auto_tune", "enabled": True})
+    assert r.status_code == 200 and r.json()["on"] is True
+    assert client.get("/api/strategy/overview?quotes=0").json()["mode"]["auto_tune"] is True
+    assert client.post("/api/mode/set", json={"key": "estimated_commission_pct", "enabled": True}).status_code == 400
+
+
+def test_dashboard_restart_exits_process_for_systemd(web, monkeypatch):
+    webapp, client = web
+    started = []
+
+    class FakeTimer:
+        def __init__(self, delay, fn, args=()):
+            self.delay, self.fn, self.args = delay, fn, args
+
+        def start(self):
+            started.append(self)
+    monkeypatch.setattr(webapp.threading, "Timer", FakeTimer)
+    monkeypatch.setattr(webapp.platform, "system", lambda: "Linux")
+    r = client.post("/api/control/dashboard-restart")
+    assert r.status_code == 200 and r.json()["ok"] is True
+    assert len(started) == 1 and started[0].fn is webapp.os._exit and started[0].delay > 0
+
+
+def test_dashboard_restart_refused_outside_systemd(web, monkeypatch):
+    webapp, client = web
+    monkeypatch.setattr(webapp.platform, "system", lambda: "Windows")
+    r = client.post("/api/control/dashboard-restart")
+    assert r.status_code == 200 and r.json()["ok"] is False
+
+
+# ── результаты исследований видны в интерфейсе ──
+
+def test_overview_shows_research_results(tmp_db):
+    r = pv.overview(NOW)["research"]
+    verdicts = {x["verdict"] for x in r}
+    assert verdicts == {"paper", "rejected", "unproven"}
+    names = " ".join(x["idea"] for x in r)
+    assert "Календарные спреды" in names and "Вето модели" in names and "Таймфреймы" in names
+    assert all(x["result"] for x in r)
+
+
+# ── данные для обучения ──
+
+def add_feature(db, source, ts, label=1, reason="TAKE_PROFIT"):
+    with db.db_cursor() as cur:
+        cur.execute("INSERT INTO ml_features(figi, ticker, strategy_id, timestamp, label, source, exit_reason) "
+                    "VALUES ('F1','SBER',0,?,?,?,?)", (ts, label, source, reason))
+
+
+def test_training_summary_counts_ready_waiting_and_excluded(tmp_db, monkeypatch):
+    from app.ml import model_trainer as mt
+    monkeypatch.setattr(mt, "TRAIN_VIRTUAL_FROM", "2020-01-01 00:00:00")
+    old = (datetime.now(MSK) - timedelta(days=mt.VIRTUAL_MATURITY_DAYS + 2)).strftime("%Y-%m-%d %H:%M:%S")
+    fresh = (datetime.now(MSK) - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+    add_feature(tmp_db, "REAL", old)
+    add_feature(tmp_db, "VIRTUAL", old)
+    add_feature(tmp_db, "VIRTUAL", fresh)
+    add_feature(tmp_db, "VIRTUAL", fresh)
+    add_feature(tmp_db, "BACKFILL", old)
+    add_feature(tmp_db, "VIRTUAL", old, label=None, reason=None)      # ещё не закрыта
+    s = mt.training_summary()
+    assert s["real"] == 1 and s["virtual_ready"] == 1 and s["virtual_waiting"] == 2 and s["backfill_excluded"] == 1
+    assert s["usable"] == 2 and s["maturity_days"] == mt.VIRTUAL_MATURITY_DAYS and s["min_samples"] == mt.MIN_SAMPLES
+    assert s["next_ready"][:10] == (datetime.now(MSK) + timedelta(days=mt.VIRTUAL_MATURITY_DAYS - 1)).strftime("%Y-%m-%d")
+
+
+def test_ml_summary_has_training_data(web):
+    _, client = web
+    data = client.get("/api/ml/summary").json()
+    assert "usable" in data["training_data"] and "virtual_waiting" in data["training_data"]
+
+
+# ── таблица стратегий показывает настоящие SL/TP ──
+
+def test_parallel_list_shows_instrument_levels_not_defaults(tmp_db):
+    sid = tmp_db.create_strategy("Проверка уровней")
+    tmp_db.update_strategy_settings(sid, {"default_stop_loss_pct": "0.002", "default_take_profit_pct": "0.015"})
+    with tmp_db.db_cursor() as cur:
+        cur.execute("INSERT INTO strategy_instruments(strategy_id, figi, ticker, enabled, stop_loss_pct, take_profit_pct) "
+                    "VALUES (?, 'F9', 'SBER', 1, '0.012', '0.02')", (sid,))
+        cur.execute("INSERT INTO profiles(name, is_active) VALUES ('Проба', 0)")
+        pid = cur.lastrowid
+    tmp_db.add_profile_parallel_strategy(pid, sid)
+    row = tmp_db.list_profile_parallel_strategies(pid)[0]
+    assert float(row["sl_pct"]) == 0.012 and float(row["tp_pct"]) == 0.02

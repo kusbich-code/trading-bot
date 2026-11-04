@@ -1,6 +1,6 @@
 """Данные для вкладки «Стратегия»: показатели бумажных счетов, ближайший ребаланс и текущий режим бота.
 
-Только чтение. Параметры стратегии берутся из кода счётов, а не дублируются. Цифры расчёта на истории взяты из
+Читает и показывает; пишет только переключатели режимов из MODE_CONTROLS. Параметры стратегии берутся из кода счетов, а не дублируются. Цифры расчёта на истории взяты из
 docs/superpowers/plans/2026-11-04-beat-money-market-5x.md и подписаны в интерфейсе как расчёт, а не как прогноз.
 """
 import json
@@ -40,6 +40,49 @@ RISKS = [
     "Перевес над LQDT умеренный (t=1,99) при 5 годах истории и примерно 30 проверенных вариантах.",
     "Счёт считается на 1 000 000 ₽: на меньшем капитале целых контрактов не хватит на все инструменты.",
 ]
+
+
+# Что уже проверено (планы в docs/superpowers/plans/). verdict: paper — идёт на бумаге, unproven — не доказано, rejected — закрыто
+RESEARCH = [
+    {"idea": "Тренд по 9 фьючерсам, раз в неделю", "result": "+36,0% в год против +13,6% у LQDT, просадка −27%, t=1,99", "verdict": "paper", "note": "Счёт C"},
+    {"idea": "8 лидеров из 40 акций", "result": "+16,0% в год, просадка −22%; без 2023 года примерно равно LQDT", "verdict": "paper", "note": "Счёт B"},
+    {"idea": "3 лидера из 12 акций", "result": "+13,8% в год; без 2023 года +4,3% против +12,2% у LQDT", "verdict": "paper", "note": "Счёт A"},
+    {"idea": "Смесь таймфреймов на фьючерсах, раз в неделю", "result": "+32,4% против +24,8% у счёта C на том же периоде, перевес не подтверждён (t=0,92)", "verdict": "unproven", "note": "Перепроверить на новых данных"},
+    {"idea": "Минутные сигналы акций, 12 стратегий", "result": "−0,136% на сделку, случайные входы −0,141%", "verdict": "rejected", "note": "Реальные входы закрыты"},
+    {"idea": "Таймфреймы акций: 1 мин — день и их сочетания", "result": "66 проверок, ни один вариант не обогнал случайные входы", "verdict": "rejected", "note": ""},
+    {"idea": "Вето модели на минутных сделках", "result": "Связь прогноза с исходом 0,003; при P≥0,6 −0,509% на сделку против −0,155% без отбора", "verdict": "rejected", "note": "Модель в тени"},
+    {"idea": "Модели ранжирования акций", "result": "Бустинг +7,9%, линейная +9,3%, простой импульс +15,8% в год", "verdict": "rejected", "note": ""},
+    {"idea": "Концентрация, 1–5 лидеров из 40", "result": "Выбор +0,6…+18,9%, проверка +7,4…+30,1% в год, устойчивости нет", "verdict": "rejected", "note": ""},
+    {"idea": "Дивидендная доходность и секторы", "result": "На проверке от −0,6% до +9,5% в год при LQDT +19,5%", "verdict": "rejected", "note": ""},
+    {"idea": "Вход перед дивидендами и дрейф после отчётности", "result": "Перед дивидендами −0,56% за 15 дней, после отчётности устойчивого перевеса нет", "verdict": "rejected", "note": ""},
+    {"idea": "Лонг только ночью", "result": "−8,7% за 290 дней: издержки съедают ночной рост", "verdict": "rejected", "note": ""},
+    {"idea": "Плечо ×2, ×3, ×5 на акциях", "result": "+15,1%, +10,1%, −14,2% в год, просадка −52…−97%", "verdict": "rejected", "note": ""},
+    {"idea": "Календарные спреды фьючерсов", "result": "−7,5% и +4,0% в год при LQDT +9,0% и +19,5%", "verdict": "rejected", "note": ""},
+]
+
+# Переключатели режимов на дашборде. Только они могут меняться через API режимов.
+MODE_CONTROLS = (
+    {"key": "new_entries_enabled", "default": "0", "label": "Реальные входы по акциям", "danger_on": True,
+     "hint": "Бот открывает сделки в песочнице по 12 минутным стратегиям. Открытые позиции сопровождаются при любом положении.",
+     "confirm_on": "Бот начнёт открывать сделки по минутным сигналам акций. На истории они убыточны: −0,136% на сделку. Включить?",
+     "confirm_off": "Новые входы прекратятся, открытые позиции продолжат сопровождаться. Выключить?"},
+    {"key": "ml_enforce", "default": "0", "label": "Вето модели", "danger_on": True,
+     "hint": "Модель блокирует входы, меняет размер лота и закрывает убыточные позиции. Выключено: только записывает решения.",
+     "confirm_on": "Модель начнёт влиять на сделки. На проверке её вето не улучшило итог: −0,509% на сделку при P≥0,6. Включить?",
+     "confirm_off": "Модель перестанет влиять на сделки и вернётся в тень. Выключить?"},
+    {"key": "ml_auto_tune", "default": "0", "label": "Ночной подбор настроек", "danger_on": True,
+     "hint": "Ночью бот сам меняет режимы и SL/TP стратегий акций и может отключать бумаги. Подбор идёт без проверки на отложенных данных.",
+     "confirm_on": "Бот начнёт сам менять настройки стратегий акций каждую ночь. Раньше это останавливало торговлю по GAZP, ROSN и VTBR. Включить?",
+     "confirm_off": "Настройки стратегий будет менять только человек. Выключить?"},
+    {"key": "virtual_trades_enabled", "default": "1", "label": "Виртуальные сделки", "danger_on": False,
+     "hint": "Сбор данных для обучения: каждый новый сигнал отрабатывается без брокера и живёт до SL/TP без срока.",
+     "confirm_on": "Бот снова начнёт собирать виртуальные сделки для обучения. Включить?",
+     "confirm_off": "Новые данные для обучения перестанут собираться. Выключить?"},
+    {"key": "md_stream_workers", "default": "1", "label": "Поток цен для стратегий", "danger_on": False,
+     "hint": "Цены и стакан для стратегий акций идут потоком, а не запросами. Выключение заметно повышает расход лимита API.",
+     "confirm_on": "Стратегии снова будут получать цены потоком. Включить?",
+     "confirm_off": "Стратегии перейдут на запросы, расход лимита API вырастет. Выключить?"},
+)
 
 
 def _last_prices(name: str) -> Dict[str, float]:
@@ -168,9 +211,25 @@ def next_rebalance(now: datetime, holidays: Set[str], done: bool) -> dict:
     return {"at": day.isoformat(), "due_now": False}
 
 
-def _flag(key: str) -> bool:
+def _flag(key: str, default: str = "0") -> bool:
     from app.db import get_setting
-    return str(get_setting(key, "0")).strip().lower() in ("1", "true", "yes")
+    return str(get_setting(key, default)).strip().lower() in ("1", "true", "yes")
+
+
+def controls() -> list:
+    """Переключатели режимов с текущим состоянием."""
+    return [{**c, "on": _flag(c["key"], c["default"])} for c in MODE_CONTROLS]
+
+
+def set_mode(key: str, enabled: bool) -> dict:
+    """Меняет режим из дашборда и пишет это в журнал. Другие настройки так не меняются."""
+    from app.db import log_event, set_setting
+    control = next((c for c in MODE_CONTROLS if c["key"] == key), None)
+    if control is None:
+        raise ValueError(f"режим нельзя менять здесь: {key}")
+    set_setting(key, "1" if enabled else "0")
+    log_event("MODE", f"{control['label']}: {'включено' if enabled else 'выключено'} из дашборда", level="WARNING")
+    return {"key": key, "on": bool(enabled), "label": control["label"]}
 
 
 def overview(now: datetime, quotes: Optional[Dict[str, float]] = None) -> dict:
@@ -190,7 +249,9 @@ def overview(now: datetime, quotes: Optional[Dict[str, float]] = None) -> dict:
     return {
         "now": now.astimezone(MSK).isoformat(),
         "mode": {"sandbox": bool(getattr(settings, "TINVEST_USE_SANDBOX", True)), "entries_enabled": _flag("new_entries_enabled"),
-                 "ml_enforce": _flag("ml_enforce"), "auto_tune": _flag("ml_auto_tune")},
+                 "ml_enforce": _flag("ml_enforce"), "auto_tune": _flag("ml_auto_tune"), "virtual_enabled": _flag("virtual_trades_enabled", "1")},
+        "controls": controls(),
+        "research": RESEARCH,
         "primary": PRIMARY,
         "strategy": {
             "name": ACCOUNTS[PRIMARY]["title"], "status": "Бумажный счёт: ордера брокеру не отправляются",
