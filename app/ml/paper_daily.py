@@ -34,6 +34,11 @@ UNIVERSE = {
 }
 
 
+def pick_cash_instrument(etfs, ticker: str = CASH_TICKER):
+    """Торгуемая запись фонда: у брокера у одного тикера бывает несколько записей, старые без цен. None — такой нет."""
+    return next((e for e in etfs if e.ticker == ticker and e.api_trade_available_flag), None)
+
+
 def select_liquid(bars: Dict[str, list], n: int = LIQUID_B) -> List[str]:
     """Самые ликвидные бумаги по среднему обороту. bars: тикер -> [(закрытие, объём в лотах, лот), ...] по дням."""
     turnover = {}

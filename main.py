@@ -3664,12 +3664,13 @@ def _paper_daily_prices() -> dict:
 
 def _paper_instruments(client) -> dict:
     """Тикер -> (uid, лот) для акций TQBR и фонда денежного рынка; кеш на время одного шага счёта."""
-    from app.ml.paper_daily import CASH_TICKER
+    from app.ml.paper_daily import CASH_TICKER, pick_cash_instrument
     out = {s.ticker: (s.uid, s.lot) for s in client.instruments.shares().instruments
            if s.class_code == "TQBR" and s.currency == "rub"}
-    for e in client.instruments.etfs().instruments:
-        if e.ticker == CASH_TICKER and e.class_code == "TQTF":
-            out[e.ticker] = (e.uid, e.lot)
+    fund = pick_cash_instrument(client.instruments.etfs().instruments)
+    if fund is None:
+        raise RuntimeError(f"нет торгуемого фонда {CASH_TICKER}")
+    out[CASH_TICKER] = (fund.uid, fund.lot)
     return out
 
 

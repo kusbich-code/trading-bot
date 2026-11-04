@@ -217,3 +217,12 @@ def test_legacy_time_limited_rows_hidden_from_live_views(tmp_db):
     assert [r["exit_reason"] for r in vt.recent(10)] == ["STOP_LOSS"]
     assert [r["grp"] for r in vt.summary()["by_reason"]] == ["STOP_LOSS"]
     assert vt.counters()["n"] == 1
+
+
+def test_cash_instrument_is_the_tradable_listing():
+    class Etf:
+        def __init__(self, ticker, cls, flag, uid):
+            self.ticker, self.class_code, self.api_trade_available_flag, self.uid, self.lot = ticker, cls, flag, uid, 1
+    items = [Etf("LQDT", "TQTF", False, "dead"), Etf("OTHER", "SPBRU", True, "other"), Etf("LQDT", "SPBRU", True, "live")]
+    assert pd.pick_cash_instrument(items, "LQDT").uid == "live"
+    assert pd.pick_cash_instrument(items[:1], "LQDT") is None
