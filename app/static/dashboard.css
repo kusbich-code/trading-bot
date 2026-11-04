@@ -296,3 +296,44 @@ td:nth-child(4){
 .hovertext text, .hovertext tspan {
   fill: #111111 !important;
 }
+/* ── Полоса режима и вкладка «Стратегия» ─────────────────────────────────── */
+.topbar h1 .ver{font-size:14px;font-weight:400;color:var(--muted)}
+.mode-strip{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 14px;min-height:30px}
+.chip{display:inline-flex;align-items:center;gap:6px;padding:5px 10px;border-radius:999px;border:1px solid var(--line);background:rgba(17,32,60,.9);font-size:13px;color:var(--text)}
+.chip-good{border-color:#2fa36b}.chip-warn{border-color:#f0a500}.chip-bad{border-color:#bf4d5a;background:rgba(191,77,90,.16)}
+.tab-note{margin:0 0 14px;padding:10px 14px;border:1px solid var(--line);border-left:3px solid #f0a500;border-radius:10px;background:rgba(17,32,60,.75);color:var(--muted);font-size:13px;line-height:1.5}
+.st-hero{flex-direction:row;justify-content:space-between;align-items:flex-start;gap:18px;flex-wrap:wrap}
+.st-hero h2{margin:0 0 6px;font-size:24px}.st-lead{margin:0;color:var(--muted);max-width:760px;line-height:1.5}
+.st-next{min-width:220px}.st-value-sm{font-size:17px;font-weight:700;margin-top:4px}
+.st-pickers{margin:0 0 14px}.st-pickers .btn{padding:8px 12px;font-size:13px;white-space:normal;text-align:left}
+.st-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px;margin:0 0 18px}
+.st-tile{padding:14px;border:1px solid var(--line);border-radius:14px;background:linear-gradient(180deg,rgba(17,32,60,.97),rgba(14,27,52,.97));min-width:0}
+.st-label{color:var(--muted);font-size:12px;margin-bottom:6px}
+.st-value{font-size:22px;font-weight:800;line-height:1.2;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.st-sub{color:var(--muted);font-size:12px;margin-top:6px;line-height:1.4}
+.st-progress{height:6px;margin-top:10px;border-radius:999px;background:rgba(41,68,109,.55);overflow:hidden}
+.st-progress span{display:block;height:100%;background:var(--blue);border-radius:999px}
+.st-chart{height:320px;width:100%}
+.st-details{margin-top:12px}.st-details summary{cursor:pointer;color:var(--muted);font-size:13px;padding:6px 0}
+.st-empty p{margin:0 0 8px;line-height:1.5}
+table.st-table{min-width:0;font-size:13px}
+table.st-table td:nth-child(3){white-space:nowrap;min-width:0}
+table.st-table td:nth-child(4){font-family:inherit;font-size:inherit}
+table.st-table .num{text-align:right;font-variant-numeric:tabular-nums}
+table.st-table td.wrap{white-space:normal;min-width:180px}
+table.st-table .muted{color:var(--muted)}
+.st-row-active{background:rgba(76,141,255,.08)}
+.st-pick{padding:4px 10px;font-size:12px}
+.st-dl{display:grid;grid-template-columns:110px 1fr;gap:8px 14px;margin:0 0 14px;font-size:14px;line-height:1.45}
+.st-dl dt{color:var(--muted)}.st-dl dd{margin:0}
+.st-chips{display:flex;flex-wrap:wrap;gap:6px}
+.st-h3{margin:14px 0 8px;font-size:15px}
+.st-list{margin:0;padding-left:18px;color:var(--muted);font-size:13px;line-height:1.6}.st-list b{color:var(--text)}
+@media (max-width:640px){
+  .st-dl{grid-template-columns:1fr;gap:2px}.st-dl dt{margin-top:8px}
+  .st-chart{height:260px}.st-hero h2{font-size:20px}.st-value{font-size:19px}
+  .st-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+.st-two{margin-bottom:18px}.st-two .block{margin-bottom:0}.st-two .table-wrap{flex:none}
+.st-two{grid-template-columns:repeat(2,minmax(0,1fr))}.st-two>*{min-width:0}
+@media (max-width:980px){.st-two{grid-template-columns:minmax(0,1fr)}}

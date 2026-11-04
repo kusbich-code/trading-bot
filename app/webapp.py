@@ -39,6 +39,7 @@ from app.db import (
     get_instrument_market_state,
     get_instrument_market_state_map,
     get_setting,
+    new_entries_enabled,
     log_event,
     # profiles
     list_profiles,
@@ -84,6 +85,7 @@ from app.db import (
 
 from app.config import settings
 from app.version import __version__ as BOT_VERSION
+from app.ml import paper_view
 from app.services.tbank_client import (
     get_candles,
     get_candles_range,
@@ -514,6 +516,10 @@ def summary_payload() -> Dict[str, Any]:
         else:
             trading_status = "Ведётся"
 
+    entries_enabled = new_entries_enabled()
+    if service_status == "Запущен" and bot_enabled and not entries_enabled:
+        trading_status = "Входы закрыты"
+
     api_rpm       = int(get_runtime("api_rpm", "0") or 0)
     api_rpm_limit = int(get_runtime("api_rpm_limit", "600") or 600)
     # Счётчик main.py не включает вызовы webapp.py (~30-50 req/min)
@@ -529,6 +535,8 @@ def summary_payload() -> Dict[str, Any]:
     return {
         "status": service_status,
         "trading_status": trading_status,
+        "entries_enabled": entries_enabled,
+        "live_strategy": f"{paper_view.ACCOUNTS[paper_view.PRIMARY]['title']} · бумага",
         "bot_enabled": "1" if bot_enabled else "0",
         "trades_today": st.get("trades_count", 0),
         "daily_pnl_ui": fmt_money(st.get("total_pnl", 0)),
@@ -603,29 +611,31 @@ def dashboard_page():
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Панель управления торговым ботом v{v}</title>
+  <title>Торговый бот v{v}</title>
   <link rel="stylesheet" href="/static/dashboard.css?v={v}">
 </head>
 <body>
   <div class="app">
     <header class="topbar">
       <div>
-        <h1>Панель управления торговым ботом v{v}</h1>
-        <p class="sub">Профили содержат общие настройки и выбор стратегии. Стратегия содержит параметры риска и инструменты.</p>
+        <h1>Торговый бот <span class="ver">v{v}</span></h1>
+        <p class="sub">Что бот делает сейчас, на чём и с каким результатом. Реальные сделки и бумажные счета показаны раздельно.</p>
       </div>
-      <div id="routeDebugBadge" class="route-badge">Вкладка: главное</div>
     </header>
+    <div id="modeStrip" class="mode-strip" aria-live="polite"></div>
 
     <nav class="tabs">
-      <a href="#/главное" class="tab-link active" data-tab-link="главное">Главное</a>
-      <a href="#/портфель" class="tab-link" data-tab-link="портфель">Портфель</a>
-      <a href="#/настройки" class="tab-link" data-tab-link="настройки">Настройки</a>
-      <a href="#/история" class="tab-link" data-tab-link="история">История</a>
-      <a href="#/бэктест" class="tab-link" data-tab-link="бэктест">Бэктест</a>
-      <a href="#/аналитик" class="tab-link" data-tab-link="аналитик">Аналитик</a>
-      <a href="#/обучение" class="tab-link" data-tab-link="обучение">🧠 Обучение</a>
-      <a href="#/справка" class="tab-link" data-tab-link="справка">📖 Справка</a>
+      <a href="#/стратегия" class="tab-link active" data-tab-link="стратегия">Стратегия</a>
+      <a href="#/главное" class="tab-link" data-tab-link="главное">Счёт и сервис</a>
+      <a href="#/портфель" class="tab-link" data-tab-link="портфель">Портфель брокера</a>
+      <a href="#/история" class="tab-link" data-tab-link="история">История сделок</a>
+      <a href="#/настройки" class="tab-link" data-tab-link="настройки">Настройки акций</a>
+      <a href="#/бэктест" class="tab-link" data-tab-link="бэктест">Бэктест акций</a>
+      <a href="#/аналитик" class="tab-link" data-tab-link="аналитик">Перебор акций</a>
+      <a href="#/обучение" class="tab-link" data-tab-link="обучение">Модель</a>
+      <a href="#/справка" class="tab-link" data-tab-link="справка">Справка</a>
     </nav>
+    <div id="tabNote" class="tab-note hidden"></div>
 
     <div id="mainSummaryRow" style="display:none;margin-bottom:18px">
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;align-items:start;margin-bottom:6px">
@@ -646,7 +656,8 @@ def dashboard_page():
       <div id="newsWidgetInner" style="background:#0a1628;border:1px solid rgba(76,141,255,.12);border-radius:10px;overflow:hidden"></div>
     </div>
 
-    <section id="view-main" data-view="главное"></section>
+    <section id="view-strategy" data-view="стратегия"></section>
+    <section id="view-main" data-view="главное" class="hidden"></section>
     <section id="view-portfolio" data-view="портфель" class="hidden"></section>
     <section id="view-settings" data-view="настройки" class="hidden"></section>
     <section id="view-history" data-view="история" class="hidden"></section>
@@ -894,13 +905,18 @@ def api_market_session():
             diff += 86400
         return int(diff)
 
-    if not is_weekday:
-        # Выходной → до понедельника 10:00
-        days_ahead = (7 - now.weekday()) % 7 or 7
-        next_open = now.replace(hour=10, minute=0, second=0, microsecond=0) + _td(days=days_ahead)
-        secs = int((next_open - now).total_seconds())
+    from app.services.moex_calendar import get_moex_holidays_cached, next_open as _next_open
+    _holidays = get_moex_holidays_cached()
+    if now.strftime("%Y-%m-%d") in _holidays:
+        # Календарь бота считает день нерабочим: бот спит, даже если биржа проводит торги
+        _open = _next_open(now, _holidays)
+        session = {"type": "праздник", "label": "Праздник: бот не торгует", "until_label": "До работы бота",
+                   "seconds_left": int((_open - now).total_seconds()), "start": _open.strftime("%d.%m %H:%M"), "end": ""}
+    elif not is_weekday:
+        # Выходной → до ближайшего рабочего дня 10:00
+        _open = _next_open(now, _holidays)
         session = {"type": "выходной", "label": "Выходной", "until_label": "До открытия",
-                   "seconds_left": secs, "start": "10:00 пн", "end": "18:50"}
+                   "seconds_left": int((_open - now).total_seconds()), "start": _open.strftime("%d.%m %H:%M"), "end": ""}
     elif MAIN_START <= total_min < MAIN_END:
         session = {"type": "основная", "label": "Основная сессия", "until_label": "До закрытия",
                    "seconds_left": _secs_to(18, 50), "start": "10:00", "end": "18:50"}
@@ -955,6 +971,65 @@ def api_market_session():
 
 
 # ── dashboard data endpoints ───────────────────────────────────────────────────
+
+_paper_uid_cache: Dict[str, Any] = {"ts": 0.0, "map": {}}
+_paper_quote_cache: Dict[str, Any] = {"ts": 0.0, "key": None, "data": {}}
+
+
+def _paper_uid_map() -> Dict[str, str]:
+    """Тикер -> uid для акций, фондов и фьючерсов бумажных счетов; справочник меняется редко, кеш 6 часов."""
+    if _paper_uid_cache["map"] and time.time() - _paper_uid_cache["ts"] < 21600:
+        return _paper_uid_cache["map"]
+    from t_tech.invest import InstrumentStatus
+    from app.ml.paper_daily import pick_cash_instrument
+    from app.services.tbank_client import with_client
+    uid_map: Dict[str, str] = {}
+    with with_client() as client:
+        for f in client.instruments.futures(instrument_status=InstrumentStatus.INSTRUMENT_STATUS_ALL).instruments:
+            uid_map[f.ticker] = f.uid
+        for s in client.instruments.shares().instruments:
+            if s.class_code == "TQBR":
+                uid_map[s.ticker] = s.uid
+        fund = pick_cash_instrument(client.instruments.etfs().instruments)
+        if fund:
+            uid_map[fund.ticker] = fund.uid
+    _paper_uid_cache.update(ts=time.time(), map=uid_map)
+    return uid_map
+
+
+def _paper_quotes(tickers) -> Dict[str, float]:
+    """Последние цены бумаг счетов, только чтение; кеш 60 секунд, чтобы вкладка не нагружала лимит API."""
+    key = tuple(sorted(tickers))
+    if _paper_quote_cache["key"] == key and time.time() - _paper_quote_cache["ts"] < 60:
+        return _paper_quote_cache["data"]
+    uid_map = _paper_uid_map()
+    by_uid = {uid_map[t]: t for t in key if t in uid_map}
+    if not by_uid:
+        return {}
+    from app.services.tbank_client import quotation_to_decimal_safe, with_client
+    with with_client() as client:
+        last = client.market_data.get_last_prices(instrument_id=list(by_uid)).last_prices
+    data = {by_uid[p.instrument_uid]: float(quotation_to_decimal_safe(p.price)) for p in last if p.instrument_uid in by_uid}
+    data = {t: v for t, v in data.items() if v > 0}
+    _paper_quote_cache.update(ts=time.time(), key=key, data=data)
+    return data
+
+
+@app.get("/api/strategy/overview")
+def api_strategy_overview(quotes: int = 1):
+    """Режим бота, действующая стратегия и бумажные счета. Без цен брокера значения показываются на момент ребаланса."""
+    prices, error = None, None
+    if quotes:
+        try:
+            prices = _paper_quotes(paper_view.needed_tickers())
+        except Exception as e:
+            error = "Брокер не отдал цены, значения на момент ребаланса"
+            logger.warning("цены бумажных счетов: %s", e)
+    from datetime import datetime as _dt, timezone as _tz
+    data = paper_view.overview(_dt.now(_tz.utc), prices)
+    data["quotes_error"] = error
+    return JSONResponse(data)
+
 
 @app.get("/api/dashboard/summary")
 def api_dashboard_summary():
@@ -1347,6 +1422,10 @@ def api_balance_check():
     commission_pct = safe_decimal(s.get("estimated_commission_pct", "0.0005"))
     market_map = get_instrument_market_state_map()
 
+    # Пока входы закрыты, предупреждать о нехватке денег на вход незачем: нового входа всё равно не будет
+    if not new_entries_enabled():
+        return JSONResponse({"is_sandbox": is_sandbox, "entries_closed": True, "checks": [], "cash_ui": "—"})
+
     instruments = list_strategy_instruments(int(active_strategy_id)) if active_strategy_id else []
     enabled = [x for x in instruments if str(x.get("enabled", 0)) in ("1", "true")]
 
@@ -1437,6 +1516,8 @@ def api_dashboard_bot_explain():
         trade_only_session = get_profile_setting(active_profile_id, "trade_only_session", "0")
 
     reasons = []
+    if not new_entries_enabled():
+        reasons.append("Новые входы по акциям закрыты решением владельца: минутные сигналы не лучше случайных (настройка new_entries_enabled)")
     if str(settings_map.get("bot_enabled", "1")) != "1":
         reasons.append("Бот выключен в настройках")
     if not active_profile_id:

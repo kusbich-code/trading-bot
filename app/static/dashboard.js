@@ -11,7 +11,7 @@ let _lastQuotesMap = {};   // последние котировки — испо
 // Viewed profile in settings tab (may differ from active profile)
 let viewedProfileId = null;
 
-const ALLOWED_TABS = new Set(["главное", "портфель", "настройки", "история", "бэктест", "аналитик", "обучение", "справка"]);
+const ALLOWED_TABS = new Set(["стратегия", "главное", "портфель", "настройки", "история", "бэктест", "аналитик", "обучение", "справка"]);
 
 function esc(v) {
   // Экранирование для подстановки в HTML/атрибуты: названия бумаг, новости и тексты ошибок приходят извне
@@ -24,17 +24,17 @@ function yesnoValue(v) {
 
 function normalizeTab(raw) {
   const tab = String(raw || "").trim().toLowerCase();
-  return ALLOWED_TABS.has(tab) ? tab : "главное";
+  return ALLOWED_TABS.has(tab) ? tab : "стратегия";
 }
 
 function getTabFromHash() {
   const hash = window.location.hash || "";
-  if (!hash.startsWith("#/")) return "главное";
+  if (!hash.startsWith("#/")) return "стратегия";
   try {
     const raw = hash.slice(2).split("?")[0].split("/")[0];
     return normalizeTab(decodeURIComponent(raw));
   } catch (e) {
-    return "главное";
+    return "стратегия";
   }
 }
 
@@ -56,8 +56,6 @@ function setVisibleView(tab) {
     active.style.display = "block";
   }
   setActiveTabButton(normalized);
-  const badge = document.getElementById("routeDebugBadge");
-  if (badge) badge.textContent = "Вкладка: " + normalized;
 }
 
 function showToast(message, type = "info", timeout = 2600) {
@@ -190,7 +188,7 @@ function _numVal(text) {
 }
 
 function ensureViewsExist() {
-  const required = ["главное", "портфель", "настройки", "история", "бэктест", "аналитик", "обучение", "справка"];
+  const required = ["стратегия", "главное", "портфель", "настройки", "история", "бэктест", "аналитик", "обучение", "справка"];
   const root = document.querySelector(".app") || document.body;
   required.forEach((tab) => {
     if (!document.querySelector(`[data-view="${tab}"]`)) {
@@ -232,7 +230,7 @@ async function renderSummaryCards() {
   const host = document.getElementById("summaryCards");
   if (!host) return;
   const wrapper = document.getElementById("mainSummaryRow");
-  if (wrapper && wrapper.style.display === "none") wrapper.style.display = "block";
+  if (wrapper && wrapper.style.display === "none" && getTabFromHash() === "главное") wrapper.style.display = "block";
   const hasError = s.last_error && s.last_error !== "—";
 
   const newHtml = _buildSummaryHtml(s, hasError);
@@ -271,9 +269,9 @@ function _buildSummaryHtml(s, hasError) {
       <div class="sgrp-lbl">Сервис</div>
       <div class="sgrp-cards">
         ${_crd("Статус",    s.status)}
-        ${_crd("Торговля",  s.trading_status)}
-        ${_crd("Профиль",   s.active_profile_name || "—")}
-        ${_crd("Стратегия", s.active_strategy_name || "—")}
+        ${_crd("Реальная торговля", s.trading_status)}
+        ${_crd("Стратегия", s.live_strategy || "—")}
+        ${_crd("Акции, наблюдение", s.active_strategy_name || "—")}
       </div>
     </div>
     <div class="sgrp">
@@ -490,7 +488,7 @@ async function renderMainShell() {
     <section class="block" id="parallelStatusBlock" style="display:none">
       <div class="row between" style="margin-bottom:10px;flex-wrap:wrap;gap:8px">
         <div class="row" style="gap:8px;align-items:baseline;flex-wrap:wrap">
-          <h2 style="margin:0">Параллельные стратегии и инструменты</h2>
+          <h2 style="margin:0">Сигналы по акциям: только наблюдение</h2>
           <span class="note" style="font-size:11px">потоки · сигналы · графики</span>
         </div>
         <div class="row" style="gap:6px;flex-wrap:wrap;align-items:center">
@@ -519,7 +517,7 @@ async function renderMainShell() {
 
     <!-- ── Позиции ── -->
     <section class="block">
-      <div class="row between"><h2>Позиции <span class="note">(API брокера)</span></h2></div>
+      <div class="row between"><h2>Позиции реального счёта <span class="note">(API брокера)</span></h2></div>
       <div class="table-wrap">
         <table>
           <thead><tr><th>Тикер</th><th>Направление</th><th>Лотов</th><th>Вход</th><th>Тек. цена</th><th>Изм.%</th><th>ПнЛ</th><th>Сумма</th><th>SL</th><th>TP</th><th>Действие</th></tr></thead>
@@ -530,7 +528,7 @@ async function renderMainShell() {
 
     <!-- ── Сделки ── -->
     <section class="block">
-      <div class="row between"><h2>Сделки</h2><div class="note">Сегодня</div></div>
+      <div class="row between"><h2>Реальные сделки</h2><div class="note">Сегодня</div></div>
       <div class="table-wrap">
         <table>
           <thead><tr><th>Открыто</th><th>Закрыто</th><th>Длит.</th><th>Тикер</th><th>Напр.</th><th>Вход</th><th>Выход</th><th>Кол-во</th><th>ПнЛ</th><th>%</th><th>Причина</th></tr></thead>
@@ -576,7 +574,7 @@ function _applySessionData(d) {
   const vol  = d.volatility || {};
   const typeColors = {
     "основная": "#2fa36b", "вечерняя": "#7ab0e8",
-    "перерыв":  "#f0c04a", "закрыта":  "#9fb3d8", "выходной": "#9fb3d8",
+    "перерыв":  "#f0c04a", "закрыта":  "#9fb3d8", "выходной": "#9fb3d8", "праздник": "#9fb3d8",
   };
   const color = typeColors[sess.type] || "#9fb3d8";
 
@@ -587,7 +585,7 @@ function _applySessionData(d) {
     if (clr !== undefined) el.style.color = clr;
   };
   set("sessTypeVal", sess.label || "—", color);
-  set("sessTimeVal", sess.type !== "выходной" ? `${sess.start || "—"} – ${sess.end || "—"}` : "");
+  set("sessTimeVal", (sess.type === "выходной" || sess.type === "праздник") ? `откроется ${sess.start || "—"}` : `${sess.start || "—"} – ${sess.end || "—"}`);
   set("sessUntilLbl", sess.until_label || "До открытия");
   set("sessVolVal", vol.label || "—", vol.color || "#9fb3d8");
   set("sessAtrVal", vol.atr ? `ATR ${vol.atr.toFixed(2)}%` : "");
@@ -717,7 +715,7 @@ async function renderMainData() {
     const pills = document.getElementById("statusPills");
     if (pills) {
       pills.innerHTML = [
-        {label: status,                            ok: isOk,   warn: false},
+        {label: _botStatusLabel(status),           ok: isOk,   warn: false},
         {label: isSandbox ? "Sandbox" : "Боевой", ok: !isSandbox, warn: isSandbox},
       ].map(p => {
         const bg  = p.ok ? "rgba(47,163,107,.2)" : p.warn ? "rgba(255,185,50,.2)" : "rgba(100,100,120,.2)";
@@ -729,7 +727,7 @@ async function renderMainData() {
     if (grid) {
       const cells = [
         {k:"Профиль",         v: rt.activeprofilename  || "—"},
-        {k:"Стратегия",       v: rt.activestrategyname || "—"},
+        {k:"Стратегии акций", v: rt.activestrategyname || "—"},
         {k:"Последняя ошибка",v: rt.lasterror          || "—"},
       ];
       grid.innerHTML = cells.map(c => `
@@ -3586,6 +3584,12 @@ function renderHelpTab() {
   └──────────────────────────────────────────┘`);
 
   host.innerHTML = `
+  <section class="block">
+    <h2>Что сейчас делает бот</h2>
+    ${p("Действующая стратегия: тренд по 9 фьючерсам, бумажный счёт C. Ордера брокеру не отправляются, все параметры и результат на вкладке «Стратегия». Рядом на бумаге идут два счёта с акциями, A и B.")}
+    ${p("Реальные входы по акциям закрыты настройкой " + code("new_entries_enabled") + ": на 13 месяцах минутные сигналы не лучше случайных входов. Модель работает в тени, ночной подбор настроек выключен.")}
+    ${warn("Разделы ниже описывают контур акций и модель. Он остаётся для наблюдения и сбора данных, но новых сделок не открывает.")}
+  </section>
   <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px">
     ${["ml","phase1","strategies","positions","settings","faq"].map((s,i)=>`
     <button class="btn${i===0?' btn-primary':''}" onclick="
@@ -4989,6 +4993,288 @@ async function analystSave() {
   }
 }
 
+// ── Вкладка «Стратегия»: что бот делает на самом деле ──────────────────────
+
+let _stSelected = "C";
+let _stData = null;
+let _stHistoryOpen = false;
+
+const _ST_VERDICT = {
+  waiting: "Счёт ещё не открыт",
+  running: "Идёт проверка",
+  passed: "Критерий выполнен",
+  failed: "Критерий не выполнен",
+};
+// Серии графика проверены validate_palette.js на фоне панели
+const _ST_SERIES = { strategy: "#3987e5", benchmark: "#d95926" };
+
+const _TAB_NOTES = {
+  "главное": "Реальный счёт брокера в песочнице и служебное состояние бота. Сигналы по акциям здесь только для наблюдения: реальные входы закрыты, стратегия идёт на бумаге.",
+  "портфель": "Позиции реального счёта брокера в песочнице. Бумажные счета сюда не попадают, они на вкладке «Стратегия».",
+  "история": "Реальные сделки по акциям. Ребалансы бумажных счетов на вкладке «Стратегия».",
+  "настройки": "Настройки относятся к 12 стратегиям акций. Правила бумажных счетов заданы в коде и на время проверки не меняются.",
+  "бэктест": "Инструмент для минутных стратегий акций. Проверка 13 месяцев: ни один таймфрейм не обогнал случайные входы с теми же стопами.",
+  "аналитик": "Перебор параметров минутных стратегий акций. Лучший результат перебора подогнан под прошлое и сам по себе не доказывает преимущества.",
+  "обучение": "Модель работает в тени и на торговлю не влияет. Проверка вперёд по времени: связь прогноза с исходом 0,003, в сделках она не используется.",
+};
+
+function _stRub(v, frac = 0) {
+  return v == null ? "—" : Number(v).toLocaleString("ru-RU", { minimumFractionDigits: frac, maximumFractionDigits: frac }) + " ₽";
+}
+
+function _stNum(v, frac = 2) {
+  return v == null ? "—" : Number(v).toLocaleString("ru-RU", { maximumFractionDigits: frac });
+}
+
+function _stPct(v, d = 1) {
+  if (v == null) return "—";
+  const sign = v > 0 ? "+" : v < 0 ? "−" : "";
+  return sign + Math.abs(v).toFixed(d).replace(".", ",") + "%";
+}
+
+function _stSigned(v) {
+  if (v == null) return "—";
+  const sign = v > 0 ? "+" : v < 0 ? "−" : "";
+  return sign + Math.abs(Math.round(v)).toLocaleString("ru-RU") + " ₽";
+}
+
+function _stWhen(iso) {
+  // Время уже в МСК: не переводим в часовой пояс браузера
+  if (!iso) return "—";
+  const [d, t] = String(iso).split("T");
+  const [y, m, day] = d.split("-");
+  return `${day}.${m}.${y}, ${(t || "").slice(0, 5)} МСК`;
+}
+
+function _stDate(s) {
+  if (!s) return "—";
+  const [y, m, d] = String(s).slice(0, 10).split("-");
+  return `${d}.${m}.${y}`;
+}
+
+function _stAccount() {
+  return (_stData?.accounts || []).find((a) => a.name === _stSelected) || (_stData?.accounts || [])[0];
+}
+
+function _botStatusLabel(status) {
+  // Служебные коды бота переводим в слова, неизвестный код показываем как есть
+  const s = String(status ?? "");
+  if (s.startsWith("SLEEP_UNTIL_")) return "Сон до " + s.slice("SLEEP_UNTIL_".length);
+  return {SCANNING: "Сканирование", DISABLED: "Выключен", ERROR: "Ошибка", SESSION_STOPPED_BY_LIMIT: "Остановлен лимитом сессии"}[s] || s;
+}
+
+function renderModeStrip(o) {
+  const host = document.getElementById("modeStrip");
+  if (!host || !o) return;
+  const m = o.mode || {};
+  const chips = [];
+  chips.push(m.sandbox ? `<span class="chip">Песочница</span>` : `<span class="chip chip-bad">⚠ Боевой счёт</span>`);
+  chips.push(m.entries_enabled
+    ? `<span class="chip chip-bad">▶ Реальные входы по акциям открыты</span>`
+    : `<span class="chip chip-warn">⏸ Реальные входы по акциям закрыты</span>`);
+  chips.push(`<span class="chip chip-good">● ${esc(o.strategy?.name)}: бумажный счёт, без ордеров</span>`);
+  const r = o.next_rebalance || {};
+  chips.push(`<span class="chip">${r.due_now ? "Ребаланс: ожидается сейчас" : "Ребаланс: " + esc(_stWhen(r.at))}</span>`);
+  if (m.ml_enforce) chips.push(`<span class="chip chip-bad">▶ Вето модели включено</span>`);
+  if (m.auto_tune) chips.push(`<span class="chip chip-bad">▶ Ночной подбор настроек включён</span>`);
+  host.innerHTML = chips.join("");
+}
+
+function renderTabNote(tab) {
+  const host = document.getElementById("tabNote");
+  if (!host) return;
+  const text = _TAB_NOTES[tab];
+  host.textContent = text || "";
+  host.classList.toggle("hidden", !text);
+}
+
+async function refreshModeStrip() {
+  renderModeStrip(await apiGet("/api/strategy/overview?quotes=0"));
+}
+
+function _stTile(label, value, sub) {
+  return `<div class="st-tile"><div class="st-label">${esc(label)}</div><div class="st-value">${value}</div><div class="st-sub">${sub || "&nbsp;"}</div></div>`;
+}
+
+function _stTiles(a) {
+  const when = a.live ? "на сейчас, оценка" : `на момент ребаланса ${esc(_stDate(a.last_date))}`;
+  const progress = Math.min(100, (a.weeks / a.min_weeks) * 100);
+  return `<div class="st-grid">
+    ${_stTile("Итог счёта", _stRub(a.equity), `${when}; старт ${_stRub(a.start)}`)}
+    ${_stTile("Эталон", _stRub(a.benchmark_equity), esc(a.benchmark))}
+    ${_stTile("Результат", _stPct(a.return_pct), `эталон ${_stPct(a.benchmark_pct)}`)}
+    ${_stTile("Сверх эталона", _stPct(a.excess_pct), a.multiple != null ? "в " + _stNum(a.multiple, 1) + " раза к эталону" : "кратность пока не считается")}
+    ${_stTile("Просадка от пика", _stPct(a.max_drawdown_pct), `лимит −${_stNum(a.max_drawdown_limit, 0)}%`)}
+    <div class="st-tile"><div class="st-label">Проверка</div><div class="st-value">${a.weeks} из ${a.min_weeks} нед.</div>
+      <div class="st-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(progress)}"><span style="width:${progress}%"></span></div>
+      <div class="st-sub">${esc(_ST_VERDICT[a.verdict])}</div></div>
+  </div>`;
+}
+
+function _stPositions(a) {
+  const futures = a.name === "C";
+  if (!a.positions.length) {
+    return `<p class="note">${futures ? "Сейчас нет позиций: все инструменты без сигнала или без целого контракта." : "Сейчас деньги в кеше: корзина ниже своей средней за 50 дней."}</p>`;
+  }
+  const rows = a.positions.map((p) => `<tr>
+    <td>${esc(p.label)}</td><td>${esc(p.ticker)}</td><td><b>${esc(p.side)}</b></td>
+    <td class="num">${futures ? _stNum(Math.abs(p.contracts), 0) : _stNum(p.contracts, 2)}</td>
+    <td class="num">${_stNum(p.entry, 4)}</td><td class="num">${_stNum(p.price, 4)}</td>
+    <td class="num">${_stRub(p.notional)}</td><td class="num">${_stPct(p.weight_pct, 0).replace("+", "")}</td><td class="num">${_stSigned(p.pnl)}</td></tr>`).join("");
+  return `<div class="table-wrap"><table class="st-table"><thead><tr>
+    <th>Инструмент</th><th>Контракт</th><th>Сторона</th><th class="num">${futures ? "Контрактов" : "Штук"}</th>
+    <th class="num">Цена ребаланса</th><th class="num">Цена</th><th class="num">Объём</th><th class="num">Доля капитала</th><th class="num">С ребаланса</th>
+    </tr></thead><tbody>${rows}</tbody></table></div>
+    ${a.exposure_ratio != null && futures ? `<p class="note">Объём позиций ${_stNum(a.exposure_ratio, 2)} капитала. Обеспечение у брокера растёт в кризис, позиции могут потребовать довнесения.</p>` : ""}`;
+}
+
+function _stSignals(a, strategy) {
+  const dir = (v) => v > 0 ? "Рост" : v < 0 ? "Падение" : "Без изменений";
+  const sig = (v) => v > 0 ? "Лонг" : v < 0 ? "Шорт" : "Нет сигнала";
+  const rows = strategy.instruments.map((i) => {
+    const s = (a.signals || {})[i.id];
+    if (!s) return `<tr><td>${esc(i.label)}</td><td colspan="6" class="muted">нет данных</td></tr>`;
+    if (!s.eligible) return `<tr><td>${esc(i.label)}</td><td colspan="6" class="muted">мало истории, инструмент не торгуется</td></tr>`;
+    return `<tr><td>${esc(i.label)}</td><td>${dir(s.signs["20"])}</td><td>${dir(s.signs["60"])}</td><td><b>${sig(s.signal)}</b>${Math.abs(s.signal) < 1 && s.signal !== 0 ? " (половина)" : ""}</td>
+      <td class="num">${_stPct((s.vol || 0) * 100, 0).replace("+", "")}</td><td class="num">${_stPct((s.weight || 0) * 100, 0)}</td><td class="num">${_stNum(s.contracts, 0)}</td></tr>`;
+  }).join("");
+  return `<section class="block"><h2>Сигналы на момент ребаланса ${esc(_stDate(a.last_date))}</h2>
+    <p class="note">Окна спорят: сигнал ноль. Окна согласны: полный размер. Контрактов может быть 0, если один контракт больше нужного объёма.</p>
+    <div class="table-wrap"><table class="st-table"><thead><tr><th>Инструмент</th><th>За 20 дней</th><th>За 60 дней</th><th>Сигнал</th><th class="num">Волатильность</th><th class="num">Доля капитала</th><th class="num">Контрактов</th></tr></thead>
+    <tbody>${rows}</tbody></table></div></section>`;
+}
+
+function _stHistory(a) {
+  const rows = [...a.history].reverse().map((h) => {
+    const targets = Object.entries(h.target || {}).map(([k, v]) => `${k}${a.name === "C" ? " " + v : ""}`).join(", ");
+    return `<tr><td>${esc(_stDate(h.ts))}</td><td class="num">${_stRub(h.equity)}</td><td class="num">${_stRub(h.benchmark)}</td><td class="wrap">${esc(targets || "кеш")}</td></tr>`;
+  }).join("");
+  return `<details id="stHistory" class="st-details"${_stHistoryOpen ? " open" : ""}><summary>Таблица ребалансов (${a.history.length})</summary>
+    <div class="table-wrap"><table class="st-table"><thead><tr><th>Дата</th><th class="num">Счёт</th><th class="num">Эталон</th><th>Позиции после ребаланса</th></tr></thead><tbody>${rows}</tbody></table></div></details>`;
+}
+
+function _stDrawChart(a) {
+  const el = document.getElementById("stChart");
+  if (!el || !window.Plotly) return;
+  const xs = a.history.map((h) => h.ts);
+  const ys = a.history.map((h) => h.equity);
+  const bs = a.history.map((h) => h.benchmark);
+  if (a.live) {
+    xs.push(String(_stData.now).slice(0, 19).replace("T", " "));
+    ys.push(a.equity);
+    bs.push(a.benchmark_equity);
+  }
+  const line = (name, y, color) => ({
+    x: xs, y, name, type: "scatter", mode: xs.length < 30 ? "lines+markers" : "lines",
+    line: { color, width: 2, shape: "linear" }, marker: { color, size: 8, line: { color: "#101d35", width: 2 } },
+    hovertemplate: "%{y:,.0f} ₽<extra>" + name + "</extra>",
+  });
+  Plotly.react(el, [line("Счёт " + a.name, ys, _ST_SERIES.strategy), line("Эталон: " + a.benchmark, bs, _ST_SERIES.benchmark)], {
+    paper_bgcolor: "rgba(0,0,0,0)", plot_bgcolor: "rgba(0,0,0,0)", margin: { l: 80, r: 16, t: 8, b: 40 },
+    font: { color: "#9fb3d8", family: "Inter,Arial,sans-serif", size: 12 }, separators: ", ",
+    hovermode: "x unified", hoverlabel: { bgcolor: "#162746", bordercolor: "#29446d", font: { color: "#eef4ff" } },
+    legend: { orientation: "h", x: 0, y: 1.12, font: { color: "#eef4ff" } },
+    xaxis: { gridcolor: "rgba(41,68,109,.35)", linecolor: "#29446d", tickformat: "%d.%m.%y", hoverformat: "%d.%m.%Y %H:%M" },
+    yaxis: { gridcolor: "rgba(41,68,109,.35)", linecolor: "#29446d", tickformat: ",.0f", ticksuffix: " ₽" },
+  }, { displayModeBar: false, responsive: true, locale: "ru" });
+}
+
+function _stBacktest(strategy) {
+  const rows = strategy.backtest.map((b) => `<tr><td>${esc(b.period)}</td><td class="num">${_stPct(b.strategy)}</td><td class="num">${_stPct(b.benchmark)}</td>
+    <td class="num">${_stNum(b.multiple, 1)}</td><td class="num">${_stPct(b.drawdown, 0)}</td></tr>`).join("");
+  return `<div class="table-wrap"><table class="st-table"><thead><tr><th>Период</th><th class="num">Стратегия</th><th class="num">LQDT</th><th class="num">Во сколько раз</th><th class="num">Просадка</th></tr></thead><tbody>${rows}</tbody></table></div>
+    <p class="note">Расчёт на истории, а не прогноз: реальных сделок по этой стратегии ещё не было.</p>`;
+}
+
+function _stAccounts(o) {
+  const rows = o.accounts.map((a) => `<tr class="${a.name === _stSelected ? "st-row-active" : ""}">
+    <td><button class="btn st-pick" onclick="stSelectAccount('${esc(a.name)}')">${esc(a.name)}</button></td>
+    <td class="wrap"><b>${esc(a.title)}</b><br><span class="muted">${esc(a.role)}, ${esc(a.universe)}</span></td>
+    <td class="num">${_stRub(a.equity)}</td><td class="num">${_stPct(a.return_pct)}</td><td class="num">${_stPct(a.benchmark_pct)}</td>
+    <td class="num">${_stPct(a.max_drawdown_pct)}</td><td class="num">${a.weeks} / ${a.min_weeks}</td><td>${esc(_ST_VERDICT[a.verdict])}</td></tr>`).join("");
+  return `<div class="table-wrap"><table class="st-table"><thead><tr><th></th><th>Счёт</th><th class="num">Итог</th><th class="num">Результат</th><th class="num">Эталон</th><th class="num">Просадка</th><th class="num">Недель</th><th>Статус</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
+function _stRules(o) {
+  const p = o.strategy.params;
+  const primary = o.accounts.find((a) => a.name === o.primary);
+  const items = [
+    ["Что делает", "По каждому инструменту берёт знак доходности за " + p.windows.join(" и ") + " дней и усредняет: лонг, шорт или без позиции"],
+    ["Размер", `Обратно волатильности за ${p.vol_days} дней, риск ${p.risk_pct}% в год на портфель инструментов, не больше ${_stNum(p.max_weight, 0)} капиталов на инструмент`],
+    ["Когда", `${p.cadence}, ${p.window}`],
+    ["Контракт", `Самый ликвидный; за ${p.roll_days} дней до экспирации переход на следующий, оплачиваются обе стороны`],
+    ["Издержки", `${_stNum(p.cost_pct, 2)}% от оборота`],
+    ["Капитал", `${_stRub(p.capital)}, целые контракты`],
+    ["Кеш", `В ${esc(p.benchmark)} на часть капитала вне обеспечения (${p.margin_share_pct}% объёма считаются занятыми)`],
+    ["Успех", `Не раньше ${primary.min_weeks} недель: обгон LQDT при просадке не больше ${_stNum(primary.max_drawdown_limit, 0)}%. До этого реальных ордеров нет`],
+  ];
+  const chips = o.strategy.instruments.map((i) => `<span class="chip">${esc(i.label)}</span>`).join("");
+  return `<dl class="st-dl">${items.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join("")}</dl><div class="st-chips">${chips}</div>`;
+}
+
+function _stElsewhere(o) {
+  const m = o.mode;
+  return `<ul class="st-list">
+    <li><b>Акции, минутные стратегии:</b> ${m.entries_enabled ? "реальные входы открыты" : "реальные входы закрыты"}. На 13 месяцах они не лучше случайных входов: −0,136% и −0,141% на сделку.</li>
+    <li><b>Модель:</b> ${m.ml_enforce ? "вето включено" : "работает в тени, на сделки не влияет"}. На 10 739 сделках вперёд по времени связь прогноза с исходом 0,003.</li>
+    <li><b>Ночной подбор настроек:</b> ${m.auto_tune ? "включён" : "выключен"}, настройки меняет человек.</li>
+    <li><b>Виртуальные сделки:</b> собирают данные для обучения, живут до SL/TP без срока, в результат счёта не входят.</li>
+  </ul>`;
+}
+
+async function renderStrategyTab() {
+  const host = document.getElementById("view-strategy");
+  if (!host) return;
+  if (!_stData) host.innerHTML = `<div class="note" style="padding:24px">Загрузка…</div>`;
+  const o = await apiGet("/api/strategy/overview");
+  _stData = o;
+  renderModeStrip(o);
+  const history = document.getElementById("stHistory");
+  if (history) _stHistoryOpen = history.open;
+  const a = _stAccount();
+  const r = o.next_rebalance || {};
+  const pick = o.accounts.map((x) => `<button class="btn ${x.name === a.name ? "btn-primary" : ""}" aria-pressed="${x.name === a.name}" onclick="stSelectAccount('${esc(x.name)}')">Счёт ${esc(x.name)}: ${esc(x.title)}</button>`).join("");
+  const body = a.opened ? `
+    ${_stTiles(a)}
+    ${o.quotes_error ? `<p class="note">⚠ ${esc(o.quotes_error)}.</p>` : ""}
+    <section class="block"><h2>Счёт и эталон</h2>
+      <div id="stChart" class="st-chart" role="img" aria-label="График счёта ${esc(a.name)} и эталона, значения в таблице ребалансов ниже"></div>
+      ${_stHistory(a)}
+    </section>
+    <section class="block"><h2>Позиции на бумаге</h2>${_stPositions(a)}</section>
+    ${a.name === "C" ? _stSignals(a, o.strategy) : ""}
+  ` : `
+    <section class="block st-empty">
+      <h2>Счёт ${esc(a.name)} ещё не открыт</h2>
+      <p>Первый ребаланс: <b>${r.due_now ? "ожидается сейчас" : esc(_stWhen(r.at))}</b>. До него результата нет, поэтому показателей здесь тоже нет.</p>
+      <p class="note">${esc(a.rule)}. Старт ${_stRub(a.start)}, эталон: ${esc(a.benchmark)}.</p>
+    </section>`;
+  host.innerHTML = `
+    <section class="block st-hero">
+      <div>
+        <h2>${esc(o.strategy.name)}</h2>
+        <p class="st-lead">${esc(o.strategy.status)}. Результат ниже не реальные деньги: это проверка правила на живых ценах.</p>
+      </div>
+      <div class="st-next"><div class="st-label">Следующий ребаланс</div><div class="st-value-sm">${r.due_now ? "ожидается сейчас" : esc(_stWhen(r.at))}</div></div>
+    </section>
+    <div class="row st-pickers" role="group" aria-label="Выбор счёта">${pick}</div>
+    ${body}
+    <section class="block"><h2>Все счета на проверке</h2>${_stAccounts(o)}</section>
+    <div class="two-cols st-two">
+      <section class="block"><h2>Правило</h2>${_stRules(o)}</section>
+      <section class="block"><h2>Что показал расчёт на истории</h2>${_stBacktest(o.strategy)}
+        <h3 class="st-h3">Риски</h3><ul class="st-list">${o.strategy.risks.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></section>
+    </div>
+    <section class="block"><h2>Что с остальным</h2>${_stElsewhere(o)}</section>
+  `;
+  if (a.opened) _stDrawChart(a);
+}
+
+function stSelectAccount(name) {
+  _stSelected = name;
+  renderStrategyTab().catch((e) => showToast(e.message, "error", 5000));
+}
+
 // ── Router ────────────────────────────────────────────────────────────────────
 
 async function applyRoute() {
@@ -4997,10 +5283,14 @@ async function applyRoute() {
     ensureViewsExist();
     setVisibleView(tab);
     toggleSummaryCardsVisibility();
+    renderTabNote(tab);
     document.title = tab;
-    if (tab === "главное") {
+    if (tab === "стратегия") {
+      await renderStrategyTab();
+    } else if (tab === "главное") {
       await renderMainShell();
       await renderMainData();
+      await renderSummaryCards();
     } else if (tab === "портфель") {
       await renderPortfolioTab();
     } else if (tab === "настройки") {
@@ -5035,7 +5325,7 @@ function bindRouter() {
   });
   window.addEventListener("hashchange", () => applyRoute());
   if (!window.location.hash || !window.location.hash.startsWith("#/")) {
-    window.location.hash = "#/" + encodeURIComponent("главное");
+    window.location.hash = "#/" + encodeURIComponent("стратегия");
   } else {
     applyRoute();
   }
@@ -5044,6 +5334,16 @@ function bindRouter() {
 function startRefreshLoops() {
   if (refreshTimersStarted) return;
   refreshTimersStarted = true;
+
+  // Стратегия: счета и цены (цены у брокера кешируются на 60 сек)
+  setInterval(async () => {
+    try { if (getTabFromHash() === "стратегия") await renderStrategyTab(); } catch {}
+  }, 30000);
+
+  // Полоса режима на всех вкладках
+  setInterval(async () => {
+    try { if (getTabFromHash() !== "стратегия") await refreshModeStrip(); } catch {}
+  }, 60000);
 
   // ── Тикеры + сигналы (самое важное — 3 сек) ──────────────────────────────
   setInterval(async () => {
@@ -5098,6 +5398,7 @@ function startRefreshLoops() {
 async function bootstrapDashboard() {
   // Экспортируем все обработчики в глобальный scope ДО любых await,
   // чтобы кнопки работали даже если API-запросы упадут с ошибкой.
+  window.stSelectAccount  = stSelectAccount;
   window.serviceAction    = serviceAction;
   window.closeOnePosition = closeOnePosition;
   window.closeAllPositionsConfirm = closeAllPositionsConfirm;
@@ -5136,8 +5437,7 @@ async function bootstrapDashboard() {
   window.createStrategy = createStrategy;
 
   bindRouter();
-  try { await renderSummaryCards(); } catch (e) { console.error("renderSummaryCards:", e); }
-  try { await applyRoute(); } catch (e) { console.error("applyRoute:", e); }
+  try { await refreshModeStrip(); } catch (e) { console.error("refreshModeStrip:", e); }
   startRefreshLoops();
 }
 

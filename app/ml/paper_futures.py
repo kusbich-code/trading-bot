@@ -84,24 +84,32 @@ def _sign_of(rows: list, window: int) -> float:
     return float((total > 1) - (total < 1))
 
 
-def target_weights(returns: Dict[str, Dict[str, float]]) -> Dict[str, float]:
-    """Вес инструмента как доля капитала, лонг или шорт. Только прошлые данные."""
+def signal_details(returns: Dict[str, Dict[str, float]]) -> Dict[str, dict]:
+    """Как получен вес каждого инструмента: знаки по окнам, средний сигнал, волатильность. Только прошлые данные."""
     table = _table(returns)
     n = max(sum(_eligible(rows) for rows in table.values()), 1)
-    weights = {}
+    details = {}
     for group, rows in table.items():
-        weights[group] = 0.0
+        item = {"eligible": False, "signs": {}, "signal": 0.0, "vol": None, "weight": 0.0}
+        details[group] = item
         if not _eligible(rows):
             continue
+        item["eligible"] = True
         recent = [v for v in rows[-VOL_DAYS:] if v is not None]
         mean = sum(recent) / len(recent)
         vol = math.sqrt(sum((v - mean) ** 2 for v in recent) / (len(recent) - 1)) * math.sqrt(252)
-        if vol <= 0:
-            continue
-        signal = sum(_sign_of(rows, k) for k in LOOKS) / len(LOOKS)
-        raw = signal * (TARGET / math.sqrt(n)) / vol
-        weights[group] = max(-MAX_WEIGHT, min(MAX_WEIGHT, raw))
-    return weights
+        item["vol"] = vol
+        item["signs"] = {str(k): _sign_of(rows, k) for k in LOOKS}
+        item["signal"] = sum(item["signs"].values()) / len(LOOKS)
+        if vol > 0:
+            raw = item["signal"] * (TARGET / math.sqrt(n)) / vol
+            item["weight"] = max(-MAX_WEIGHT, min(MAX_WEIGHT, raw))
+    return details
+
+
+def target_weights(returns: Dict[str, Dict[str, float]]) -> Dict[str, float]:
+    """Вес инструмента как доля капитала, лонг или шорт."""
+    return {group: item["weight"] for group, item in signal_details(returns).items()}
 
 
 def to_contracts(weights: Dict[str, float], equity: float, unit: Dict[str, float]) -> Dict[str, int]:
@@ -140,9 +148,12 @@ def run_step(now: datetime, load_market: Callable[[list], dict]) -> Optional[str
         income = max(equity - MARGIN_SHARE * exposure, 0.0) * (lq / state["lq"] - 1)
         equity += pnl + income
 
-    weights = target_weights(market["returns"])
-    wanted = to_contracts({g: w for g, w in weights.items() if g in active}, max(equity, 0.0),
+    signals = signal_details(market["returns"])
+    wanted = to_contracts({g: v["weight"] for g, v in signals.items() if g in active}, max(equity, 0.0),
                           {g: a["unit"] for g, a in active.items()})
+    for group, item in signals.items():
+        item["contracts"] = wanted.get(group, 0)
+        item["ticker"] = active.get(group, {}).get("ticker")
     cost = 0.0
     new_positions = {}
     for group in set(positions) | set(wanted):
@@ -161,7 +172,7 @@ def run_step(now: datetime, load_market: Callable[[list], dict]) -> Optional[str
     benchmark = START_EQUITY * lq / lq_start
     new_state = {"equity": equity, "cash": equity, "positions": new_positions, "lq": lq, "lq_start": lq_start,
                  "benchmark_equity": benchmark, "last_week": week, "last_date": now.astimezone(paper_daily.MSK).strftime("%Y-%m-%d"),
-                 "holdings": {p["ticker"]: p["qty"] for p in new_positions.values()}}
+                 "holdings": {p["ticker"]: p["qty"] for p in new_positions.values()}, "signals": signals}
     paper_daily._save(ACCOUNT, new_state, now, {g: p["qty"] for g, p in new_positions.items()},
                       {t: quotes[t] for t in needed}, equity, benchmark)
     return "rebalanced"

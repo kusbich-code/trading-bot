@@ -69,3 +69,14 @@ def _holidays_of_year(year: int) -> frozenset:
 def is_moex_holiday(day: str) -> bool:
     """Нерабочий праздничный день по дате YYYY-MM-DD, для любого года (в том числе прошлого)."""
     return day in _holidays_of_year(int(day[:4]))
+
+
+def next_open(now, holidays):
+    """Следующее открытие основной сессии (10:00 МСК) после текущего дня: пропускает выходные и праздники."""
+    from datetime import timedelta
+    day = now.replace(hour=10, minute=0, second=0, microsecond=0) + timedelta(days=1)
+    for _ in range(30):
+        if day.weekday() < 5 and day.strftime("%Y-%m-%d") not in holidays:
+            return day
+        day += timedelta(days=1)
+    return day
