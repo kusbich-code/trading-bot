@@ -5223,10 +5223,22 @@ function _stElsewhere(o) {
 }
 
 async function renderStrategyTab() {
-  const host = document.getElementById("view-strategy");
+  // Поиск по data-view: после git pull старый процесс отдаёт старую оболочку с новым JS, и вкладку создаёт ensureViewsExist
+  const host = document.querySelector('[data-view="стратегия"]');
   if (!host) return;
   if (!_stData) host.innerHTML = `<div class="note" style="padding:24px">Загрузка…</div>`;
-  const o = await apiGet("/api/strategy/overview");
+  let o;
+  try {
+    o = await apiGet("/api/strategy/overview");
+  } catch (e) {
+    if (!String(e.message).includes("404")) throw e;
+    host.classList.remove("block");
+    host.innerHTML = `<section class="block st-empty">
+      <h2>Дашборд ещё не перезапущен</h2>
+      <p>Файлы интерфейса уже новые, а сервер работает на старой версии, поэтому вкладка «Стратегия» пока недоступна. Остальные вкладки работают.</p>
+      <p>Выполните на сервере: <code>sudo systemctl restart dashboard</code></p></section>`;
+    return;
+  }
   _stData = o;
   renderModeStrip(o);
   const history = document.getElementById("stHistory");
