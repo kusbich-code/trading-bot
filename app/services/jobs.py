@@ -90,13 +90,19 @@ def _popen(cmd: List[str], **kw) -> subprocess.Popen:
     return subprocess.Popen(cmd, **kw)
 
 
+def _low_priority_prefix(posix: bool) -> List[str]:
+    """Процессор только после бота (nice). При нехватке памяти система остановит задание раньше бота (oom_score_adj)."""
+    if not posix:
+        return []
+    return ["sh", "-c", 'echo 800 > /proc/self/oom_score_adj; exec "$@"', "sh", "nice", "-n", "19"]
+
+
 def _command(name: str, days: Optional[int]) -> List[str]:
     job = JOBS[name]
     args = [str(ROOT / job["args"][0]), *job["args"][1:]]
     if job["days"]:
         args += ["--days", str(days)]
-    nice = ["nice", "-n", "19"] if os.name == "posix" else []
-    return [*nice, sys.executable, *args]
+    return [*_low_priority_prefix(os.name == "posix"), sys.executable, *args]
 
 
 def _clean_days(job: dict, days) -> Optional[int]:

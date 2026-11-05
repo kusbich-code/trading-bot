@@ -192,3 +192,9 @@ def test_real_process_runs_to_completion(tmp_path, monkeypatch):
     jobs.start("train_candidate")
     s = wait_status("train_candidate", "done", timeout=20)
     assert s["status"] == "done" and s["exit_code"] == 0 and "работает" in s["log"]
+
+
+def test_job_yields_cpu_and_memory_to_the_bot():
+    prefix = jobs._low_priority_prefix(posix=True)
+    assert "oom_score_adj" in " ".join(prefix) and prefix[-3:] == ["nice", "-n", "19"]
+    assert jobs._low_priority_prefix(posix=False) == []

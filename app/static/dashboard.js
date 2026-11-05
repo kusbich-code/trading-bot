@@ -5183,7 +5183,7 @@ function _stTiles(a) {
     ${_stTile("Итог счёта", _stRub(a.equity), `${when}; старт ${_stRub(a.start)}`)}
     ${_stTile("Эталон", _stRub(a.benchmark_equity), esc(a.benchmark))}
     ${_stTile("Результат", _stPct(a.return_pct), `эталон ${_stPct(a.benchmark_pct)}`)}
-    ${_stTile("Сверх эталона", _stPct(a.excess_pct), a.multiple != null ? "в " + _stNum(a.multiple, 1) + " раза к эталону" : "кратность пока не считается")}
+    ${_stTile("Сверх эталона", _stPct(a.excess_pct), a.multiple != null ? "в " + _stNum(a.multiple, 1) + " раза к эталону" : "кратность появится, когда эталон вырастет на 1%")}
     ${_stTile("Просадка от пика", _stPct(a.max_drawdown_pct), `лимит −${_stNum(a.max_drawdown_limit, 0)}%`)}
     <div class="st-tile"><div class="st-label">Проверка</div><div class="st-value">${a.weeks} из ${a.min_weeks} нед.</div>
       <div class="st-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(progress)}"><span style="width:${progress}%"></span></div>
@@ -5244,6 +5244,7 @@ function _stDrawChart(a) {
     ys.push(a.equity);
     bs.push(a.benchmark_equity);
   }
+  const spanDays = xs.length > 1 ? (new Date(xs[xs.length - 1].replace(" ", "T")) - new Date(xs[0].replace(" ", "T"))) / 86400000 : 0;
   const line = (name, y, color) => ({
     x: xs, y, name, type: "scatter", mode: xs.length < 30 ? "lines+markers" : "lines",
     line: { color, width: 2, shape: "linear" }, marker: { color, size: 8, line: { color: "#101d35", width: 2 } },
@@ -5254,7 +5255,7 @@ function _stDrawChart(a) {
     font: { color: "#9fb3d8", family: "Inter,Arial,sans-serif", size: 12 }, separators: ", ",
     hovermode: "x unified", hoverlabel: { bgcolor: "#162746", bordercolor: "#29446d", font: { color: "#eef4ff" } },
     legend: { orientation: "h", x: 0, y: 1.12, font: { color: "#eef4ff" } },
-    xaxis: { gridcolor: "rgba(41,68,109,.35)", linecolor: "#29446d", tickformat: "%d.%m.%y", hoverformat: "%d.%m.%Y %H:%M" },
+    xaxis: { gridcolor: "rgba(41,68,109,.35)", linecolor: "#29446d", tickformat: spanDays < 3 ? "%d.%m %H:%M" : "%d.%m.%y", nticks: 8, hoverformat: "%d.%m.%Y %H:%M" },
     yaxis: { gridcolor: "rgba(41,68,109,.35)", linecolor: "#29446d", tickformat: ",.0f", ticksuffix: " ₽" },
   }, { displayModeBar: false, responsive: true, locale: "ru" });
 }

@@ -104,6 +104,14 @@ def test_return_excess_and_multiple(tmp_db):
     assert v["multiple"] == pytest.approx(v["return_pct"] / 10.0)
 
 
+def test_multiple_is_hidden_while_benchmark_barely_moved(tmp_db):
+    pf.run_step(NOW, market(lq=2.0))
+    pf.run_step(NOW + timedelta(days=7), market(lq=2.0001, price=120.0))
+    v = pv.account_view("C")
+    assert v["benchmark_pct"] > 0 and v["return_pct"] > 0
+    assert v["multiple"] is None
+
+
 def test_drawdown_is_measured_from_the_peak(tmp_db):
     down = {"USD": series(80, -0.003), "Gold": series(80, -0.002), "Brent": series(80, -0.002)}
     pf.run_step(NOW, market(returns=down))                               # все позиции шорт

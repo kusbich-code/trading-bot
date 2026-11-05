@@ -26,6 +26,9 @@ LABELS = {"USD": "Доллар/рубль", "EUR": "Евро/рубль", "CNY":
           "Brent": "Нефть Brent", "NatGas": "Газ (США)", "Gold": "Золото", "Silver": "Серебро"}
 ORDER = ("USD", "EUR", "CNY", "IMOEX", "RTS", "Brent", "NatGas", "Gold", "Silver")
 
+# Кратность считается, когда эталон заметно сдвинулся: за первые часы деление на сотые доли процента даёт «в 245 раз»
+MULTIPLE_MIN_BENCHMARK_PCT = 1.0
+
 # Расчёт на истории, финалист: окна 20+60, риск 20% (план 2026-11-04-beat-money-market-5x.md)
 BACKTEST = [
     {"period": "Выбор, 2021-06 — 2023", "strategy": 38.5, "benchmark": 8.9, "multiple": 4.3, "drawdown": -24},
@@ -186,7 +189,7 @@ def account_view(name: str, quotes: Optional[Dict[str, float]] = None) -> dict:
         verdict = "passed" if return_pct > benchmark_pct and drawdown >= -meta["max_drawdown_limit"] else "failed"
     base.update(opened=True, weeks=weeks, equity=equity, equity_rebalance=at_rebalance, benchmark_equity=benchmark, live=view["live"],
                 return_pct=return_pct, benchmark_pct=benchmark_pct, excess_pct=return_pct - benchmark_pct,
-                multiple=return_pct / benchmark_pct if benchmark_pct > 0 else None, max_drawdown_pct=drawdown,
+                multiple=return_pct / benchmark_pct if benchmark_pct >= MULTIPLE_MIN_BENCHMARK_PCT else None, max_drawdown_pct=drawdown,
                 exposure_ratio=exposure / equity if equity > 0 else None, last_date=state.get("last_date"), last_week=state.get("last_week"),
                 positions=sorted(positions, key=lambda p: -p["notional"]), verdict=verdict, signals=state.get("signals", {}),
                 history=[{"ts": h["ts"], "equity": h["equity"], "benchmark": h["benchmark_equity"], "target": json.loads(h["target_json"])} for h in history])
