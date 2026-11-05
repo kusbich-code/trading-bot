@@ -128,9 +128,12 @@ def test_fetch_only_fills_cache_without_replay_or_db_writes(env, tmp_db, monkeyp
 
 def test_stops_when_memory_is_low(env, tmp_db, monkeypatch, capsys):
     monkeypatch.setattr(cli, "mem_available_mb", lambda *a, **k: 100)
-    assert run_cli(monkeypatch, "--apply") == 0
-    assert "ОСТАНОВКА" in capsys.readouterr().out
+    # неполный пересчёт не должен выглядеть на дашборде как успех
+    assert run_cli(monkeypatch, "--apply") == cli.INCOMPLETE
+    out = capsys.readouterr().out
+    assert "ОСТАНОВКА" in out and "НЕПОЛНЫЙ" in out
     assert counts(tmp_db) == (0, 0)
+    assert run_cli(monkeypatch, "--fetch-only") == cli.INCOMPLETE
 
 
 def test_mem_available_parser(tmp_path):
