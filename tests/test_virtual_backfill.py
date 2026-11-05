@@ -201,3 +201,71 @@ def test_store_batch_is_idempotent_and_separated(tmp_db, series):
     edge = (datetime.strptime(max(stamps), "%Y-%m-%d %H:%M:%S") - timedelta(days=mt.VIRTUAL_MATURITY_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
     X, y = mt.get_all_labeled_features()
     assert len(X) == len(y) == sum(1 for s in stamps if s <= edge)
+
+
+# ── память и скорость при длинной истории ────────────────────────────────────
+
+def test_series_keeps_numbers_in_compact_arrays():
+    from array import array
+    s = bf.make_series("F1", "SBER", synth(days=3))
+    assert isinstance(s.closes, array) and isinstance(s.volumes, array)
+    assert len(s.times) == len(s.closes) == len(s.dicts) > 0
+
+
+def test_candle_view_behaves_like_the_old_list_of_dicts():
+    raw = sorted(synth(days=3), key=lambda c: c["time"])
+    s = bf.make_series("F1", "SBER", raw)
+    assert s.dicts[3] == {k: raw[3][k] for k in ("open", "high", "low", "close", "volume", "time")}
+    assert s.dicts[-1]["close"] == raw[-1]["close"]
+    assert [c["close"] for c in s.dicts[1:4]] == [c["close"] for c in raw[1:4]]
+    assert [c["time"] for c in s.dicts] == [c["time"] for c in raw]
+    with pytest.raises(IndexError):
+        s.dicts[len(raw)]
+
+
+def test_candle_view_does_not_grow_without_limit():
+    s = bf.make_series("F1", "SBER", synth(days=30))
+    for i in range(len(s.dicts)):
+        s.dicts[i]
+    assert len(s.dicts._recent) <= bf._CandleDicts.KEEP < len(s.dicts)
+
+
+def test_hourly_history_covers_everything_features_need():
+    assert bf.HOURLY_KEEP >= 161                                         # 160 часов и формирующийся час
+
+
+def test_stop_on_low_memory_is_not_a_success(tmp_db, monkeypatch, capsys):
+    import sys
+    from contextlib import contextmanager
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+    import backfill_virtual as bv
+    from app.ml import virtual_universe as vu
+    from app.services import tbank_client as tc
+
+    @contextmanager
+    def fake_client():
+        yield object()
+
+    class Fetcher:
+        failed_days = []
+        requests = 0
+
+        def __init__(self, *a):
+            pass
+
+        def load(self, *a, **k):
+            return []
+
+    monkeypatch.setattr(tc, "with_client", fake_client)
+    monkeypatch.setattr(vu, "read_main_mode", lambda: ("trend", {}))
+    monkeypatch.setattr(vu, "main_loop_items", lambda: [])
+    monkeypatch.setattr(vu, "build_universe", lambda *a: [{"figi": "F1", "ticker": "SBER"}])
+    monkeypatch.setattr(bv, "CandleFetcher", Fetcher)
+    monkeypatch.setattr(bv, "mem_available_mb", lambda *a: 100)
+    monkeypatch.setattr(sys, "argv", ["backfill_virtual.py", "--days", "5"])
+    assert bv.main() == bv.INCOMPLETE
+    out = capsys.readouterr().out
+    assert "ОСТАНОВКА" in out and "НЕПОЛНЫЙ" in out
+    monkeypatch.setattr(sys, "argv", ["backfill_virtual.py", "--days", "5", "--fetch-only"])
+    assert bv.main() == bv.INCOMPLETE

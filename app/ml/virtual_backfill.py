@@ -20,6 +20,7 @@
 """
 import logging
 from bisect import bisect_left
+from array import array
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Dict, List, Optional, Tuple
@@ -37,6 +38,7 @@ MIN_CANDLES = 25
 INDICATOR_WINDOW_H = 3       # боевой запрос индикаторов берёт последние 3 часа
 SPREAD_PCT = 0.05            # спред добивки, % от цены (стакана в истории нет)
 WARMUP_DAYS = 8              # истории до первой точки нужно не меньше 160 часов для 4-часовых признаков
+HOURLY_KEEP = 170            # признакам нужны часы за последние 160 часов; вся история замедляла бы каждый сигнал
 DEFAULT_SL = 0.008
 DEFAULT_TP = 0.015
 ORDERBOOK_FEATURES = ("bid_pressure", "book_depth_ratio", "spread_pct")   # в истории неизвестны → NULL
@@ -44,14 +46,59 @@ ORDERBOOK_FEATURES = ("bid_pressure", "book_depth_ratio", "spread_pct")   # в �
 UTC = timezone.utc
 
 
+class _CandleDicts:
+    """Свечи как список словарей: так их ждут strategy_engine и build_features. В памяти лежат только массивы, словарь создаётся по запросу.
+
+    За 400 дней в ряду больше 400 тысяч минут: готовые словари занимали бы гигабайт на три ряда. Окно сдвигается на минуту, поэтому
+    последние словари хранятся, а не создаются заново.
+    """
+    __slots__ = ("_s", "_recent")
+    KEEP = 4096
+
+    def __init__(self, series: "Series"):
+        self._s = series
+        self._recent: Dict[int, dict] = {}
+
+    def __len__(self) -> int:
+        return len(self._s.times)
+
+    def _one(self, i: int) -> dict:
+        d = self._recent.get(i)
+        if d is None:
+            if len(self._recent) >= self.KEEP:
+                self._recent.clear()
+            s = self._s
+            d = {"open": s.opens[i], "high": s.highs[i], "low": s.lows[i], "close": s.closes[i], "volume": s.volumes[i], "time": s.times[i].isoformat()}
+            self._recent[i] = d
+        return d
+
+    def __getitem__(self, key):
+        if isinstance(key, slice):
+            return [self._one(i) for i in range(*key.indices(len(self)))]
+        i = key + len(self) if key < 0 else key
+        if not 0 <= i < len(self):
+            raise IndexError(key)
+        return self._one(i)
+
+    def __iter__(self):
+        return (self._one(i) for i in range(len(self)))
+
+
 @dataclass
 class Series:
-    """Минутные свечи одной бумаги: по возрастанию времени, только завершённые."""
+    """Минутные свечи одной бумаги: по возрастанию времени, только завершённые, без дублей. Числа в компактных массивах."""
     figi: str
     ticker: str
     times: List[datetime] = field(default_factory=list)      # начало минуты, UTC
-    dicts: List[dict] = field(default_factory=list)          # формат strategy_engine / build_features
-    ohlc: List[Tuple[float, float, float, float]] = field(default_factory=list)
+    opens: array = field(default_factory=lambda: array("d"))
+    highs: array = field(default_factory=lambda: array("d"))
+    lows: array = field(default_factory=lambda: array("d"))
+    closes: array = field(default_factory=lambda: array("d"))
+    volumes: array = field(default_factory=lambda: array("q"))
+    dicts: _CandleDicts = field(init=False, repr=False)       # формат strategy_engine / build_features
+
+    def __post_init__(self):
+        self.dicts = _CandleDicts(self)
 
 
 def _as_utc(t) -> Optional[datetime]:
@@ -82,8 +129,11 @@ def make_series(figi: str, ticker: str, raw: List[dict]) -> Series:
     s = Series(figi=figi, ticker=ticker)
     for t, o, h, l, cl, v in rows:
         s.times.append(t)
-        s.ohlc.append((o, h, l, cl))
-        s.dicts.append({"open": o, "high": h, "low": l, "close": cl, "volume": v, "time": t.isoformat()})
+        s.opens.append(o)
+        s.highs.append(h)
+        s.lows.append(l)
+        s.closes.append(cl)
+        s.volumes.append(v)
     return s
 
 
@@ -153,8 +203,8 @@ def _set_sector_returns(markers: Dict[str, Series], own_figi: str, t_close: date
         if mfigi == own_figi:
             continue
         hi = bisect_left(ms.times, t_close)          # свечи маркера, начавшиеся до момента сигнала
-        win = _window_dicts(ms, t_close, hi)
-        closes = [d["close"] for d in win]
+        lo = bisect_left(ms.times, t_close - timedelta(minutes=WINDOW_MIN), 0, hi)
+        closes = ms.closes[lo:hi]
         if len(closes) >= 6:
             rets = [(closes[i] - closes[i - 1]) / closes[i - 1] for i in range(1, len(closes))]
             update_sector_returns(mfigi, rets)
@@ -181,8 +231,7 @@ def replay_instrument(item: dict, series: Series, markers: Optional[Dict[str, Se
     cur: Optional[list] = None                   # формирующийся час: [start, o, h, l, c, v]
 
     for i, t_open in enumerate(series.times):
-        o, h, l, c = series.ohlc[i]
-        v = series.dicts[i]["volume"]
+        o, h, l, c, v = series.opens[i], series.highs[i], series.lows[i], series.closes[i], series.volumes[i]
         t_close = t_open + timedelta(minutes=1)
 
         # 1) бар проживается открытыми сделками, затем закрытие шортов по концу суток
@@ -198,6 +247,8 @@ def replay_instrument(item: dict, series: Series, markers: Optional[Dict[str, Se
         if cur is None or cur[0] != hs:
             if cur is not None:
                 hourly.append(_hourly_bar(*cur))
+                if len(hourly) > 2 * HOURLY_KEEP:
+                    del hourly[:-HOURLY_KEEP]
             cur = [hs, o, h, l, c, v]
         else:
             cur[2], cur[3], cur[4], cur[5] = max(cur[2], h), min(cur[3], l), c, cur[5] + v
@@ -218,7 +269,7 @@ def replay_instrument(item: dict, series: Series, markers: Optional[Dict[str, Se
                 continue
             score = float(res.get("score", 0))
             # признаки на момент сигнала: только данные до t_close
-            closes_3h = [d["close"] for d in series.dicts[bisect_left(series.times, t_close - timedelta(hours=INDICATOR_WINDOW_H), 0, i + 1):i + 1]]
+            closes_3h = list(series.closes[bisect_left(series.times, t_close - timedelta(hours=INDICATOR_WINDOW_H), 0, i + 1):i + 1])
             ind = indicators_from_closes(closes_3h)
             hourly_now = hourly + [_hourly_bar(*cur)]
             h96 = [b for b in hourly_now if b["_t"] > t_close - timedelta(hours=96)][-30:]

@@ -91,6 +91,7 @@ class CandleFetcher:
         return out
 
 
+INCOMPLETE = 2         # код выхода «сделано не всё»: задание на дашборде не покажет такой итог как успех
 MIN_FREE_MB = 450      # при меньшем запасе памяти скрипт останавливается, чтобы не вытеснить боевой бот (OOM)
 
 
@@ -205,6 +206,7 @@ def main() -> int:
     cache_dir = Path(args.cache_dir)
     total = Agg()
     written = 0
+    stopped = False
     t0 = time.time()
     with with_client() as client:
         fetcher = CandleFetcher(client, args.rpm, cache_dir)
@@ -214,13 +216,14 @@ def main() -> int:
                 free_mb = mem_available_mb()
                 if free_mb is not None and free_mb < MIN_FREE_MB:
                     print(f"ОСТАНОВКА: свободной памяти {free_mb} МБ < {MIN_FREE_MB} МБ. Повторите запуск позже (кеш сохранён).")
-                    return 0
+                    return INCOMPLETE
                 t1 = time.time()
                 fetcher.load(fg, load_first, load_last, keep=False)
                 print(f"[{name}] свечи за {n_days} дн в кеше ({time.time() - t1:.0f} с, запросов всего {fetcher.requests})", flush=True)
             print(f"ГОТОВО: запросов {fetcher.requests}, пропущенных дней {len(fetcher.failed_days)}, время {time.time() - t0:.0f} с")
             if fetcher.failed_days:
                 print("ПРОПУЩЕНЫ (повторите запуск):", fetcher.failed_days[:10])
+                return INCOMPLETE
             return 0
         markers = {}
         for mfigi in _SECTOR_MARKERS:
@@ -232,6 +235,7 @@ def main() -> int:
             if free_mb is not None and free_mb < MIN_FREE_MB:
                 print(f"ОСТАНОВКА: свободной памяти {free_mb} МБ < {MIN_FREE_MB} МБ, боевой бот важнее. "
                       f"Повторите запуск позже (уже загруженные дни и записанные эпизоды сохранены).")
+                stopped = True
                 break
             print(f"[{u['ticker']}] загрузка свечей…", flush=True)
             series = markers.get(u["figi"]) or bf.make_series(u["figi"], u["ticker"], fetcher.load(u["figi"], load_first, load_last))
@@ -266,6 +270,9 @@ def main() -> int:
         print(f"  записано в БД новых эпизодов: {written} (остальные уже были)")
     else:
         print("  Это пробный прогон. Для записи добавьте --apply (перед ним будет снят бэкап).")
+    if stopped or fetcher.failed_days:
+        print("ИТОГ НЕПОЛНЫЙ: обработаны не все бумаги или дни. Запустите ещё раз, записанное не задвоится.")
+        return INCOMPLETE
     return 0
 
 
