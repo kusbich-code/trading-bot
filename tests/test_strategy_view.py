@@ -596,3 +596,18 @@ def test_broker_operations_survive_int_enum(web, monkeypatch):
     assert buy["direction"] == "BUY" and buy["is_trade"] is True and buy["quantity"] == 7 and buy["payment"] == pytest.approx(-100.5)
     assert fee["is_fee"] is True and fee["is_trade"] is False
     assert deposit["is_trade"] is False and deposit["direction"] == ""
+
+
+def test_api_quality_answers_and_caches(web, monkeypatch):
+    webapp, client = web
+    monkeypatch.setattr(webapp, "_quality_cache", {"ts": 0.0, "data": None})
+    from app.ml import data_quality
+    calls = []
+    real = data_quality.report
+    monkeypatch.setattr(data_quality, "report", lambda: calls.append(1) or real())
+    data = client.get("/api/ml/quality").json()
+    assert {"sources", "checks", "by_day", "by_month", "reports", "maturity_days"} <= set(data)
+    client.get("/api/ml/quality")
+    assert len(calls) == 1
+    client.get("/api/ml/quality?fresh=1")
+    assert len(calls) == 2

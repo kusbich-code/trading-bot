@@ -232,3 +232,23 @@ def test_candle_view_does_not_grow_without_limit():
 
 def test_hourly_history_covers_everything_features_need():
     assert bf.HOURLY_KEEP >= 161                                         # 160 часов и формирующийся час
+
+
+def query_plan(db, sql):
+    with db.db_cursor() as cur:
+        cur.execute("EXPLAIN QUERY PLAN " + sql)
+        return " | ".join(r["detail"] for r in cur.fetchall())
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT atr_pct FROM ml_features WHERE source = 'REAL' ORDER BY id DESC LIMIT 10",
+    "SELECT ticker FROM ml_features WHERE label IS NOT NULL AND source = 'REAL' ORDER BY id DESC LIMIT 1",
+    "SELECT label FROM ml_features WHERE label IS NOT NULL AND timestamp >= '2026-01-01' AND source = 'REAL' ORDER BY id DESC LIMIT 20",
+    "SELECT MAX(timestamp) FROM ml_features WHERE source='BACKFILL'",
+    "SELECT COUNT(*) FROM ml_features WHERE figi='F1' AND strategy_id=1 AND label IS NOT NULL AND timestamp > '2026-01-01'",
+    "SELECT COUNT(*) FROM ml_virtual_trades WHERE source = 'BACKFILL'",
+    "SELECT id FROM ml_virtual_trades WHERE source = 'LIVE' ORDER BY id DESC LIMIT 20",
+])
+def test_frequent_queries_do_not_scan_the_whole_history(tmp_db, sql):
+    plan = query_plan(tmp_db, sql)
+    assert "USING" in plan and "INDEX" in plan and not plan.startswith("SCAN")

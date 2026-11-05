@@ -526,7 +526,7 @@ def prune_paths(days: int = 30) -> int:
 
 # Живые сделки без срока. Историческая добивка (BACKFILL) в срезах дашборда отдельно; строки с TIMEOUT и SESSION_END
 # остались от старых правил с лимитом времени (до v5.14.0): они в БД как архив, в обучение и срезы не идут.
-_LIVE = "COALESCE(source, 'LIVE') = 'LIVE' AND COALESCE(exit_reason, '') NOT IN ('TIMEOUT', 'SESSION_END')"
+_LIVE = "source = 'LIVE' AND COALESCE(exit_reason, '') NOT IN ('TIMEOUT', 'SESSION_END')"
 
 
 def recent(limit: int = 100) -> list:

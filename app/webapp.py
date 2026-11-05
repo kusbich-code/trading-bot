@@ -819,7 +819,7 @@ def api_market_session():
             _cv.execute("""
                 SELECT AVG(atr_pct), AVG(regime), AVG(sma_gap_pct)
                 FROM (SELECT atr_pct, regime, sma_gap_pct FROM ml_features
-                      WHERE COALESCE(source, 'REAL') = 'REAL' ORDER BY id DESC LIMIT 10)
+                      WHERE source = 'REAL' ORDER BY id DESC LIMIT 10)
             """)
             row = _cv.fetchone()
         if row and row[0]:
@@ -917,6 +917,20 @@ async def api_mode_set(request: Request):
         return JSONResponse(paper_view.set_mode(str(body.get("key", "")), bool(body.get("enabled"))))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+_quality_cache: Dict[str, Any] = {"ts": 0.0, "data": None}
+
+
+@app.get("/api/ml/quality")
+def api_ml_quality(fresh: int = 0):
+    """Качество данных обучения. Кеш 5 минут: отчёт просматривает всю таблицу признаков."""
+    if not fresh and _quality_cache["data"] is not None and time.time() - _quality_cache["ts"] < 300:
+        return JSONResponse(_quality_cache["data"])
+    from app.ml import data_quality
+    data = data_quality.report()
+    _quality_cache.update(ts=time.time(), data=data)
+    return JSONResponse(data)
 
 
 @app.get("/api/jobs")
@@ -3124,7 +3138,7 @@ def api_ml_summary():
                        SUM(CASE WHEN label=1 THEN 1 ELSE 0 END) as wins,
                        SUM(CASE WHEN label=0 THEN 1 ELSE 0 END) as losses,
                        SUM(CASE WHEN label IS NULL THEN 1 ELSE 0 END) as pending
-                FROM ml_features WHERE COALESCE(source, 'REAL') = 'REAL'
+                FROM ml_features WHERE source = 'REAL'
             """)
             row = _c.fetchone()
             data["features_stats"] = {
@@ -3159,7 +3173,7 @@ def api_ml_summary():
             _cols_sql = ", ".join(_FN)
             _c.execute(f"""
                 SELECT ticker, timestamp, label, pnl, {_cols_sql}
-                FROM ml_features WHERE label IS NOT NULL AND COALESCE(source, 'REAL') = 'REAL'
+                FROM ml_features WHERE label IS NOT NULL AND source = 'REAL'
                 ORDER BY id DESC LIMIT 1
             """)
             _ex = _c.fetchone()

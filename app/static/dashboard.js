@@ -3884,6 +3884,9 @@ function renderHelpTab() {
       "Перезапуск дашборда прерывает задание: статус будет «Прервано», задание можно запустить заново"
     ])}
 
+    ${h3("Качество данных")}
+    ${p("Вкладка «Модель», блок «Качество данных». Показывает объём по источникам, проверки достоверности (причины закрытия, дубли, пересечение с живым периодом, заполненность) и сравнение отчётов тренера. Рост числа строк ещё не значит, что модель стала лучше: это видно только в таблице «Стала ли модель лучше».")}
+
     ${h3("Сверка с брокером")}
     ${p("Вкладка «История сделок» → «Сверка с брокером». Показывает итог по операциям брокера и итог бота, а разницу раскладывает на комиссию, прочие списания и остальное. Если брокер не отвечает, вкладка так и скажет, остальная страница работает.")}
 
@@ -3926,6 +3929,7 @@ async function renderLearningTab() {
   try {
     const data = await apiGet("/api/ml/summary");
     host.innerHTML = _buildLearningHtml(data);
+    refreshMlQuality();
     await refreshMlJobs();
   } catch(e) {
     host.innerHTML = `<div class="banner-warning">Ошибка загрузки: ${esc(e.message)}</div>`;
@@ -4239,6 +4243,7 @@ function _buildLearningHtml(data) {
     ${statusBanner}
     ${_mlTrainingBlock(data)}
     ${_mlJobsShell()}
+    ${_mlQualityShell()}
     <div style="margin:14px 0 6px"><button class="btn btn-primary" onclick="mlRebalance()">⚡ Переобучить модель сейчас</button>
       <span class="muted" style="font-size:11px;margin-left:8px">обычно происходит автоматически в 00:00 МСК и каждые 10 новых сделок</span></div>
 
@@ -5355,6 +5360,62 @@ function _mlTrainingBlock(data) {
   </section>`;
 }
 
+function _mlQualityShell() {
+  return `<section class="block" id="mlQuality"><h2>Качество данных</h2>
+    <p class="note">Объём сам по себе не качество. Здесь три вопроса: сколько данных, можно ли им верить и стала ли от них модель лучше.</p>
+    <div id="mlQualityBody"><div class="note">Считаю…</div></div></section>`;
+}
+
+function _mlQualityHtml(q) {
+  const num = (v) => (v == null ? "—" : _stNum(v, 0));
+  const pct = (v) => (v == null ? "—" : _stNum(v, 1) + "%");
+  const net = (v, d = 3) => (v == null ? "—" : (v > 0 ? "+" : v < 0 ? "−" : "") + Math.abs(v).toFixed(d).replace(".", ",") + "%");
+  const delta = (v, d = 3, suffix = "") => (v == null ? "" : `<br><span class="muted">${v > 0 ? "+" : v < 0 ? "−" : ""}${Math.abs(v).toFixed(d).replace(".", ",")}${suffix} к прошлому</span>`);
+  const sources = (q.sources || []).map((s) => `<tr><td><b>${esc(s.label)}</b></td><td class="num">${num(s.rows)}</td><td class="num">${num(s.labeled)}</td>
+    <td class="num">${pct(s.win_pct)}</td><td class="num">${net(s.avg_net_pct)}</td><td>${esc(_stDate(s.first))} — ${esc(_stDate(s.last))}</td></tr>`).join("");
+  const mark = { true: ["Да", "chip-good"], false: ["Нет", "chip-bad"], null: ["Пока рано", ""] };
+  const checks = (q.checks || []).map((c) => {
+    const [text, cls] = mark[String(c.ok)] || mark.null;
+    return `<tr><td class="wrap">${esc(c.label)}<br><span class="muted">${esc(c.value)}</span></td><td><span class="chip ${cls}">${text}</span></td></tr>`;
+  }).join("");
+  const reports = (q.reports || []).map((r) => `<tr>
+    <td>${esc(_stDate(r.created_at))}</td><td class="num">${num(r.n_rows)}</td>
+    <td class="num">${r.spearman == null ? "—" : r.spearman.toFixed(4).replace(".", ",")}${delta(r.delta_spearman, 4)}</td>
+    <td class="num">${net(r.net_top5)}${delta(r.delta_net_top5, 3, " п.п.")}</td><td class="num">${net(r.ci_lo_top5)}</td>
+    <td class="num">${r.folds_positive_top5 == null ? "—" : r.folds_positive_top5 + " из " + r.folds}</td>
+    <td class="num">${net(r.all_net)}</td></tr>`).join("");
+  const days = (q.by_day || []).map((d) => `<tr><td>${esc(_stDate(d.day))}</td><td class="num">${num(d.created)}</td><td class="num">${num(d.closed)}</td>
+    <td class="num">${num(d.open)}</td><td class="num">${pct(d.win_pct)}</td><td>${d.mature ? "Вызрел" : "Ждёт"}</td></tr>`).join("");
+  const months = (q.by_month || []).map((m) => `<tr><td>${esc(m.month)}</td><td class="num">${num(m.rows)}</td><td class="num">${pct(m.win_pct)}</td><td class="num">${net(m.avg_net_pct)}</td></tr>`).join("");
+  const latest = (q.reports || [])[0];
+  return `<h3>Сколько данных</h3>
+    ${sources ? `<div class="table-wrap"><table class="st-table"><thead><tr><th>Источник</th><th class="num">Строк</th><th class="num">С исходом</th><th class="num">Прибыльных</th><th class="num">Средний итог</th><th>Период</th></tr></thead><tbody>${sources}</tbody></table></div>` : `<p class="note">Данных пока нет.</p>`}
+    <h3 style="margin-top:16px">Можно ли им верить</h3>
+    <div class="table-wrap"><table class="st-table"><thead><tr><th>Проверка</th><th>Итог</th></tr></thead><tbody>${checks}</tbody></table></div>
+    <h3 style="margin-top:16px">Стала ли модель лучше</h3>
+    ${latest ? `<p class="note"><b>Последний вывод тренера:</b> ${esc(latest.verdict || "нет")}.</p>
+      <div class="table-wrap"><table class="st-table"><thead><tr><th>Отчёт</th><th class="num">Строк</th><th class="num">Связь прогноза с исходом</th><th class="num">Верхние 5%, чистый итог</th><th class="num">Нижняя граница</th><th class="num">Периодов в плюсе</th><th class="num">Все сделки</th></tr></thead><tbody>${reports}</tbody></table></div>
+      <p class="note">Проверка идёт на более позднем времени, чем обучение. Польза доказана, только если нижняя граница выше нуля. Связь 0 означает, что прогноз ничего не предсказывает.</p>`
+    : `<p class="note">Отчётов пока нет: запустите задание «Обучить и проверить кандидата».</p>`}
+    <div class="st-two" style="margin-top:16px">
+      <div><h3>Живые сделки по дням</h3>${days ? `<div class="table-wrap"><table class="st-table"><thead><tr><th>День</th><th class="num">Новых</th><th class="num">Закрыто</th><th class="num">Открыто</th><th class="num">Прибыльных</th><th>В обучение</th></tr></thead><tbody>${days}</tbody></table></div>
+        <p class="note">Доля прибыльных у свежих дней завышена или занижена: долгие сделки ещё открыты. День идёт в обучение через ${q.maturity_days} дней.</p>` : `<p class="note">Живых сделок пока нет.</p>`}</div>
+      <div><h3>История по месяцам</h3>${months ? `<div class="table-wrap"><table class="st-table"><thead><tr><th>Месяц</th><th class="num">Строк</th><th class="num">Прибыльных</th><th class="num">Средний итог</th></tr></thead><tbody>${months}</tbody></table></div>` : `<p class="note">История ещё не пересчитана.</p>`}</div>
+    </div>
+    <p class="note">Посчитано ${esc(_stDate(q.as_of))} в ${esc(String(q.as_of).slice(11, 16))} МСК, обновляется не чаще раза в 5 минут.</p>`;
+}
+
+async function refreshMlQuality(fresh = false) {
+  const body = document.getElementById("mlQualityBody");
+  if (!body) return;
+  try {
+    const q = await apiGet("/api/ml/quality" + (fresh ? "?fresh=1" : ""));
+    body.innerHTML = _mlQualityHtml(q);
+  } catch (e) {
+    body.innerHTML = `<div class="banner-warning">Отчёт о качестве не загрузился: ${esc(e.message)}</div>`;
+  }
+}
+
 const _JOB_STATES = {
   idle: ["Не запускалось", ""], running: ["Идёт", "chip-warn"], done: ["Готово", "chip-good"], failed: ["Ошибка", "chip-bad"],
   stopped: ["Остановлено", ""], interrupted: ["Прервано перезапуском дашборда", "chip-bad"],
@@ -5423,6 +5484,7 @@ async function refreshMlJobs() {
       const fresh = _mlTrainingBlock(await apiGet("/api/ml/summary"));
       const block = document.getElementById("mlTrainingBlock");
       if (block && fresh) block.outerHTML = fresh;
+      await refreshMlQuality(true);
     } catch {}
   }
   _mlJobsRunning = running ? running.name : null;

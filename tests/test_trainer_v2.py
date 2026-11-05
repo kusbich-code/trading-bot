@@ -195,3 +195,17 @@ def test_format_report_is_readable(tmp_db):
     text = t2.format_report(rep)
     assert "ВЕРДИКТ" in text and "верхние" in text and "фолдов>0" in text
     assert not math.isnan(rep["all_net"])
+
+
+def test_load_dataset_reads_row_by_row_with_same_result(tmp_db):
+    """Чтение построчно: порядок, строки и признаки те же; строки без доходности вперёд не попадают."""
+    populate(tmp_db, 0.3, days=3, per_day=100)
+    with tmp_db.db_cursor() as cur:
+        cur.execute("UPDATE ml_virtual_trades SET fwd_ret_60m=NULL WHERE id IN (SELECT id FROM ml_virtual_trades ORDER BY id LIMIT 7)")
+        cur.execute("""SELECT v.fwd_ret_60m y, f.rsi FROM ml_features f JOIN ml_virtual_trades v ON v.id = f.virtual_id
+                       WHERE v.fwd_ret_60m IS NOT NULL ORDER BY CAST(strftime('%s', f.timestamp) AS INTEGER), f.id""")
+        rows = cur.fetchall()
+    ds = t2.load_dataset(60)
+    assert len(ds["y"]) == ds["X"].shape[0] == len(ds["figi"]) == 293 == len(rows)
+    assert ds["y"].tolist() == [r["y"] for r in rows]
+    assert isinstance(ds["figi"][0], str) and set(ds["source"].tolist()) <= {"BACKFILL", "VIRTUAL", "LIVE", "REAL"}

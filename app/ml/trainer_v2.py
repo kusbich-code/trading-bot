@@ -16,6 +16,7 @@ import json
 import logging
 import math
 import pickle
+import sys
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional, Tuple
 
@@ -75,7 +76,7 @@ def hgb_params() -> dict:
 def ticker_spreads(cur) -> Dict[str, float]:
     """Средний спред по бумагам (в % от цены) по живым виртуальным сделкам со входом по стакану."""
     cur.execute("""SELECT ticker, AVG(spread_pct) s FROM ml_virtual_trades
-                   WHERE COALESCE(source,'LIVE')='LIVE' AND fill_src='book' AND spread_pct IS NOT NULL
+                   WHERE source='LIVE' AND fill_src='book' AND spread_pct IS NOT NULL
                    GROUP BY ticker HAVING COUNT(*) >= 5""")
     return {r[0]: float(r[1]) for r in cur.fetchall()}
 
@@ -87,27 +88,36 @@ def load_dataset(horizon: int = 60, sources: Tuple[str, ...] = ("BACKFILL", "VIR
     if col not in ("fwd_ret_15m", "fwd_ret_30m", "fwd_ret_60m"):
         raise ValueError("horizon должен быть 15, 30 или 60")
     marks = ",".join("?" * len(sources))
+    where = f"FROM ml_features f JOIN ml_virtual_trades v ON v.id = f.virtual_id WHERE f.source IN ({marks}) AND v.{col} IS NOT NULL"
     with db_cursor() as cur:
         spreads = ticker_spreads(cur)
+        cur.execute(f"SELECT COUNT(*) {where}", sources)
+        n = cur.fetchone()[0]
+        X = np.full((n, len(ALL_FEATURES)), np.nan)
+        y = np.empty(n)
+        ts = np.empty(n, dtype=np.int64)
+        figi, ticker, mode, source = [], [], [], []
         cur.execute(f"""
             SELECT f.id, f.figi, f.ticker, CAST(strftime('%s', f.timestamp) AS INTEGER) AS ts, f.strategy_mode,
                    f.source, v.{col} AS y, {', '.join('f.' + c for c in FEATURES_V2)}
-            FROM ml_features f JOIN ml_virtual_trades v ON v.id = f.virtual_id
-            WHERE f.source IN ({marks}) AND v.{col} IS NOT NULL
+            {where}
             ORDER BY ts, f.id
         """, sources)
-        rows = cur.fetchall()
-    n = len(rows)
-    X = np.full((n, len(ALL_FEATURES)), np.nan)
-    y = np.empty(n)
-    ts = np.empty(n, dtype=np.int64)
-    figi, ticker, mode, source = [], [], [], []
-    for i, r in enumerate(rows):
-        y[i], ts[i] = r["y"], r["ts"]
-        figi.append(r["figi"]); ticker.append(r["ticker"]); mode.append(r["strategy_mode"] or ""); source.append(r["source"])
-        for j, name in enumerate(FEATURES_V2):
-            v = r[name]
-            X[i, j] = np.nan if v is None else v
+        # Построчно: при сотнях тысяч строк fetchall занял бы гигабайт на сервере с двумя. Новые строки после подсчёта не берутся.
+        read = 0
+        for r in cur:
+            if read >= n:
+                break
+            y[read], ts[read] = r["y"], r["ts"]
+            figi.append(sys.intern(r["figi"])); ticker.append(sys.intern(r["ticker"]))
+            mode.append(sys.intern(r["strategy_mode"] or "")); source.append(sys.intern(r["source"]))
+            for j, name in enumerate(FEATURES_V2):
+                v = r[name]
+                X[read, j] = np.nan if v is None else v
+            read += 1
+    if read < n:
+        X, y, ts = X[:read], y[:read], ts[:read]
+    n = read
     base = len(FEATURES_V2)
     hour = np.arctan2(X[:, FEATURES_V2.index("hour_sin")], X[:, FEATURES_V2.index("hour_cos")]) * 24 / (2 * math.pi) % 24
     X[:, base] = (hour >= 19).astype(float)
