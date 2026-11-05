@@ -288,7 +288,7 @@ def test_explain_starts_with_closed_entries(web, monkeypatch):
 def test_overview_lists_controls_with_state(tmp_db):
     o = pv.overview(NOW)
     c = {x["key"]: x for x in o["controls"]}
-    assert set(c) == {"new_entries_enabled", "ml_enforce", "ml_auto_tune", "virtual_trades_enabled", "md_stream_workers"}
+    assert set(c) == {"new_entries_enabled", "ml_enforce", "ml_auto_tune", "virtual_trades_enabled", "md_stream_workers", "weekly_cycle_enabled"}
     assert c["new_entries_enabled"]["on"] is False and c["virtual_trades_enabled"]["on"] is True
     assert all(x["label"] and x["hint"] and x["confirm_on"] and x["confirm_off"] for x in o["controls"])
 
@@ -397,3 +397,194 @@ def test_parallel_list_shows_instrument_levels_not_defaults(tmp_db):
     tmp_db.add_profile_parallel_strategy(pid, sid)
     row = tmp_db.list_profile_parallel_strategies(pid)[0]
     assert float(row["sl_pct"]) == 0.012 and float(row["tp_pct"]) == 0.02
+
+
+# ── субботний цикл виден и выключается ──
+
+def test_weekly_cycle_is_a_switch_with_status(tmp_db):
+    tmp_db.set_runtime("weekly_report_last_run", "2026-10-31")
+    o = pv.overview(NOW)
+    c = {x["key"]: x for x in o["controls"]}["weekly_cycle_enabled"]
+    assert c["on"] is True and "31.10.2026" in c["status"] and "07.11.2026" in c["status"]
+
+
+def test_weekly_cycle_status_when_switched_off(tmp_db):
+    tmp_db.set_setting("weekly_cycle_enabled", "0")
+    c = {x["key"]: x for x in pv.overview(NOW)["controls"]}["weekly_cycle_enabled"]
+    assert c["on"] is False and "выключен" in c["status"]
+
+
+def test_next_weekly_run_dates():
+    sat_morning = datetime(2026, 11, 7, 12, 0, tzinfo=MSK)
+    sat_evening = datetime(2026, 11, 7, 20, 0, tzinfo=MSK)
+    assert pv.next_weekly_run(NOW, "2026-10-31").strftime("%Y-%m-%d %H:%M") == "2026-11-07 18:00"
+    assert pv.next_weekly_run(sat_morning, "2026-10-31").strftime("%Y-%m-%d %H:%M") == "2026-11-07 18:00"
+    assert pv.next_weekly_run(sat_evening, "2026-11-07").strftime("%Y-%m-%d %H:%M") == "2026-11-14 18:00"
+
+
+def test_scheduler_respects_the_switch(tmp_db):
+    from app import weekly_scheduler as ws
+    assert ws.cycle_enabled() is True
+    tmp_db.set_setting("weekly_cycle_enabled", "0")
+    assert ws.cycle_enabled() is False
+
+
+# ── обучение на новой истории ──
+
+def ts_days_before(base, days):
+    return (base - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def test_new_history_trains_except_its_last_days(tmp_db):
+    from app.ml import model_trainer as mt
+    last = datetime(2026, 10, 30, 12, 0)
+    add_feature(tmp_db, "BACKFILL", ts_days_before(last, 30))
+    add_feature(tmp_db, "BACKFILL", ts_days_before(last, mt.VIRTUAL_MATURITY_DAYS + 1))
+    add_feature(tmp_db, "BACKFILL", ts_days_before(last, 1))             # хвост: долгие сделки отброшены как незакрытые
+    add_feature(tmp_db, "BACKFILL", ts_days_before(last, 0))
+    X, y, r = mt.load_labeled()
+    assert len(X) == 2
+    s = mt.training_summary()
+    assert s["backfill_ready"] == 2 and s["backfill_excluded"] == 2 and s["usable"] == 2
+
+
+def test_missing_order_book_becomes_neutral_not_zero(tmp_db):
+    from app.ml import model_trainer as mt
+    from app.ml.feature_builder import FEATURE_NAMES
+    add_feature(tmp_db, "REAL", "2026-10-30 10:00:00")
+    X, _, _ = mt.load_labeled()
+    assert X[0][FEATURE_NAMES.index("bid_pressure")] == 0.5
+    assert X[0][FEATURE_NAMES.index("book_depth_ratio")] == 1.0
+    assert X[0][FEATURE_NAMES.index("z_score")] == 0.0
+
+
+def test_training_takes_only_the_newest_rows_in_order(tmp_db, monkeypatch):
+    from app.ml import model_trainer as mt
+    monkeypatch.setattr(mt, "MAX_TRAIN_ROWS", 3)
+    for i in range(6):
+        with tmp_db.db_cursor() as cur:
+            cur.execute("INSERT INTO ml_features(figi, ticker, strategy_id, timestamp, label, source, exit_reason, quality_score) "
+                        "VALUES ('F1','SBER',0,?,1,'REAL','TAKE_PROFIT',?)", (f"2026-10-0{i + 1} 10:00:00", i / 100))
+    _, _, returns = mt.load_labeled()
+    assert returns == [0.03, 0.04, 0.05]
+
+
+# ── функции без интерфейса удалены ──
+
+REMOVED = [("post", "/api/analyst/instruments/update-uid"), ("post", "/api/analyst/sessions/create-manual"), ("get", "/api/backtest/instruments"),
+           ("post", "/api/backtest/run"), ("get", "/api/dashboard/chart"), ("get", "/api/debug/search"), ("get", "/api/instrument/stats/F1"),
+           ("get", "/api/ml/instrument/F1"), ("get", "/api/news/ticker"), ("post", "/api/stop-orders/create-bundle"), ("post", "/api/strategies/set-all")]
+
+
+@pytest.mark.parametrize("method,path", REMOVED)
+def test_routes_without_interface_are_gone(web, method, path):
+    _, client = web
+    assert getattr(client, method)(path).status_code in (404, 405)
+
+
+def test_every_api_route_is_used_by_the_interface(web):
+    """Правило владельца: функция сервера без кнопки на дашборде не живёт. Служебные маршруты перечислены явно."""
+    from pathlib import Path
+    webapp, _ = web
+    js = Path(webapp.__file__).resolve().parent.joinpath("static", "dashboard.js").read_text(encoding="utf-8")
+    service = {"/api/health"}
+    missing = []
+    for route in webapp.app.routes:
+        path = getattr(route, "path", "")
+        if not path.startswith("/api/") or path in service:
+            continue
+        base = path.split("{")[0].rstrip("/")
+        if base not in js:
+            missing.append(path)
+    assert missing == []
+
+
+# ── API заданий и сверки ──
+
+def test_api_jobs_lists_and_refuses_unknown(web):
+    _, client = web
+    data = client.get("/api/jobs").json()
+    assert {j["name"] for j in data["jobs"]} == {"fetch_history", "backfill", "train_candidate"}
+    r = client.post("/api/jobs/start", json={"name": "неизвестное"})
+    assert r.status_code == 400 and r.json()["detail"]
+
+
+def test_api_jobs_start_and_stop(web, monkeypatch):
+    webapp, client = web
+    calls = []
+    monkeypatch.setattr(webapp.jobs, "start", lambda name, days=None: calls.append(("start", name, days)) or {"name": name, "status": "running"})
+    monkeypatch.setattr(webapp.jobs, "stop", lambda name: calls.append(("stop", name)) or True)
+    assert client.post("/api/jobs/start", json={"name": "backfill", "days": 30}).json()["status"] == "running"
+    assert client.post("/api/jobs/stop", json={"name": "backfill"}).json()["ok"] is True
+    assert calls == [("start", "backfill", 30), ("stop", "backfill")]
+
+
+def test_api_reconcile_reports_broker_failure_without_crashing(web, monkeypatch):
+    webapp, client = web
+    monkeypatch.setattr(webapp, "_reconcile_cache", {"ts": 0.0, "data": None})
+    monkeypatch.setattr(webapp, "get_operations_by_cursor", lambda **k: (_ for _ in ()).throw(RuntimeError("сеть")))
+    r = client.get("/api/broker/reconcile")
+    assert r.status_code == 200 and r.json()["ok"] is False and r.json()["error"]
+
+
+def test_api_reconcile_counts_all_pages(web, monkeypatch):
+    webapp, client = web
+    monkeypatch.setattr(webapp, "_reconcile_cache", {"ts": 0.0, "data": None})
+    pages = [
+        {"items": [{"type": "OPERATION_TYPE_BUY", "figi": "F1", "quantity": 1, "payment": -100.0, "commission": 0.0, "date": "2026-10-20 10:00:00", "name": "SBER"}],
+         "has_next": True, "next_cursor": "c2"},
+        {"items": [{"type": "OPERATION_TYPE_SELL", "figi": "F1", "quantity": 1, "payment": 110.0, "commission": 0.0, "date": "2026-10-21 10:00:00", "name": "SBER"}],
+         "has_next": False, "next_cursor": ""},
+    ]
+    seen = []
+
+    def fake(**k):
+        seen.append(k.get("cursor"))
+        return pages[len(seen) - 1]
+    monkeypatch.setattr(webapp, "get_operations_by_cursor", fake)
+    monkeypatch.setattr(webapp, "_last_prices_by_figi", lambda figis: {})
+    data = client.get("/api/broker/reconcile").json()
+    assert data["ok"] is True and data["ops_count"] == 2 and data["broker_result"] == pytest.approx(10.0) and seen == ["", "c2"]
+
+
+def test_broker_operations_survive_int_enum(web, monkeypatch):
+    """Состояние и тип приходят как IntEnum: str() даёт число, и раньше вкладка «Операции брокера» оставалась пустой."""
+    import enum
+    from contextlib import contextmanager
+    from types import SimpleNamespace as NS
+    from app.services import tbank_client as tc
+
+    class State(enum.IntEnum):
+        OPERATION_STATE_EXECUTED = 1
+        OPERATION_STATE_CANCELED = 2
+
+    class Kind(enum.IntEnum):
+        OPERATION_TYPE_INPUT = 1
+        OPERATION_TYPE_BUY = 15
+        OPERATION_TYPE_BROKER_FEE = 19
+
+    def money(v):
+        return NS(units=int(v), nano=int(round((v - int(v)) * 1e9)))
+
+    def item(state, kind, payment, qty=0, done=0):
+        return NS(state=state, type=kind, payment=money(payment), price=money(0), commission=money(0), quantity=qty, quantity_done=done,
+                  figi="F1", instrument_uid="U1", date=datetime(2026, 10, 20, 10, 0), name="Сбербанк")
+
+    items = [item(State.OPERATION_STATE_EXECUTED, Kind.OPERATION_TYPE_BUY, -100.5, qty=10, done=7),
+             item(State.OPERATION_STATE_EXECUTED, Kind.OPERATION_TYPE_BROKER_FEE, -0.5),
+             item(State.OPERATION_STATE_EXECUTED, Kind.OPERATION_TYPE_INPUT, 1000.0),
+             item(State.OPERATION_STATE_CANCELED, Kind.OPERATION_TYPE_BUY, -50.0, qty=5)]
+
+    @contextmanager
+    def fake_client():
+        resp = NS(items=items, has_next=False, next_cursor="")
+        yield NS(operations=NS(get_operations_by_cursor=lambda req: resp))
+
+    monkeypatch.setattr(tc, "with_client", fake_client)
+    monkeypatch.setattr(tc, "_account_id", lambda: "A1")
+    out = tc.get_operations_by_cursor()["items"]
+    assert [o["type"] for o in out] == ["OPERATION_TYPE_BUY", "OPERATION_TYPE_BROKER_FEE", "OPERATION_TYPE_INPUT"]
+    buy, fee, deposit = out
+    assert buy["direction"] == "BUY" and buy["is_trade"] is True and buy["quantity"] == 7 and buy["payment"] == pytest.approx(-100.5)
+    assert fee["is_fee"] is True and fee["is_trade"] is False
+    assert deposit["is_trade"] is False and deposit["direction"] == ""

@@ -5,6 +5,8 @@
   .venv/bin/python scripts/cleanup_virtual.py --apply --all-aborted   # удалить и прерванные сделки с частичной доходностью
   .venv/bin/python scripts/cleanup_virtual.py --time-limited          # пробный запуск для сделок, закрытых по сроку
   .venv/bin/python scripts/cleanup_virtual.py --time-limited --apply  # бэкап БД и удаление сделок TIMEOUT и SESSION_END
+  .venv/bin/python scripts/cleanup_virtual.py --old-limit             # пробный запуск для всех сделок, созданных при старом лимите 2 часа
+  .venv/bin/python scripts/cleanup_virtual.py --old-limit --apply     # бэкап БД и удаление истории и ранних живых сделок
 
 Потерянные записи - сделки со статусом ABORTED: бот был перезапущен, пока они жили, исхода у них нет. Если у такой сделки
 успела записаться хотя бы одна доходность вперёд (fwd_ret_*), она остаётся: это полезные данные для обучения.
@@ -61,7 +63,7 @@ def collect_time_limited(conn: sqlite3.Connection) -> list:
     return [r[0] for r in conn.execute(f"SELECT id FROM ml_virtual_trades WHERE exit_reason IN {TIME_LIMITED} ORDER BY id")]
 
 
-def apply_time_limited(conn: sqlite3.Connection, ids: list, pause: float = 0.05) -> dict:
+def _delete_trades(conn: sqlite3.Connection, ids: list, feature_where: str, trade_where: str, pause: float) -> dict:
     """Удаляет сделки, их строки признаков (кроме реальных) и пути цены. Каждая часть — короткая транзакция, чтобы бот не ждал БД."""
     deleted = {"trades": 0, "features": 0, "paths": 0}
     for i in range(0, len(ids), CHUNK):
@@ -71,12 +73,38 @@ def apply_time_limited(conn: sqlite3.Connection, ids: list, pause: float = 0.05)
             deleted["paths"] += conn.execute(f"DELETE FROM ml_virtual_paths WHERE virtual_id IN ({marks})", part).rowcount
             deleted["features"] += conn.execute(
                 f"DELETE FROM ml_features WHERE id IN (SELECT feature_id FROM ml_virtual_trades WHERE id IN ({marks})) "
-                f"AND source IN ('VIRTUAL', 'BACKFILL') AND exit_reason IN {TIME_LIMITED}", part).rowcount
-            deleted["trades"] += conn.execute(
-                f"DELETE FROM ml_virtual_trades WHERE id IN ({marks}) AND exit_reason IN {TIME_LIMITED}", part).rowcount
+                f"AND source IN ('VIRTUAL', 'BACKFILL') {feature_where}", part).rowcount
+            deleted["trades"] += conn.execute(f"DELETE FROM ml_virtual_trades WHERE id IN ({marks}) {trade_where}", part).rowcount
         if pause and i + CHUNK < len(ids):
             time.sleep(pause)
     return deleted
+
+
+def apply_time_limited(conn: sqlite3.Connection, ids: list, pause: float = 0.05) -> dict:
+    cond = f"AND exit_reason IN {TIME_LIMITED}"
+    return _delete_trades(conn, ids, cond, cond, pause)
+
+
+def collect_old_limit(conn: sqlite3.Connection) -> list:
+    """id сделок, созданных при лимите 2 часа: вся история и живые до запуска v5.14.0. Открытые живые остаются: они дойдут до SL/TP."""
+    from app.ml.model_trainer import TRAIN_VIRTUAL_FROM
+    return [r[0] for r in conn.execute(
+        "SELECT id FROM ml_virtual_trades WHERE COALESCE(source,'LIVE')='BACKFILL' "
+        "OR (created_at < ? AND status <> 'OPEN') ORDER BY id", (TRAIN_VIRTUAL_FROM,))]
+
+
+def apply_old_limit(conn: sqlite3.Connection, ids: list, pause: float = 0.05) -> dict:
+    return _delete_trades(conn, ids, "", "", pause)
+
+
+def old_limit_summary(conn: sqlite3.Connection, ids: list) -> str:
+    if not ids:
+        return "нет"
+    rows, wanted = {}, set(ids)
+    for vid, src, reason in conn.execute("SELECT id, COALESCE(source,'LIVE'), COALESCE(exit_reason,'без причины') FROM ml_virtual_trades"):
+        if vid in wanted:
+            rows[(src, reason)] = rows.get((src, reason), 0) + 1
+    return "; ".join(f"{s}/{r}: {n}" for (s, r), n in sorted(rows.items()))
 
 
 def time_limited_summary(conn: sqlite3.Connection) -> str:
@@ -106,20 +134,21 @@ def main() -> int:
     ap.add_argument("--apply", action="store_true")
     ap.add_argument("--all-aborted", action="store_true")
     ap.add_argument("--time-limited", action="store_true", help="сделки TIMEOUT и SESSION_END вместо прерванных")
+    ap.add_argument("--old-limit", action="store_true", help="история и ранние живые сделки, созданные при лимите 2 часа")
     args = ap.parse_args()
     db_path = os.getenv("DB_PATH", "data/trading_bot.sqlite3")
     conn = sqlite3.connect(db_path, timeout=60)
-    if args.time_limited:
-        ids = collect_time_limited(conn)
+    if args.time_limited or args.old_limit:
+        ids = collect_old_limit(conn) if args.old_limit else collect_time_limited(conn)
         print("Сейчас:", status_summary(conn))
-        print(f"К удалению: {len(ids)} сделок ({time_limited_summary(conn)})")
+        print(f"К удалению: {len(ids)} сделок ({old_limit_summary(conn, ids) if args.old_limit else time_limited_summary(conn)})")
         if not args.apply:
             print("Это пробный запуск. Для удаления добавьте --apply (перед ним будет снят бэкап БД).")
             return 0
         conn.close()
         print("Бэкап БД:", backup_db(db_path))
         conn = sqlite3.connect(db_path, timeout=60)
-        print("Удалено:", apply_time_limited(conn, ids))
+        print("Удалено:", apply_old_limit(conn, ids) if args.old_limit else apply_time_limited(conn, ids))
         print("Стало:", status_summary(conn))
         conn.close()
         return 0

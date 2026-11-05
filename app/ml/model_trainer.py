@@ -23,11 +23,16 @@ MIN_PRECISION_ACTIVATE = 0.50  # минимальная precision для акт�
 # всегда даёт убыток по построению). NULL — причина не известна (старые строки), их не отбрасываем.
 POLICY_EXIT_REASONS = ("STOP_LOSS", "TAKE_PROFIT", "END_OF_DAY")
 MIN_LIFT = 0.03  # насколько precision должна превышать долю прибыльных без отбора
-# Виртуальные сделки до снятия лимита 2 часа (запуск v5.14.0) и историческая добивка с тем же лимитом не годятся:
-# остаются только исходы, успевшие случиться за 2 часа (87% строк истории закрыты по времени и отброшены).
+# Виртуальные сделки до снятия лимита 2 часа (запуск v5.14.0) не годятся: остаются только исходы, успевшие случиться за 2 часа.
 TRAIN_VIRTUAL_FROM = "2026-10-31 15:00:00"
 # Свежие закрытые сделки — только быстрые исходы, долгие ещё открыты. Метку берём, когда выборка вызрела.
 VIRTUAL_MATURITY_DAYS = 5
+# Пересчёт истории отбрасывает сделки, не закрывшиеся к её концу. В хвосте остаются только быстрые исходы, поэтому он не учится.
+BACKFILL_TAIL_SQL = f"datetime((SELECT MAX(timestamp) FROM ml_features WHERE source='BACKFILL'), '-{VIRTUAL_MATURITY_DAYS} days')"
+# Обучение идёт в процессе бота на одном ядре: берём только новейшие строки.
+MAX_TRAIN_ROWS = 30000
+# В истории нет стакана. Ноль означал бы «стакан пуст с одной стороны», поэтому пропуск заменяется равновесием.
+NEUTRAL_WHEN_EMPTY = {"bid_pressure": 0.5, "book_depth_ratio": 1.0}
 
 
 def _maturity_cutoff() -> str:
@@ -44,7 +49,7 @@ def training_summary() -> dict:
         cur.execute("SELECT COUNT(*), MIN(timestamp) FROM ml_features WHERE source='VIRTUAL' AND label IS NOT NULL AND timestamp > ? AND timestamp >= ?",
                     (cutoff, from_))
         waiting, oldest = cur.fetchone()
-        cur.execute("SELECT COUNT(*) FROM ml_features WHERE source='BACKFILL' AND label IS NOT NULL")
+        cur.execute(f"SELECT COUNT(*) FROM ml_features WHERE source='BACKFILL' AND label IS NOT NULL AND NOT ({clean_label_sql()})")
         backfill = cur.fetchone()[0]
         cur.execute("SELECT COUNT(*) FROM ml_features WHERE source='VIRTUAL' AND label IS NOT NULL AND timestamp < ?", (from_,))
         old_virtual = cur.fetchone()[0]
@@ -52,15 +57,16 @@ def training_summary() -> dict:
     if oldest:
         next_ready = (datetime.strptime(oldest, "%Y-%m-%d %H:%M:%S") + timedelta(days=VIRTUAL_MATURITY_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
     return {"real": usable.get("REAL", 0), "virtual_ready": usable.get("VIRTUAL", 0), "virtual_waiting": waiting or 0, "next_ready": next_ready,
-            "backfill_excluded": backfill or 0, "virtual_excluded": old_virtual or 0, "usable": sum(usable.values()),
+            "backfill_ready": usable.get("BACKFILL", 0), "backfill_excluded": backfill or 0, "virtual_excluded": old_virtual or 0,
+            "usable": sum(usable.values()), "max_rows": MAX_TRAIN_ROWS,
             "min_samples": MIN_SAMPLES, "maturity_days": VIRTUAL_MATURITY_DAYS, "min_lift_pct": int(MIN_LIFT * 100)}
 
 
 def clean_label_sql() -> str:
-    """Условие строк, пригодных для обучения: штатный выход, без исторической добивки, виртуальные только вызревшие."""
+    """Условие строк, пригодных для обучения: штатный выход, история без хвоста, виртуальные только вызревшие."""
     cutoff = _maturity_cutoff()
     return ("(exit_reason IS NULL OR exit_reason IN ('STOP_LOSS','TAKE_PROFIT','END_OF_DAY')) "
-            "AND COALESCE(source, 'REAL') <> 'BACKFILL' "
+            f"AND (COALESCE(source, 'REAL') <> 'BACKFILL' OR timestamp <= {BACKFILL_TAIL_SQL}) "
             f"AND (COALESCE(source, 'REAL') <> 'VIRTUAL' OR (timestamp >= '{TRAIN_VIRTUAL_FROM}' AND timestamp <= '{cutoff}'))")
 
 
@@ -121,14 +127,18 @@ def load_labeled(where: str = "", params: tuple = ()) -> Tuple[list, list, list]
     try:
         with db_cursor() as cur:
             col_list = ", ".join(FEATURE_NAMES)
+            # Новейшие строки, затем хронологический порядок: тренер отделяет тест по времени
             cur.execute(f"""
-                SELECT {col_list}, label, quality_score FROM ml_features
-                WHERE label IS NOT NULL AND {clean_label_sql()} {where}
-                ORDER BY timestamp ASC
+                SELECT * FROM (
+                    SELECT {col_list}, label, quality_score, timestamp AS _ts, id AS _id FROM ml_features
+                    WHERE label IS NOT NULL AND {clean_label_sql()} {where}
+                    ORDER BY timestamp DESC, id DESC LIMIT {int(MAX_TRAIN_ROWS)}
+                ) ORDER BY _ts ASC, _id ASC
             """, params)
             rows = cur.fetchall()
         n = len(FEATURE_NAMES)
-        X = [[row[i] or 0.0 for i in range(n)] for row in rows]
+        empty = [NEUTRAL_WHEN_EMPTY.get(name, 0.0) for name in FEATURE_NAMES]
+        X = [[row[i] if row[i] is not None else empty[i] for i in range(n)] for row in rows]
         y = [int(row[n]) for row in rows]
         returns = [float(row[n + 1] or 0.0) for row in rows]
         return X, y, returns

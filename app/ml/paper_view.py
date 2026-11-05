@@ -82,6 +82,10 @@ MODE_CONTROLS = (
      "hint": "Цены и стакан для стратегий акций идут потоком, а не запросами. Выключение заметно повышает расход лимита API.",
      "confirm_on": "Стратегии снова будут получать цены потоком. Включить?",
      "confirm_off": "Стратегии перейдут на запросы, расход лимита API вырастет. Выключить?"},
+    {"key": "weekly_cycle_enabled", "default": "1", "label": "Субботний отчёт и подбор", "danger_on": False,
+     "hint": "По субботам в 18:00 МСК: недельный отчёт в Telegram и подбор настроек стратегий акций. Настройки меняются, только если принять предложение кнопкой в Telegram.",
+     "confirm_on": "По субботам снова будут приходить отчёт и предложения по настройкам. Включить?",
+     "confirm_off": "Субботний отчёт и подбор настроек перестанут запускаться. Выключить?"},
 )
 
 
@@ -216,9 +220,32 @@ def _flag(key: str, default: str = "0") -> bool:
     return str(get_setting(key, default)).strip().lower() in ("1", "true", "yes")
 
 
-def controls() -> list:
+def next_weekly_run(now: datetime, last_run: str = "") -> datetime:
+    """Ближайший запуск субботнего цикла. Если сегодняшний уже прошёл, то через неделю."""
+    from app.weekly_scheduler import _REPORT_DOW, _REPORT_HOUR
+    msk = now.astimezone(MSK)
+    run = (msk + timedelta(days=(_REPORT_DOW - msk.weekday()) % 7)).replace(hour=_REPORT_HOUR, minute=0, second=0, microsecond=0)
+    if run <= msk and last_run == msk.strftime("%Y-%m-%d"):
+        run += timedelta(days=7)
+    return run
+
+
+def _weekly_status(now: datetime, on: bool) -> str:
+    from app.db import get_runtime
+    last = get_runtime("weekly_report_last_run", "") or ""
+    done = f"Последний запуск {datetime.strptime(last, '%Y-%m-%d').strftime('%d.%m.%Y')}." if last else "Запусков ещё не было."
+    if not on:
+        return f"Цикл выключен. {done}"
+    return f"{done} Следующий {next_weekly_run(now, last).strftime('%d.%m.%Y в %H:%M')} МСК."
+
+
+def controls(now: Optional[datetime] = None) -> list:
     """Переключатели режимов с текущим состоянием."""
-    return [{**c, "on": _flag(c["key"], c["default"])} for c in MODE_CONTROLS]
+    out = [{**c, "on": _flag(c["key"], c["default"])} for c in MODE_CONTROLS]
+    for c in out:
+        if c["key"] == "weekly_cycle_enabled":
+            c["status"] = _weekly_status(now or datetime.now(MSK), c["on"])
+    return out
 
 
 def set_mode(key: str, enabled: bool) -> dict:
@@ -250,7 +277,7 @@ def overview(now: datetime, quotes: Optional[Dict[str, float]] = None) -> dict:
         "now": now.astimezone(MSK).isoformat(),
         "mode": {"sandbox": bool(getattr(settings, "TINVEST_USE_SANDBOX", True)), "entries_enabled": _flag("new_entries_enabled"),
                  "ml_enforce": _flag("ml_enforce"), "auto_tune": _flag("ml_auto_tune"), "virtual_enabled": _flag("virtual_trades_enabled", "1")},
-        "controls": controls(),
+        "controls": controls(now),
         "research": RESEARCH,
         "primary": PRIMARY,
         "strategy": {

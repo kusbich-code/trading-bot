@@ -35,6 +35,12 @@ def _should_run(last_run_date: str) -> bool:
     return last_run_date != today_str
 
 
+def cycle_enabled() -> bool:
+    """Переключатель в «Режимах бота». Читается при каждой проверке, перезапуск не нужен."""
+    from app.db import get_setting
+    return str(get_setting("weekly_cycle_enabled", "1")).strip().lower() in ("1", "true", "yes")
+
+
 def run_weekly_cycle(notifier=None):
     """
     Запускает полный цикл субботнего отчёта:
@@ -230,7 +236,7 @@ def start_weekly_scheduler(notifier=None):
             try:
                 from app.db import get_runtime, set_runtime
                 last_run = get_runtime("weekly_report_last_run", "")
-                if _should_run(last_run):
+                if cycle_enabled() and _should_run(last_run):
                     log.info("weekly_scheduler: запуск субботнего цикла")
                     run_weekly_cycle(notifier=notifier)
                     set_runtime("weekly_report_last_run",

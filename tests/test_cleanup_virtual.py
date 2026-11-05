@@ -150,3 +150,50 @@ def test_cli_dry_run_changes_nothing_and_apply_makes_backup(tmp_db, tmp_path, mo
     backups = list((tmp_path / "backups").glob("*.sqlite3"))
     assert len(backups) == 1
     assert count(sqlite3.connect(backups[0]), "SELECT COUNT(*) FROM ml_virtual_trades") == 2
+
+
+# ── оставшиеся строки со старым лимитом 2 часа ──
+
+def test_old_limit_selects_history_and_early_live_only(tmp_db):
+    a = add_closed(tmp_db, "STOP_LOSS", source="BACKFILL")[0]
+    b = add_closed(tmp_db, "TAKE_PROFIT")[0]                             # живая до запуска v5.14.0 (дата из add_closed)
+    with tmp_db.db_cursor() as cur:
+        cur.execute("INSERT INTO ml_features(figi, ticker, strategy_id, timestamp, source, label, exit_reason) "
+                    "VALUES ('F1','SBER',0,'2026-11-02 10:00:00','VIRTUAL',1,'TAKE_PROFIT')")
+        fid = cur.lastrowid
+        cur.execute("INSERT INTO ml_virtual_trades(created_at, figi, ticker, strategy_mode, direction, status, source, exit_reason, feature_id) "
+                    "VALUES ('2026-11-02 10:00:00','F1','SBER','trend','BUY','CLOSED','LIVE','TAKE_PROFIT',?)", (fid,))
+        new_id = cur.lastrowid
+        cur.execute("INSERT INTO ml_virtual_trades(created_at, figi, ticker, strategy_mode, direction, status, source) "
+                    "VALUES ('2026-10-30 10:00:00','F1','SBER','trend','BUY','OPEN','LIVE')")
+    assert cl.collect_old_limit(conn_of(tmp_db)) == [a, b]
+    assert new_id not in cl.collect_old_limit(conn_of(tmp_db))
+
+
+def test_old_limit_deletes_rows_and_keeps_new_and_real(tmp_db):
+    add_closed(tmp_db, "STOP_LOSS", source="BACKFILL", with_path=True)
+    add_closed(tmp_db, "TAKE_PROFIT", feature_source="REAL")
+    with tmp_db.db_cursor() as cur:
+        cur.execute("INSERT INTO ml_features(figi, ticker, strategy_id, timestamp, source, label, exit_reason) "
+                    "VALUES ('F1','SBER',0,'2026-11-02 10:00:00','VIRTUAL',1,'TAKE_PROFIT')")
+        fid = cur.lastrowid
+        cur.execute("INSERT INTO ml_virtual_trades(created_at, figi, ticker, strategy_mode, direction, status, source, exit_reason, feature_id) "
+                    "VALUES ('2026-11-02 10:00:00','F1','SBER','trend','BUY','CLOSED','LIVE','TAKE_PROFIT',?)", (fid,))
+    c = conn_of(tmp_db)
+    assert cl.apply_old_limit(c, cl.collect_old_limit(c)) == {"trades": 2, "features": 1, "paths": 1}
+    assert count(c, "SELECT COUNT(*) FROM ml_virtual_trades") == 1
+    assert count(c, "SELECT COUNT(*) FROM ml_features WHERE source='REAL'") == 1
+    assert count(c, "SELECT COUNT(*) FROM ml_features WHERE source='VIRTUAL'") == 1
+
+
+def test_old_limit_cli_dry_run_then_apply(tmp_db, tmp_path, monkeypatch, capsys):
+    add_closed(tmp_db, "STOP_LOSS", source="BACKFILL")
+    monkeypatch.setenv("DB_PATH", tmp_db.settings.DB_PATH)
+    monkeypatch.setattr(sys, "argv", ["cleanup_virtual.py", "--old-limit"])
+    assert cl.main() == 0
+    assert count(conn_of(tmp_db), "SELECT COUNT(*) FROM ml_virtual_trades") == 1
+    assert "пробный" in capsys.readouterr().out.lower()
+    monkeypatch.setattr(sys, "argv", ["cleanup_virtual.py", "--old-limit", "--apply"])
+    assert cl.main() == 0
+    assert count(conn_of(tmp_db), "SELECT COUNT(*) FROM ml_virtual_trades") == 0
+    assert list((tmp_path / "backups").glob("*.sqlite3"))

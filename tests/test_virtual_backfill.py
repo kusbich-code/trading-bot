@@ -188,10 +188,16 @@ def test_store_batch_is_idempotent_and_separated(tmp_db, series):
         f = cur.fetchone()
         assert f["source"] == "BACKFILL" and f["bid_pressure"] is None and f["virtual_id"] and f["rsi"] is not None
         assert f["label"] == batch[0][0].label and f["exit_reason"] == batch[0][0].exit_reason
-    # живые срезы дашборда не видят историю, и в обучение она не идёт: сделки обрезаны старым лимитом 2 часа
+    # живые срезы дашборда не видят историю
     assert vt.recent(10) == [] and vt.summary()["by_mode"] == []
     c = vt.counters()
     assert c["n"] == 0 and c["backfill_n"] == 15
+    # в обучение идёт только история старше её последних дней: в хвосте остаются лишь быстрые исходы
     from app.ml import model_trainer as mt
+    from datetime import datetime, timedelta
+    with tmp_db.db_cursor() as cur:
+        cur.execute("SELECT timestamp FROM ml_features WHERE source='BACKFILL'")
+        stamps = [r[0] for r in cur.fetchall()]
+    edge = (datetime.strptime(max(stamps), "%Y-%m-%d %H:%M:%S") - timedelta(days=mt.VIRTUAL_MATURITY_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
     X, y = mt.get_all_labeled_features()
-    assert X == [] and y == []
+    assert len(X) == len(y) == sum(1 for s in stamps if s <= edge)

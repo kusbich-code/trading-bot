@@ -370,84 +370,6 @@ def _money_value_to_decimal(item) -> Decimal:
     return Decimal(units) + (Decimal(nano) / Decimal("1000000000"))
 
 
-def get_operations_today() -> Dict[str, Any]:
-    """Загружает исполненные операции сегодня из API T-Bank и рассчитывает реальный PnL."""
-    from datetime import timezone
-    now = datetime.now(timezone.utc)
-    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-
-    operations: List[Dict[str, Any]] = []
-    total_pnl = Decimal("0")
-    total_commission = Decimal("0")
-    trade_count = 0
-
-    with with_client() as client:
-        resp = client.operations.get_operations(
-            account_id=_account_id(),
-            from_=today_start,
-            to=now,
-        )
-
-        for op in getattr(resp, "operations", []):
-            state_str = str(getattr(op, "state", "") or "")
-            if "EXECUTED" not in state_str:
-                continue
-
-            op_type = str(
-                getattr(op, "operation_type", "")
-                or getattr(op, "type", "")
-                or ""
-            )
-            payment = _money_value_to_decimal(getattr(op, "payment", None))
-            price = _money_value_to_decimal(getattr(op, "price", None))
-            quantity = getattr(op, "quantity", 0) or 0
-            figi = getattr(op, "figi", "") or ""
-            date_val = getattr(op, "date", None)
-            date_str = ""
-            if date_val:
-                try:
-                    date_str = date_val.strftime("%Y-%m-%d %H:%M:%S")
-                except Exception:
-                    date_str = str(date_val)[:19].replace("T", " ")
-
-            is_fee = any(x in op_type for x in ("FEE", "COMMISSION", "SERVICE_FEE", "MARGIN_FEE"))
-            is_trade = any(x in op_type for x in ("BUY", "SELL")) and not is_fee
-
-            total_pnl += payment
-            if is_fee:
-                total_commission += payment
-
-            if is_trade or is_fee:
-                direction = "SELL" if "SELL" in op_type else ("BUY" if "BUY" in op_type else "")
-                # Когда API возвращает price=0, вычисляем из payment/quantity (часто для маркет-ордеров)
-                if price == 0 and quantity > 0 and payment != 0:
-                    price = abs(payment) / Decimal(str(quantity))
-                price_ui = f"{price:.2f}" if price else "—"
-                operations.append({
-                    "figi": figi,
-                    "op_type": op_type,
-                    "direction": direction,
-                    "payment": str(payment),
-                    "payment_ui": f"{payment:.2f}",
-                    "price": str(price),
-                    "price_ui": price_ui,
-                    "quantity": quantity,
-                    "date": date_str,
-                    "is_fee": is_fee,
-                })
-                if is_trade:
-                    trade_count += 1
-
-    return {
-        "pnl": total_pnl,
-        "pnl_ui": f"{total_pnl:.2f}",
-        "total_commission": total_commission,
-        "total_commission_ui": f"{total_commission:.2f}",
-        "trades_count": trade_count,
-        "operations": operations,
-    }
-
-
 def sandbox_pay_in(amount_rub: int = 100_000) -> Decimal:
     """
     Пополнение виртуального счёта в Sandbox.
@@ -514,7 +436,8 @@ def get_operations_by_cursor(
     if to_dt is None:
         to_dt = now
 
-    from t_tech.invest import GetOperationsByCursorRequest
+    from t_tech.invest import GetOperationsByCursorRequest, OperationState, OperationType
+    from app.services.reconcile import enum_name
     with with_client() as client:
         # SDK t-tech-investments 0.3.x принимает один объект запроса, а не kwargs
         resp = client.operations.get_operations_by_cursor(
@@ -528,14 +451,15 @@ def get_operations_by_cursor(
         )
         items = []
         for op in getattr(resp, "items", []):
-            state_str = str(getattr(op, "state", "") or "")
+            # В Python 3.11 str() от IntEnum даёт число, поэтому состояние и тип читаются по имени
+            state_str = enum_name(getattr(op, "state", ""), OperationState)
             if "EXECUTED" not in state_str:
                 continue
-            op_type = str(getattr(op, "type", "") or "")
+            op_type = enum_name(getattr(op, "type", ""), OperationType)
             payment    = _money_value_to_decimal(getattr(op, "payment", None))
             price      = _money_value_to_decimal(getattr(op, "price", None))
             commission = _money_value_to_decimal(getattr(op, "commission", None))
-            quantity   = int(getattr(op, "quantity", 0) or 0)
+            quantity   = int(getattr(op, "quantity_done", 0) or getattr(op, "quantity", 0) or 0)
             figi       = getattr(op, "figi", "") or ""
             uid        = getattr(op, "instrument_uid", "") or ""
             date_val   = getattr(op, "date", None)
@@ -557,6 +481,8 @@ def get_operations_by_cursor(
                 "figi": figi,
                 "instrument_uid": uid,
                 "quantity": quantity,
+                "payment": float(payment),
+                "commission": float(commission),
                 "payment_ui": f"{payment:.2f}",
                 "price_ui": f"{price:.2f}" if price else "—",
                 "commission_ui": f"{commission:.2f}",

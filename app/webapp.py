@@ -28,7 +28,6 @@ from app.db import (
     get_logs,
     get_error_logs,
     get_system_logs,
-    list_instruments,
     add_instrument,
     get_open_positions,
     get_unified_open_positions,
@@ -55,8 +54,6 @@ from app.db import (
     list_profile_parallel_strategies,
     add_profile_parallel_strategy,
     remove_profile_parallel_strategy,
-    set_strategy_parallel,
-    list_parallel_strategies,
     # strategies
     list_strategies,
     get_strategy,
@@ -73,37 +70,31 @@ from app.db import (
     clear_history,
     get_strategy_trade_stats,
     apply_auto_name,
-    set_setting_all_strategies,
-    create_optimization_session,
     list_optimization_sessions,
-    get_optimization_session,
     get_session_results,
     update_session_status,
-    link_results_to_session,
-    get_weekly_stats,
 )
 
 from app.config import settings
 from app.version import __version__ as BOT_VERSION
 from app.ml import paper_view
+from app.services import jobs, reconcile as _reconcile
 from app.services.tbank_client import (
     get_candles,
     get_candles_range,
     get_active_stop_orders,
     cancel_stop_order,
     post_market_close,
-    post_stop_bundle,
     get_portfolio_snapshot,
-    get_operations_today,
     get_broker_positions,
     get_positions_detailed,
+    get_last_price,
     get_operations_by_cursor,
     sandbox_pay_in,
     sandbox_reset_account,
     get_active_orders,
     cancel_order,
 )
-from app.services.strategy_engine import evaluate_signal
 from app.services.backtest_engine import run_backtest, result_to_dict
 import app.services.analyst as _analyst
 from app.services.healthcheck import dashboard_health
@@ -578,7 +569,7 @@ def _purge_bad_positions():
     Remove BOT positions whose entry_price is a per-lot value (sandbox bug).
     Detected when entry_price is ≥ 5× the instrument's last known market price.
     """
-    from app.db import get_open_positions, clear_open_positions, get_instrument_market_state_map
+    from app.db import get_open_positions, get_instrument_market_state_map
     mmap = get_instrument_market_state_map()
     positions = get_open_positions(source="BOT")
     bad = []
@@ -765,119 +756,6 @@ def api_news():
 
 # ── Ticker news (Google News RSS, кэш 5 мин) ─────────────────────────────────
 
-_ticker_news_cache: dict = {}  # figi → {"ts": float, "data": list}
-_TICKER_NEWS_TTL = 300         # 5 минут
-
-@app.get("/api/news/ticker")
-def api_news_ticker(figi: str = "", hours: int = 4):
-    """Новости по тикеру из нескольких российских RSS-источников."""
-    from datetime import datetime, timezone, timedelta
-    import email.utils as _eutils
-
-    now = time.time()
-    cache = _ticker_news_cache.get(figi)
-    if cache and (now - cache["ts"]) < _TICKER_NEWS_TTL:
-        return JSONResponse(cache["data"])
-
-    # Тикер и название компании
-    mmap = get_instrument_market_state_map()
-    ticker = mmap.get(figi, {}).get("ticker", "") or figi[:8]
-    company_name = ""
-    try:
-        from app.db import db_cursor as _dbc3
-        with _dbc3() as _c3:
-            _c3.execute("SELECT name FROM strategy_instruments WHERE figi=? AND name!='' LIMIT 1", (figi,))
-            _row = _c3.fetchone()
-            if _row and _row[0]:
-                company_name = _row[0]
-    except Exception:
-        pass
-
-    # Ключевые слова для фильтрации (тикер + первые слова названия)
-    keywords = [ticker.upper()]
-    if company_name:
-        for w in company_name.split()[:2]:
-            if len(w) > 3:
-                keywords.append(w.lower())
-
-    # Российские финансовые RSS-источники (проверены на сервере)
-    RSS_SOURCES = [
-        ("Интерфакс",   "https://www.interfax.ru/rss.asp"),
-        ("РБК",         "https://rssexport.rbc.ru/rbcnews/news/30/full.rss"),
-        ("Finam",       "https://www.finam.ru/analysis/conews/rsspoint/"),
-        ("Коммерсантъ", "https://www.kommersant.ru/RSS/section-economics.xml"),
-        ("Ведомости",   "https://www.vedomosti.ru/rss/articles"),
-    ]
-
-    # Начало текущей торговой сессии MOEX (10:00 МСК = 07:00 UTC)
-    from datetime import date as _date
-    _msk = timezone(timedelta(hours=3))
-    _now_msk = datetime.now(_msk)
-    session_start = _now_msk.replace(hour=10, minute=0, second=0, microsecond=0)
-    if _now_msk.hour < 10:
-        session_start = session_start - timedelta(days=1)  # replace(day=day-1) падало 1-го числа месяца
-
-    # Граница по времени: берём max охват — либо N часов, либо начало сессии
-    cutoff_hours = datetime.now(timezone.utc) - timedelta(hours=hours)
-    cutoff_session = session_start.astimezone(timezone.utc)
-    # Используем более раннюю границу чтобы показать больше новостей
-    cutoff = min(cutoff_hours, cutoff_session)
-
-    def _parse_date(pub_raw):
-        if not pub_raw:
-            return None
-        try:
-            parsed = _eutils.parsedate(pub_raw)
-            if parsed:
-                return datetime(*parsed[:6], tzinfo=timezone.utc)
-        except Exception:
-            pass
-        return None
-
-    all_news = []
-    for source_name, rss_url in RSS_SOURCES:
-        try:
-            req = urllib.request.Request(rss_url, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, timeout=6) as resp:
-                root = ET.fromstring(resp.read())
-            for item in root.findall(".//item"):
-                title   = (item.findtext("title")   or "").strip()
-                link    = (item.findtext("link")    or "").strip()
-                pub_raw = (item.findtext("pubDate") or "").strip()
-                desc    = (item.findtext("description") or "").strip()
-                if not title:
-                    continue
-                text_check = (title + " " + desc).lower()
-                if not any(kw.lower() in text_check for kw in keywords):
-                    continue
-                pub_dt = _parse_date(pub_raw)
-                if pub_dt and pub_dt < cutoff:
-                    continue
-                date_ui = pub_dt.astimezone(_msk).strftime("%d.%m %H:%M") if pub_dt else pub_raw[:16]
-                all_news.append({
-                    "title": title,
-                    "link":  link,
-                    "date":  date_ui,
-                    "source": source_name,
-                    "_ts": pub_dt.timestamp() if pub_dt else 0,
-                })
-        except Exception as e:
-            logger.debug(f"News {source_name}: {e}")
-
-    # Сортируем по времени, убираем дубли по заголовку
-    seen_titles: set = set()
-    news: list = []
-    for n in sorted(all_news, key=lambda x: x["_ts"], reverse=True):
-        t = n["title"][:60]
-        if t not in seen_titles:
-            seen_titles.add(t)
-            news.append({"title": n["title"], "link": n["link"],
-                         "date": n["date"], "source": n["source"]})
-        if len(news) >= 20:
-            break
-
-    _ticker_news_cache[figi] = {"ts": now, "data": news}
-    return JSONResponse(news)
 
 
 # ── market session + volatility ───────────────────────────────────────────────
@@ -1041,6 +919,30 @@ async def api_mode_set(request: Request):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@app.get("/api/jobs")
+def api_jobs():
+    """Задания с дашборда: загрузка истории, её пересчёт, обучение кандидата."""
+    return JSONResponse({"jobs": jobs.list_jobs()})
+
+
+@app.post("/api/jobs/start")
+async def api_jobs_start(request: Request):
+    body = await request.json()
+    try:
+        return JSONResponse(jobs.start(str(body.get("name", "")), days=body.get("days")))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/jobs/stop")
+async def api_jobs_stop(request: Request):
+    body = await request.json()
+    try:
+        return JSONResponse({"ok": jobs.stop(str(body.get("name", "")))})
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @app.get("/api/dashboard/summary")
 def api_dashboard_summary():
     return JSONResponse(summary_payload())
@@ -1051,7 +953,6 @@ def api_dashboard_main():
     s = get_all_settings()
     active_strategy_id = (s.get("active_strategy_id", "") or "").strip()
     market_map = get_instrument_market_state_map()
-    figi_ticker_map = {figi: info.get("ticker", "") for figi, info in market_map.items()}
 
     # Если параллельный режим — инструменты из всех стратегий профиля
     active_profile_id = (s.get("active_profile_id", "") or "").strip()
@@ -1178,27 +1079,6 @@ def api_dashboard_main():
                     p.get("opened_at", ""),
                 ))
 
-    # ── Trades: T-Bank operations API → local DB fallback ─────────────────────
-    api_trades: list = []
-    try:
-        ops_data = get_operations_today()
-        for op in ops_data.get("operations", []):
-            if op.get("is_fee"):
-                continue
-            figi = op.get("figi", "")
-            direction = op.get("direction", "")
-            price_ui = op.get("price_ui", "")
-            api_trades.append({
-                "time": op.get("date", ""), "ticker": figi_ticker_map.get(figi, figi[:8]),
-                "figi": figi, "direction": direction,
-                "entry_ui": price_ui if direction == "BUY" else "",
-                "exit_ui": price_ui if direction == "SELL" else "",
-                "qty": op.get("quantity", 0),
-                "pnl_ui": op.get("payment_ui", ""), "reason": "API",
-            })
-    except Exception:
-        pass
-
     db_trades = [{
         **dict(t),
         "entry_ui":   fmt_price(t.get("entry", 0)),
@@ -1214,7 +1094,6 @@ def api_dashboard_main():
         "instruments": [strategy_instrument_row(i, market_map) for i in instruments],
         "positions": positions,
         "trades": db_trades,
-        "api_trades": api_trades,
         "parallel_on": parallel_on,
     })
 
@@ -1714,28 +1593,59 @@ def api_broker_operations(cursor: str = "", days: int = 30, limit: int = 50):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/dashboard/chart")
-def api_dashboard_chart(figi: str = "", interval: str = "1min"):
-    instruments = list_instruments()
-    available = [{"figi": i["figi"], "ticker": i["ticker"], "name": i.get("name", "")} for i in instruments]
-    selected_figi = figi or (available[0]["figi"] if available else "")
-    candles = []
-    if selected_figi:
+_reconcile_cache: Dict[str, Any] = {"ts": 0.0, "data": None}
+
+
+def _all_broker_operations(days: int = 365) -> list:
+    """Все исполненные операции счёта, постранично."""
+    from datetime import timezone, timedelta
+    now = __import__("datetime").datetime.now(timezone.utc)
+    items, cursor = [], ""
+    for _ in range(50):         # предохранитель от зацикливания на курсоре
+        page = get_operations_by_cursor(from_dt=now - timedelta(days=days), to_dt=now, limit=1000, cursor=cursor)
+        items.extend(page.get("items", []))
+        cursor = page.get("next_cursor") or ""
+        if not page.get("has_next") or not cursor:
+            break
+    return items
+
+
+def _last_prices_by_figi(figis) -> Dict[str, float]:
+    """Последние цены открытых у брокера бумаг. Бумага без цены остаётся без цены: сверка покажет это, а не угадает."""
+    prices: Dict[str, float] = {}
+    for figi in figis:
         try:
-            candles = get_candles(selected_figi, interval_name=interval, hours=8)
+            value = float(get_last_price(figi))
+            if value > 0:
+                prices[figi] = value
         except Exception as e:
-            log_event("BOT_ERROR", f"chart candles error: {e}", level="ERROR")
-    signal = {"action": "HOLD", "score": 0, "reasons": ["Нет данных"]}
-    if candles:
-        try:
-            mode = get_setting("tradingmode", "trend")
-            signal = evaluate_signal(selected_figi, candles, mode=mode)
-        except Exception:
-            pass
-    return {
-        "figi": selected_figi, "interval": interval, "candles": candles,
-        "signal": signal, "available_instruments": available, "selected_figi": selected_figi,
-    }
+            logger.warning("сверка: нет цены %s: %s", figi, type(e).__name__)
+    return prices
+
+
+@app.get("/api/broker/reconcile")
+def api_broker_reconcile():
+    """Итог бота против итога по операциям брокера. Если брокер не отвечает, страница получает понятное сообщение."""
+    if _reconcile_cache["data"] is not None and time.time() - _reconcile_cache["ts"] < 60:
+        return JSONResponse(_reconcile_cache["data"])
+    try:
+        operations = _all_broker_operations()
+        prices = _last_prices_by_figi([f for f, q in _reconcile.net_quantities(operations).items() if q])
+    except Exception as e:
+        logger.warning("сверка с брокером: %s", type(e).__name__)
+        return JSONResponse({"ok": False, "error": "Брокер сейчас не отвечает, поэтому сверку посчитать нельзя. Попробуйте обновить через минуту."})
+    from app.db import db_cursor
+    with db_cursor() as cur:
+        cur.execute("SELECT time, pnl, commission FROM trades")
+        trades = [dict(r) for r in cur.fetchall()]
+        cur.execute("SELECT COALESCE(SUM(unrealized_pnl), 0) FROM positions WHERE status='OPEN' AND source='BOT'")
+        unrealized = float(cur.fetchone()[0] or 0.0)
+    data = {"ok": True, **_reconcile.summarize(operations, trades, unrealized, prices)}
+    market_map = get_instrument_market_state_map()
+    for p in data["open_positions"]:
+        p["ticker"] = market_map.get(p["figi"], {}).get("ticker") or p["name"]
+    _reconcile_cache.update(ts=time.time(), data=data)
+    return JSONResponse(data)
 
 
 # ── backtest ──────────────────────────────────────────────────────────────────
@@ -1830,12 +1740,6 @@ def _bt_run_worker(strategy_ids: list, interval: str, days: int):
             _bt_state["error"]  = str(e)
             _bt_state["current"] = ""
 
-@app.get("/api/backtest/instruments")
-def api_backtest_instruments():
-    """All instruments known to the bot, for the backtest instrument picker."""
-    rows = list_instruments()
-    return [{"figi": r["figi"], "ticker": r.get("ticker", ""), "name": r.get("name", "")} for r in rows if r.get("figi")]
-
 
 @app.get("/api/backtest/strategies")
 def api_backtest_strategies():
@@ -1895,87 +1799,6 @@ def api_backtest_result():
     if _bt_result is None:
         raise HTTPException(400, "Результат не готов")
     return _bt_result
-
-
-@app.post("/api/backtest/run")
-async def api_backtest_run(request: Request):
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Некорректный JSON")
-
-    interval     = str(body.get("interval", "5min")).strip()
-    days         = max(1, min(int(body.get("days", 7)), 30))
-    strategy_ids = body.get("strategy_ids") or []
-
-    if not strategy_ids:
-        raise HTTPException(status_code=400, detail="Выберите хотя бы одну стратегию")
-
-    results = {}
-    for sid in strategy_ids:
-        sid        = int(sid)
-        strat      = get_strategy(sid)
-        if not strat:
-            results[str(sid)] = {"error": f"Стратегия {sid} не найдена"}
-            continue
-
-        cfg        = get_strategy_settings(sid)
-        mode       = cfg.get("tradingmode", "trend")
-        comm_pct   = float(cfg.get("estimated_commission_pct", "0.0005"))
-        strat_name = strat.get("name", f"Стратегия {sid}")
-
-        # Берём первый включённый инструмент стратегии
-        all_instr  = list_strategy_instruments(sid)
-        inst_rows  = [i for i in all_instr if str(i.get("enabled", 1)) in ("1", "true")]
-        if not inst_rows:
-            results[str(sid)] = {"error": "Нет активных инструментов", "strategy_name": strat_name}
-            continue
-
-        instr      = inst_rows[0]
-        figi       = instr["figi"]
-        ticker     = instr.get("ticker", "?")
-        sl_pct     = float(instr.get("stop_loss_pct")  or cfg.get("default_stop_loss_pct",  "0.0025"))
-        tp_pct     = float(instr.get("take_profit_pct") or cfg.get("default_take_profit_pct", "0.005"))
-        lots       = max(1, int(instr.get("lots_override") or 1))
-        lot_size   = max(1, int(instr.get("lot") or 1))
-        qty_shares = lots * lot_size
-
-        try:
-            candles = get_candles_range(figi=figi, interval_name=interval, days=days)
-        except Exception as e:
-            results[str(sid)] = {"error": f"Ошибка свечей {ticker}: {e}", "strategy_name": strat_name}
-            continue
-
-        if len(candles) < 30:
-            results[str(sid)] = {
-                "error": f"Мало свечей для {ticker}: {len(candles)}, нужно ≥30",
-                "strategy_name": strat_name,
-            }
-            continue
-
-        try:
-            res = run_backtest(
-                candles=candles, mode=mode,
-                stop_loss_pct=sl_pct, take_profit_pct=tp_pct,
-                commission_pct=comm_pct, qty=qty_shares,
-            )
-            d = result_to_dict(res, candles)
-            d["strategy_name"] = strat_name
-            d["ticker"]        = ticker
-            d["figi"]          = figi
-            d["mode"]          = mode
-            d["sl_pct_ui"]     = f"{sl_pct * 100:.3f}%"
-            d["tp_pct_ui"]     = f"{tp_pct * 100:.3f}%"
-            d["lots"]          = lots
-            d["lot_size"]      = lot_size
-            d["qty_shares"]    = qty_shares
-            d["qty_ui"]        = f"{lots} лот × {lot_size} шт = {qty_shares} шт"
-            d["candles_loaded"] = len(candles)
-            results[str(sid)]  = d
-        except Exception as e:
-            results[str(sid)] = {"error": str(e), "strategy_name": strat_name}
-
-    return {"interval": interval, "days": days, "results": results}
 
 
 # ── parallel strategies ────────────────────────────────────────────────────────
@@ -2335,25 +2158,6 @@ def api_session_reject(session_id: int):
     return JSONResponse({"ok": True})
 
 
-@app.post("/api/analyst/sessions/create-manual")
-def api_session_create_manual():
-    """Создаёт сессию для текущего ручного запуска аналитика."""
-    sid = create_optimization_session(type_="manual")
-    return JSONResponse({"ok": True, "session_id": sid})
-
-
-@app.post("/api/strategies/set-all")
-async def api_strategies_set_all(request: Request):
-    """Устанавливает значение любого ключа настроек для ВСЕХ стратегий."""
-    body = await request.json()
-    key   = str(body.get("key", "")).strip()
-    value = str(body.get("value", "")).strip()
-    if not key:
-        raise HTTPException(status_code=400, detail="key required")
-    set_setting_all_strategies(key, value)
-    return JSONResponse({"ok": True, "key": key, "value": value})
-
-
 @app.get("/api/analyst/instruments")
 def api_analyst_instruments_list():
     """Возвращает список инструментов доступных аналитику (SEARCH_INSTRUMENTS)."""
@@ -2368,25 +2172,6 @@ def api_analyst_instruments_list():
         }
         for i in SEARCH_INSTRUMENTS
     ])
-
-
-@app.post("/api/analyst/instruments/update-uid")
-async def api_analyst_instruments_update_uid(request: Request):
-    """Обновляет instrument_uid для инструмента в SEARCH_INSTRUMENTS и strategy_instruments."""
-    body = await request.json()
-    figi = (body.get("figi") or "").strip()
-    uid  = (body.get("instrument_uid") or "").strip()
-    if not figi:
-        raise HTTPException(status_code=400, detail="figi required")
-    from app.db import save_instrument_uid
-    save_instrument_uid(figi, uid)
-    # Обновляем in-memory список
-    from app.services.analyst import SEARCH_INSTRUMENTS
-    for inst in SEARCH_INSTRUMENTS:
-        if inst.get("figi") == figi:
-            inst["instrument_uid"] = uid
-            break
-    return JSONResponse({"ok": True})
 
 
 @app.get("/api/analyst/results")
@@ -3178,19 +2963,6 @@ def api_cancel_all_stop_orders():
     return JSONResponse({"ok": True, "cancelled": cancelled, "errors": errors})
 
 
-@app.post("/api/stop-orders/create-bundle")
-def api_create_stop_bundle(
-    figi: str = Form(...), qty: int = Form(...), entry_price: str = Form(...),
-    side: str = Form(...), stop_pct: str = Form(...), take_pct: str = Form(...),
-):
-    result = post_stop_bundle(
-        figi=figi, quantity=int(qty), entry_price=Decimal(entry_price),
-        side=side, stop_pct=Decimal(stop_pct), take_pct=Decimal(take_pct),
-    )
-    log_event("STOP_BUNDLE", f"bundle created figi={figi}", ticker=figi)
-    return {"ok": True, **result}
-
-
 # ── health / telegram ─────────────────────────────────────────────────────────
 
 @app.get("/api/telegram/status")
@@ -3235,25 +3007,6 @@ def api_health_telegram_test():
     )
     result = send_telegram(text)
     return {"ok": True, "telegram": result}
-
-
-@app.get("/api/debug/search")
-def api_debug_search(q: str = "SBER"):
-    import traceback
-    from t_tech.invest.sandbox.client import SandboxClient
-    client_cls = SandboxClient if settings.TINVEST_USE_SANDBOX else Client
-    try:
-        with client_cls(settings.TINVEST_TOKEN) as client:
-            resp = client.instruments.find_instrument(query=q)
-            instruments = getattr(resp, "instruments", [])
-            return {
-                "ok": True, "count": len(instruments),
-                "items": [{"ticker": getattr(x, "ticker", ""), "figi": getattr(x, "figi", ""),
-                           "name": getattr(x, "name", ""), "instrument_type": str(getattr(x, "instrument_type", ""))}
-                          for x in instruments],
-            }
-    except Exception as e:
-        return {"ok": False, "error": str(e), "traceback": traceback.format_exc()}
 
 
 # ── Credentials API ───────────────────────────────────────────────────────────
@@ -3466,99 +3219,6 @@ def _ml_feature_catalog() -> list:
         ("short_carry_risk", "Риск", "Риск переноса шорта: 0 норма, 1 нерабочий день, 3 выходные"),
     ]
     return [{"name": n, "group": g, "desc": d} for (n, g, d) in _raw]
-
-
-@app.get("/api/ml/instrument/{figi}")
-def api_ml_instrument(figi: str):
-    """Детальная статистика ML по конкретному инструменту."""
-    try:
-        from app.ml.analyzer import get_instrument_state, get_all_states
-        from app.ml.strategy_selector import get_mode_stats
-        from app.ml.experience import get_recent_contexts
-        contexts = get_recent_contexts(figi, days=90)
-        mode_stats = get_mode_stats(figi)
-        return JSONResponse({
-            "figi": figi,
-            "contexts_count": len(contexts),
-            "mode_stats": mode_stats,
-            "recent_trades": [
-                {"time": c.get("entry_time", ""), "pnl": c.get("pnl", 0),
-                 "quality": round(c.get("quality_score", 0), 4),
-                 "mode": c.get("strategy_mode", ""),
-                 "score": c.get("signal_score", 0),
-                 "holding_h": round(c.get("holding_hours", 0), 2)}
-                for c in contexts[:20]
-            ],
-        })
-    except Exception as e:
-        return JSONResponse({"error": str(e)})
-
-
-@app.get("/api/instrument/stats/{figi}")
-def api_instrument_stats(figi: str):
-    """Котировки + диапазоны дня/недели/месяца/года для блока позиции."""
-    from datetime import datetime as _dt, timezone as _tz, timedelta
-    from app.services.tbank_client import get_candles_range as _gcr
-    _msk = _tz(timedelta(hours=3))
-
-    _stats_cache = getattr(api_instrument_stats, "_cache", {})
-    _now_ts = time.time()
-    cached = _stats_cache.get(figi)
-    if cached and _now_ts - cached["ts"] < 60:
-        return JSONResponse(cached["data"])
-
-    try:
-        candles = _gcr(figi=figi, interval_name="day", days=365)
-        if not candles:
-            return JSONResponse({"error": "no data"})
-
-        def _f(v):
-            return float(v) if v is not None else None
-
-        today_str = _dt.now(_msk).strftime("%Y-%m-%d")
-        today_c  = [c for c in candles if str(c.get("time", "")).startswith(today_str)]
-        week_c   = candles[-5:]  if len(candles) >= 5  else candles
-        month_c  = candles[-22:] if len(candles) >= 22 else candles
-        year_c   = candles
-
-        prev_close = _f(candles[-2]["close"]) if len(candles) >= 2 else None
-        open_today = _f(today_c[0]["open"])   if today_c else None
-        day_high   = max((_f(c["high"])  for c in today_c if c.get("high")),  default=None)
-        day_low    = min((_f(c["low"])   for c in today_c if c.get("low")),   default=None)
-        week_high  = max((_f(c["high"])  for c in week_c  if c.get("high")),  default=None)
-        week_low   = min((_f(c["low"])   for c in week_c  if c.get("low")),   default=None)
-        month_high = max((_f(c["high"])  for c in month_c if c.get("high")),  default=None)
-        month_low  = min((_f(c["low"])   for c in month_c if c.get("low")),   default=None)
-        year_high  = max((_f(c["high"])  for c in year_c  if c.get("high")),  default=None)
-        year_low   = min((_f(c["low"])   for c in year_c  if c.get("low")),   default=None)
-        avg_vol    = int(sum(_f(c["volume"]) or 0 for c in candles[-20:]) / min(20, len(candles))) if candles else 0
-
-        # Капитализация и мультипликаторы — из таблицы strategy_instruments (если есть)
-        mkt_cap = None
-        try:
-            with __import__("app.db", fromlist=["db_cursor"]).db_cursor() as _c:
-                _c.execute("SELECT market_cap, pe_ratio, pb_ratio, ps_ratio FROM strategy_instruments WHERE figi=? LIMIT 1", (figi,))
-                _row = _c.fetchone()
-                if _row:
-                    mkt_cap = _row[0]
-        except Exception:
-            pass
-
-        data = {
-            "prev_close":  prev_close,
-            "open_today":  open_today,
-            "day_high":    day_high,   "day_low":    day_low,
-            "week_high":   week_high,  "week_low":   week_low,
-            "month_high":  month_high, "month_low":  month_low,
-            "year_high":   year_high,  "year_low":   year_low,
-            "avg_vol":     avg_vol,
-            "market_cap":  mkt_cap,
-        }
-        _stats_cache[figi] = {"ts": _now_ts, "data": data}
-        api_instrument_stats._cache = _stats_cache
-        return JSONResponse(data)
-    except Exception as e:
-        return JSONResponse({"error": str(e)})
 
 
 @app.post("/api/ml/rebalance")

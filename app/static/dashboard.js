@@ -654,8 +654,7 @@ async function renderMainData() {
   );
 
   // ── Сделки — цветные строки как в Истории ────────────────────────────────
-  const displayTrades = (data.api_trades && data.api_trades.length > 0)
-    ? data.api_trades : (data.trades || []);
+  const displayTrades = data.trades || [];
   diffTbody(document.getElementById("mainTradesBody"),
     displayTrades.map((t) => {
       const raw = String(t.pnl_ui || "").replace(/[^0-9.,\-]/g, "").replace(",", ".");
@@ -2255,7 +2254,7 @@ function _histPeriodBtns() {
 
 function _histShell() {
   const tabs = [
-    ["trades","Сделки"],["broker","Операции брокера"],
+    ["trades","Сделки"],["broker","Операции брокера"],["reconcile","Сверка с брокером"],
     ["journal","Журнал"],["errors","Ошибки"],["system","Система"],
   ];
   return `
@@ -2496,6 +2495,9 @@ function _histRefreshActiveTab() {
     case "journal": _histRenderLogs(_histData.common_logs || [], "Нет событий в журнале"); break;
     case "errors":  _histRenderLogs(_histData.error_logs  || [], "Ошибок нет"); break;
     case "system":  _histRenderLogs(_histData.system_logs || [], "Нет системных событий"); break;
+    // Эти вкладки ходят к брокеру: цикл обновления только возвращает их после перерисовки страницы
+    case "broker":    if (!document.getElementById("hBrokerBody")) _histLoadBroker(true); break;
+    case "reconcile": if (!document.getElementById("histReconcile")) _histLoadReconcile(); break;
   }
 }
 
@@ -2506,6 +2508,7 @@ function histShowTab(name) {
     b.classList.toggle("btn-primary", t === name);
   });
   if (name === "broker") { _histLoadBroker(false); return; }
+  if (name === "reconcile") { _histLoadReconcile(); return; }
   _histRefreshActiveTab();
 }
 
@@ -2639,7 +2642,9 @@ async function _histLoadBroker(reset = false) {
         : _histBrokerItems.map(op => {
             const badge = op.direction === "BUY"
               ? `<span class="badge" style="background:rgba(47,163,107,.2);color:#2fa36b">BUY</span>`
-              : `<span class="badge" style="background:rgba(191,77,90,.2);color:#ff7b7b">SELL</span>`;
+              : op.direction === "SELL"
+                ? `<span class="badge" style="background:rgba(191,77,90,.2);color:#ff7b7b">SELL</span>`
+                : `<span class="badge">${esc(_brokerOpLabel(op.type))}</span>`;
             return `<tr>
               <td class="muted" style="font-size:12px;white-space:nowrap">${esc(op.date)}</td>
               <td><b>${esc(op.ticker || op.figi)}</b></td>
@@ -2660,6 +2665,74 @@ async function _histLoadBroker(reset = false) {
     if (body) body.innerHTML =
       `<tr><td colspan="7" style="color:#ff7b7b;text-align:center;padding:20px">Ошибка: ${esc(e.message)}</td></tr>`;
   }
+}
+
+function _brokerOpLabel(type) {
+  const t = String(type || "").replace("OPERATION_TYPE_", "");
+  if (t.startsWith("INPUT")) return "Пополнение";
+  if (t.startsWith("OUTPUT")) return "Вывод";
+  if (t === "DIVIDEND") return "Дивиденды";
+  if (t === "COUPON") return "Купон";
+  return t || "Операция";
+}
+
+function _recRub(v) {
+  if (v == null) return "—";
+  const sign = v > 0 ? "+" : v < 0 ? "−" : "";
+  return sign + Math.abs(v).toLocaleString("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " ₽";
+}
+
+function _histReconcileHtml(d) {
+  const row = (label, value, note = "", bold = false) => `<tr${bold ? ' class="st-total"' : ""}>
+    <td class="wrap">${bold ? `<b>${esc(label)}</b>` : esc(label)}${note ? `<br><span class="muted">${esc(note)}</span>` : ""}</td>
+    <td class="num">${bold ? `<b>${_recRub(value)}</b>` : _recRub(value)}</td></tr>`;
+  if (!d.ops_count) return `<p class="note">У брокера пока нет операций по этому счёту.</p>`;
+  const gapNote = d.commission_gap > 0 ? "брокер взял больше, чем учёл бот" : d.commission_gap < 0 ? "брокер взял меньше, чем учёл бот" : "совпадает";
+  const missing = d.complete ? "" : `<div class="banner-warning" style="margin-bottom:12px">Нет текущей цены по бумагам: ${esc(d.missing_prices.join(", "))}. Они не вошли в итог по брокеру, поэтому разница сейчас неточная.</div>`;
+  const positions = (d.open_positions || []).map((p) => `<tr><td><b>${esc(p.ticker || p.name)}</b></td><td class="num">${_stNum(p.quantity, 0)}</td>
+    <td class="num">${_stNum(p.price, 4)}</td><td class="num">${p.value == null ? "—" : _recRub(p.value)}</td></tr>`).join("");
+  return `${missing}<div class="st-grid">
+      ${_stTile("Итог по брокеру", _recRub(d.broker_result), `${_stNum(d.ops_count, 0)} операций с ${esc(_stDate(d.since))}`)}
+      ${_stTile("Итог бота", _recRub(d.bot_result), `${_stNum(d.trades_count, 0)} закрытых сделок и открытые позиции`)}
+      ${_stTile("Разница", _recRub(d.difference), "брокер минус бот")}
+    </div>
+    <div class="st-two">
+      <div class="table-wrap"><table class="st-table"><thead><tr><th>Откуда итог</th><th class="num">Сумма</th></tr></thead><tbody>
+        ${row("Покупки и продажи", d.cash_flow, "деньги от сделок, пополнения не считаются")}
+        ${row("Комиссии брокера", d.broker_fees)}
+        ${row("Прочие списания", d.other_charges, "например, плата за перенос шорта")}
+        ${row("Открытые позиции по текущим ценам", d.open_value)}
+        ${row("Итог по брокеру", d.broker_result, "", true)}
+        ${row("Закрытые сделки бота", d.bot_realized, `с учётом комиссии ${_recRub(-d.bot_commission)}`)}
+        ${row("Открытые позиции бота", d.bot_unrealized)}
+        ${row("Итог бота", d.bot_result, "", true)}
+      </tbody></table></div>
+      <div class="table-wrap"><table class="st-table"><thead><tr><th>Чем объясняется разница</th><th class="num">Сумма</th></tr></thead><tbody>
+        ${row("Комиссия: разница с учётом бота", -d.commission_gap, gapNote)}
+        ${row("Прочие списания", d.other_charges, "бот о них не знает")}
+        ${row("Остальное", d.unexplained, "цены исполнения и оценка открытых позиций")}
+        ${row("Разница", d.difference, "", true)}
+      </tbody></table></div>
+    </div>
+    ${positions ? `<h3 style="margin:14px 0 8px">Открыто у брокера</h3><div class="table-wrap"><table class="st-table"><thead><tr><th>Бумага</th><th class="num">Кол-во</th><th class="num">Цена</th><th class="num">Сумма</th></tr></thead><tbody>${positions}</tbody></table></div>` : ""}
+    <p class="note">Счёт песочницы, где исполнялись минутные стратегии. Бумажные счета A, B и C ордеров не отправляют и в сверку не входят. Период выбранной кнопки здесь не действует: считается всё время счёта.</p>
+    <button class="btn" onclick="_histLoadReconcile()">Обновить</button>`;
+}
+
+async function _histLoadReconcile() {
+  const content = document.getElementById("histTabContent");
+  if (!content) return;
+  content.innerHTML = `<div id="histReconcile"><div class="note" style="padding:20px;text-align:center">Загружаю операции у брокера…</div></div>`;
+  let html;
+  try {
+    const d = await apiGet("/api/broker/reconcile");
+    html = d.ok ? _histReconcileHtml(d) : `<div class="banner-warning">${esc(d.error)}</div><button class="btn" style="margin-top:10px" onclick="_histLoadReconcile()">Повторить</button>`;
+  } catch (e) {
+    html = `<div class="banner-warning">Сверка не загрузилась: ${esc(e.message)}</div>`;
+  }
+  // Пока шёл запрос, могли переключить вкладку
+  const box = document.getElementById("histReconcile");
+  if (box && _histActiveTab === "reconcile") box.innerHTML = html;
 }
 
 function attachTableFilters() {
@@ -3558,30 +3631,6 @@ function renderHelpTab() {
   ╚══════════════════════════════════════════════╝`);
 
   // ── PHASE 1 DIAGRAM ─────────────────────────────────────────────────────────
-  const phase1Diagram = pre(`
-  ИСТОРИЯ СДЕЛОК (последние 90 дней)
-           │
-           ▼
-  ┌─────────────────────────────────────┐
-  │   АНАЛИЗ КАЧЕСТВА (EWA quality)    │
-  │                                     │
-  │ quality_score = pnl / invested      │
-  │ Экспоненц. скользящее среднее       │
-  │ confidence = f(число сделок)        │
-  └───────────────┬─────────────────────┘
-                  │ confidence ≥ порог
-                  ▼
-  ┌──────────────────────────────────────────┐
-  │           ОПТИМИЗАЦИЯ                   │
-  │                                          │
-  │  conf ≥ 0.50 → Coordinate Descent:      │
-  │    Перебор 5400 комбо SL/TP/score       │
-  │    Лучшая expectancy → применяем        │
-  │                                          │
-  │  conf ≥ 0.65 → Thompson Sampling:       │
-  │    Выбор режима стратегии               │
-  │    (mean_reversion / breakout / trend)  │
-  └──────────────────────────────────────────┘`);
 
   host.innerHTML = `
   <section class="block">
@@ -3598,7 +3647,7 @@ function renderHelpTab() {
       document.querySelectorAll('.help-nav-btn').forEach(e=>e.classList.remove('btn-primary'));
       this.classList.add('btn-primary');
     " class="btn help-nav-btn${i===0?' btn-primary':''}">${
-      ["📈 Счета и режимы","🤖 ML Модель","📊 Оптимизация","⚡ Стратегии акций","📋 Позиции","⚙️ Настройки","❓ FAQ"][i]
+      ["📈 Счета и режимы","🤖 ML Модель","📊 Подбор настроек","⚡ Стратегии акций","📋 Позиции","⚙️ Настройки","❓ FAQ"][i]
     }</button>`).join("")}
   </div>
 
@@ -3693,49 +3742,31 @@ function renderHelpTab() {
     ${warn("Больше данных не гарантирует качество: проверка вперёд по времени показала, что минутные сигналы модель улучшить не может.")}
   </div>
 
-  <!-- Phase 1 Оптимизация -->
+  <!-- Подбор настроек -->
   <div data-hsec id="hs-phase1" style="display:none">
-    ${h3("📊 Фаза 1 — Автооптимизация параметров стратегий")}
-    ${p("Параллельно с ML-моделью (Phase 2) работает система самообучения Phase 1 которая оптимизирует SL, TP и минимальный score на основе истории торговли.")}
-    ${phase1Diagram}
-
-    ${h3("Confidence — уровень уверенности")}
+    ${h3("📊 Ночной подбор настроек")}
+    ${warn("Сейчас выключен. Переключатель «Ночной подбор настроек» на вкладке «Стратегия».")}
+    ${p("Включённый подбор каждую ночь смотрит на сделки стратегий акций и сам меняет SL, TP, порог сигнала и режим, а худшие бумаги временно отключает. Чем больше сделок по бумаге, тем больше он может поменять.")}
+    ${p("Выключен, потому что подбирает по той же истории, на которой потом судит о результате, и не проверяет себя на отложенных данных. Раньше это останавливало торговлю по GAZP, ROSN и VTBR.")}
+    ${h3("Как настройки меняются сейчас")}
     ${li([
-      "<b>0.30+</b> (5+ сделок) → Мягкий сдвиг score на 1-3 пункта",
-      "<b>0.50+</b> (10+ сделок) → Оптимизация SL/TP: Coordinate Descent по 5400 комбинациям",
-      "<b>0.65+</b> (15+ сделок) → Выбор режима стратегии: Thompson Sampling",
-      "<b>0.75+</b> (20+ сделок) → Временное отключение инструментов с низким качеством"
+      "<b>Вкладка «Настройки акций»:</b> человек меняет настройки каждой бумаги сам",
+      "<b>Вкладка «Аналитик»:</b> перебор вариантов по истории запускается кнопкой, результат применяется только после подтверждения",
+      "<b>Субботний отчёт и подбор:</b> по субботам в 18:00 МСК приходит отчёт в Telegram с предложениями. Настройки меняются, только если принять предложение кнопкой. Выключается на вкладке «Стратегия», там же даты запусков"
     ])}
-
-    ${h3("Что было оптимизировано (последний ребаланс 03.06.2026)")}
-    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px">
-      ${[
-        ["VTBR","SL 0.6%→0.3%, TP 2%→1.5%, score 0→20"],
-        ["TATN","SL 0.6%→0.2%"],
-        ["SBER","SL 0.5%→0.6%, TP 1%→1.5%"],
-        ["ROSN","min_score 40→50"],
-        ["NVTK","TP 1.5%→2%"],
-        ["MOEX","SL 0.5%→0.3%, TP 1.5%→2%"],
-        ["GAZP","SL 0.6%→0.5%"],
-        ["ALRS","режим trend→breakout, score 0→50"],
-        ["AFLT","SL 0.6%→0.2%, TP 2%→1.5%, score 0→20"],
-      ].map(([t,d])=>`<div style="background:rgba(255,255,255,.03);border-radius:6px;padding:8px 10px">
-        <div style="font-weight:700;color:#c4dcff;font-size:13px">${t}</div>
-        <div style="font-size:11px;color:#9fb3d8">${d}</div>
-      </div>`).join("")}
-    </div>
   </div>
 
   <!-- Стратегии -->
   <div data-hsec id="hs-strategies" style="display:none">
-    ${h3("⚡ Параллельные стратегии")}
-    ${p("Бот торгует 12 инструментами одновременно через параллельные потоки. Координатор гарантирует что в любой момент открыта только ОДНА позиция.")}
+    ${h3("⚡ Минутные стратегии акций")}
+    ${warn("Реальные входы сейчас закрыты: на проверке эти сигналы убыточны. Переключатель «Реальные входы по акциям» на вкладке «Стратегия». Уже открытые позиции сопровождаются при любом положении.")}
+    ${p("Бот ведёт 12 акций параллельными потоками. По одной бумаге открыта одна позиция, по разным бумагам позиции могут быть открыты одновременно. Их число ограничивает настройка max_open_positions.")}
 
     ${h3("Статусы стратегий")}
-    <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:12px">
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin-bottom:12px">
       ${[
         ["🟢 в позиции","Эта стратегия держит активную позицию"],
-        ["⚪ другая стратегия в позиции","Координатор заблокирован другой стратегией"],
+        ["⚪ другая стратегия в позиции","Позицию по этой бумаге ведёт другая стратегия"],
         ["🔵 ожидание сигнала","Сканирует рынок, ждёт сигнала BUY/SELL"],
         ["🟡 торговля не ведётся","Вне торговой сессии MOEX"],
         ["🔴 бот выключен","Торговля отключена в настройках"],
@@ -3758,93 +3789,109 @@ function renderHelpTab() {
     ${li([
       "<b>Основная:</b> 10:00 – 18:50 МСК (пн–пт)",
       "<b>Вечерняя:</b> 19:05 – 23:50 МСК (пн–пт)",
-      "<b>Режим mean_reversion</b> — возврат к средней, RSI-фильтр",
-      "<b>Режим breakout</b> — пробой уровней, импульс",
-      "<b>Режим trend</b> — следование тренду, SMA-фильтр"
+      "<b>Праздники:</b> дашборд и бот считают биржу закрытой по календарю, см. ниже"
     ])}
 
-    ${h3("🌙 Режим сна (Sleep Mode)")}
-    ${p("Когда биржа закрыта и в профиле включён параметр <b>«Торговать только в сессию: Да»</b> — бот прекращает API-запросы и переходит в режим сна.")}
+    ${h3("Режимы стратегий")}
     ${li([
-      "Все 12 параллельных воркеров засыпают до открытия сессии",
-      "Статус каждой стратегии: <b>🌙 сон до HH:MM</b>",
-      "В блоке Сервис показывается: <b>🌙 Сон до 10:00</b>",
-      "Просыпание автоматически — за несколько секунд до открытия",
-      "Открытые позиции <b>продолжают мониториться</b> — сон не блокирует закрытие",
-      "Чанк сна: максимум 10 минут — бот периодически проверяет изменение настроек",
-      'Если <b>«Торговать только в сессию: Нет»</b> — бот сканирует 24/7, но открывает позиции только если инструмент доступен для торговли (GetTradingStatus)'
+      "<b>mean_reversion</b> — возврат к средней, RSI-фильтр",
+      "<b>breakout</b> — пробой уровней, импульс",
+      "<b>trend</b> — следование тренду, SMA-фильтр"
     ])}
 
-    ${h3("🚫 Защита от SHORT на выходных и праздниках")}
-    ${p("SHORT-позиции требуют оплаты ставки РЕПО за каждую ночь удержания. В пятницу это 3× — за субботу, воскресенье и понедельник.")}
-    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px">
+    ${h3("🌙 Режим сна")}
+    ${p("Когда биржа закрыта и в профиле включён параметр <b>«Торговать только в сессию: Да»</b>, бот прекращает запросы к API и ждёт открытия.")}
+    ${li([
+      "Статус каждой стратегии: <b>🌙 сон до HH:MM</b>",
+      "Просыпание автоматически, за несколько секунд до открытия",
+      "Открытые позиции <b>продолжают сопровождаться</b>: сон не мешает закрытию",
+      "Сон идёт отрезками до 10 минут: бот успевает заметить изменение настроек",
+      "Если <b>«Торговать только в сессию: Нет»</b>, бот сканирует круглосуточно, но открывает позиции только по бумаге, доступной для торговли"
+    ])}
+
+    ${h3("🚫 Защита от шорта на выходных и праздниках")}
+    ${p("За перенос шорта через ночь платится ставка РЕПО. В пятницу это 3 дня сразу.")}
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:8px;margin-bottom:12px">
       ${[
-        ["0 — Норма","Рабочий день или до 17:00 МСК в пятницу. SHORT разрешён.","#2fa36b"],
-        ["1 — Риск (после 17:00)","Завтра нерабочий день, сейчас ≥ 17:00 МСК. Новый SHORT заблокирован.","#f0c04a"],
-        ["3 — Высокий (после 17:00)","Пятница/канун длинных выходных, ≥ 17:00 МСК. SHORT заблокирован.","#ff7b7b"],
+        ["0 — Норма","Завтра рабочий день или сейчас раньше 17:00 МСК. Шорт разрешён.","#2fa36b"],
+        ["1 — Риск (с 17:00)","Завтра нерабочий день. Новый шорт заблокирован.","#f0c04a"],
+        ["3 — Высокий (с 17:00)","Впереди длинные выходные. Новый шорт заблокирован.","#ff7b7b"],
       ].map(([t,d,c])=>`<div style="background:rgba(255,255,255,.03);border:1px solid ${c}33;border-radius:6px;padding:10px">
         <div style="font-weight:700;color:${c};margin-bottom:4px;font-size:12px">${t}</div>
         <div style="font-size:11px;color:#9fb3d8">${d}</div>
       </div>`).join("")}
     </div>
     ${li([
-      "Праздники вычисляются <b>автоматически</b> на текущий + следующий год — обновление не требуется",
-      "За 10 дней до конца года следующий год уже включён в расчёт",
-      "Российские федеральные праздники: 1-8 янв, 23 фев, 8 мар, 1 мая, 9 мая, 12 июн, 4 нояб",
-      "При переносе праздника (если он попал на сб/вс) — автоматически учитывается понедельник",
-      "<b>short_carry_risk</b> — 31-й признак ML-модели. Модель учится избегать SHORT перед выходными",
-      "Закрытие существующих SHORT позиций <b>не блокируется</b> — только открытие новых"
+      "Открытый шорт бот закрывает сам с 22:50 МСК в пятницу и накануне праздника. Причина закрытия: <b>SHORT_CARRY_CLOSE</b>",
+      "Календарь считается по правилам на текущий и следующий год: 1–8 января, 23 февраля, 8 марта, 1 и 9 мая, 12 июня, 4 ноября",
+      "Праздник, попавший на субботу или воскресенье, переносится на понедельник",
+      "Риск переноса записывается и как признак модели <b>short_carry_risk</b>"
     ])}
 
-    ${warn("⚠️ Перенос праздников: правительство РФ ежегодно утверждает список переносов. Базовый алгоритм применяет стандартное правило (сб→пн, вс→пн). В особых случаях может быть неточным на 1 день.")}
+    ${warn("⚠️ Особые переносы выходных, которые правительство утверждает отдельно, календарь не знает. Такой день он может определить неверно.")}
   </div>
 
   <!-- Позиции -->
   <div data-hsec id="hs-positions" style="display:none">
-    ${h3("📋 Блок позиций — расшифровка полей")}
+    ${h3("📋 Сделки — расшифровка полей")}
     ${li([
-      "<b>PnL</b> = (exit − entry) × акции − комиссия. Для SELL: (entry − exit) × акции − комиссия",
+      "<b>PnL</b> = (выход − вход) × акции − комиссия. Для шорта: (вход − выход) × акции − комиссия",
       "<b>Вход / Выход</b> — средняя цена исполнения ордера",
       "<b>Кол-во лотов × размер</b> — лоты × акций в лоте = итого акций",
-      "<b>Комиссия</b> = (entry × акции + exit × акции) × 0.04%",
-      "<b>STOP_LOSS</b> — позиция закрыта по достижению уровня стопа",
-      "<b>TAKE_PROFIT</b> — позиция закрыта по достижению тейка",
-      "<b>ML_EARLY_EXIT</b> — модель решила закрыть досрочно (P < 0.40)",
-      "<b>exchange</b> — закрыто нативным стопом брокера (без ордера бота)",
-      "<b>manual</b> — закрыто вручную через брокерское приложение"
+      "<b>Комиссия</b> = (вход × акции + выход × акции) × 0,05%. Настоящая комиссия брокера видна на вкладке «История сделок» → «Сверка с брокером»"
     ])}
 
-    ${h3("Блок котировок (Финам-стиль)")}
+    ${h3("Причины закрытия")}
     ${li([
-      "<b>Пред. закр.</b> — цена закрытия предыдущей торговой сессии",
-      "<b>Открытие</b> — цена первой свечи текущей сессии",
-      "<b>День / Неделя / Месяц / Год</b> — диапазон High–Low за период",
-      "<b>Ср. объём</b> — среднедневной объём за 20 дней",
-      "Данные берутся из T-Bank API (дневные свечи), кэш 60 сек"
+      "<b>STOP_LOSS</b> — цена дошла до стопа",
+      "<b>TAKE_PROFIT</b> — цена дошла до тейка",
+      "<b>SHORT_CARRY_CLOSE</b> — бот закрыл шорт перед выходными или праздником",
+      "<b>ML_EARLY_EXIT</b> — модель закрыла убыточную позицию досрочно. Бывает только при включённом вето модели, при P < 0,30, не раньше чем через 20 минут после входа и если точность модели не ниже 55%",
+      "<b>MANUAL_CLOSE</b> — закрыто вручную",
+      "<b>ORPHAN_CLEANUP, REPAIR_REVERSAL, NETTING_CLOSE</b> — служебные закрытия при расхождении с брокером, в статистику стратегий не входят"
+    ])}
+
+    ${h3("Как подтверждена цена выхода")}
+    ${li([
+      "<b>exchange</b> — по операции брокера",
+      "<b>manual</b> — по операции брокера, закрыто вручную",
+      "<b>estimated</b> — операцию брокера найти не удалось, цена оценочная"
     ])}
   </div>
 
   <!-- Настройки -->
   <div data-hsec id="hs-settings" style="display:none">
-    ${h3("⚙️ Ключевые настройки бота")}
+    ${h3("⚙️ Ключевые настройки акций")}
     ${li([
-      "<b>check_interval_sec</b> — частота опроса инструментов (сек). Меньше = быстрее реакция но больше API-запросов",
-      "<b>stop_loss_pct</b> — стоп-лосс в %. ML может адаптировать на ±50% от базового",
-      "<b>take_profit_pct</b> — тейк-профит в %. ML может адаптировать на ±60%",
+      "<b>check_interval_sec</b> — частота проверки инструментов (сек). Меньше: быстрее реакция, но больше запросов к API",
+      "<b>stop_loss_pct, take_profit_pct</b> — стоп и тейк. На шумном рынке (ATR больше стопа в 1,5 раза) бот расширяет стоп в 1,5 раза, но не больше 1,2%, и тейк в 1,6 раза, но не больше 3,5%. Уже базовых уровней они не становятся",
       "<b>min_signal_score</b> — минимальный score сигнала для входа (0-100)",
-      "<b>max_daily_loss_rub</b> — максимальный дневной убыток. При превышении торговля блокируется до следующего дня",
-      "<b>auto_lots</b> — автоматический расчёт числа лотов от суммы портфеля. ML скейлит по уверенности",
-      "<b>use_order_book_filter</b> — использовать давление стакана для фильтрации сигналов",
+      "<b>max_daily_loss_rub</b> — дневной убыток, после которого торговля останавливается до следующего дня",
+      "<b>auto_lots</b> — автоматический расчёт числа лотов от суммы портфеля",
+      "<b>use_order_book_filter</b> — учитывать давление стакана при входе",
       "<b>use_api_confirm</b> — подтверждение сигнала через RSI/MACD/BB от T-Bank API"
     ])}
 
-    ${h3("API лимиты T-Bank")}
+    ${h3("Масштаб лота от модели")}
+    ${p("Работает только при включённом вето модели, в теневом режиме размер не меняется. P ≥ 0,90: 100% лота; ≥ 0,80: 80%; ≥ 0,70: 65%; ≥ 0,65: 50%; ниже: 35%, а ниже порога входа сделки нет.")}
+
+    ${h3("Загрузка истории и обучение кандидата")}
+    ${p("Вкладка «Модель», блок с кнопками. Задания идут по порядку, по одному и не мешают боту:")}
     ${li([
-      "Лимит: 600 запросов/мин на аккаунт",
-      "Каждый инструмент: GetCandles + GetLastPrices + GetOrderBook каждый цикл",
-      "12 инструментов × 3 запроса × 12 итераций/мин ≈ 432 запроса",
-      "GetTechAnalysis (RSI/MACD/BB) — только при use_api_confirm=true",
-      "⚠️ При нагрузке > 80% рекомендуется увеличить check_interval_sec"
+      "<b>Загрузить минутные свечи</b> — качает свечи в кеш на диске, БД не меняет. Прерванную загрузку можно продолжить",
+      "<b>Пересчитать историю в сделки</b> — прогоняет стратегии по свечам. Каждая сделка живёт до SL или TP. Строки идут в обучение, кроме последних 5 дней истории. Перед записью снимается бэкап БД",
+      "<b>Обучить и проверить кандидата</b> — проверка вперёд по времени и отчёт. Кандидат в торговлю не попадает",
+      "Перезапуск дашборда прерывает задание: статус будет «Прервано», задание можно запустить заново"
+    ])}
+
+    ${h3("Сверка с брокером")}
+    ${p("Вкладка «История сделок» → «Сверка с брокером». Показывает итог по операциям брокера и итог бота, а разницу раскладывает на комиссию, прочие списания и остальное. Если брокер не отвечает, вкладка так и скажет, остальная страница работает.")}
+
+    ${h3("Запросы к API")}
+    ${li([
+      "При включённом «Потоке цен для стратегий» цены и стакан приходят потоком и почти не расходуют лимит",
+      "При выключенном каждая бумага запрашивает свечи, цену и стакан в каждом цикле: расход растёт с числом бумаг и частотой проверки",
+      "Если расход приближается к лимиту, увеличьте check_interval_sec"
     ])}
   </div>
 
@@ -3858,12 +3905,12 @@ function renderHelpTab() {
        "Модель считает и записывает решения в ml_decisions, но не блокирует входы, не меняет лот и не закрывает позиции. Включается и выключается переключателем «Вето модели» на вкладке «Стратегия»."],
       ["Почему позиция закрылась раньше SL/TP?",
        "Причины: сработал биржевой стоп или тейк, ручное закрытие, перенос шорта через выходные (SHORT_CARRY_CLOSE). ML_EARLY_EXIT бывает только при включённом вето модели."],
-      ["Почему у всех стратегий статус «ожидание сигнала» когда есть позиция?",
-       "Возможно, координатор потерял состояние после рестарта бота. Бот автоматически восстанавливает позицию из БД каждые 5 сек. Если не восстановилось через 30 сек — проверь Telegram-уведомления."],
+      ["Почему итог бота не совпадает с брокером?",
+       "Откройте «История сделок» → «Сверка с брокером»: там разница разложена на комиссию, прочие списания и цены исполнения. Бумажные счета A, B и C в сверку не входят: они ордеров не отправляют."],
       ["Как часто обновляются параметры SL/TP?",
        "Сами они не меняются: ночной подбор выключен. Настройки меняет человек на вкладке «Настройки акций». Включить подбор можно на вкладке «Стратегия», но на проверке он подгонялся под прошлое и останавливал торговлю по части бумаг."],
-      ["Что значит PnL = -52.55 при одинаковой цене входа и выхода?",
-       "Комиссия брокера — она взимается при открытии И закрытии. При цене 325 ₽ × 202 акции × 2 стороны × 0.04% = 52.55 ₽ даже при нулевом движении цены."],
+      ["Почему PnL отрицательный при одинаковой цене входа и выхода?",
+       "Комиссия брокера берётся и при открытии, и при закрытии. При цене 325 ₽ × 202 акции × 2 стороны × 0,05% это 65,65 ₽ даже без движения цены."],
     ].map(([q,a])=>`
       <div style="margin-bottom:12px;border-bottom:1px solid rgba(255,255,255,.05);padding-bottom:12px">
         <div style="font-weight:600;color:#c4dcff;margin-bottom:4px">Q: ${q}</div>
@@ -3879,6 +3926,7 @@ async function renderLearningTab() {
   try {
     const data = await apiGet("/api/ml/summary");
     host.innerHTML = _buildLearningHtml(data);
+    await refreshMlJobs();
   } catch(e) {
     host.innerHTML = `<div class="banner-warning">Ошибка загрузки: ${esc(e.message)}</div>`;
   }
@@ -4017,7 +4065,7 @@ function _buildLearningHtml(data) {
       </div>
       ${vStat.backfill_n ? `<div class="muted" style="font-size:12px;margin-top:8px">📚 <b>Историческая добивка</b> (отдельно от живых, в срезах ниже не учтена): <b>${vStat.backfill_n}</b> эпизодов,
         ${vStat.backfill_wins||0}✓ / ${vStat.backfill_losses||0}✗ (${vWr(vStat.backfill_wins||0, vStat.backfill_losses||0)}), период ${esc((vStat.backfill_first||"").slice(0,10))} … ${esc((vStat.backfill_last||"").slice(0,10))}.
-        Сделки обрезаны старым лимитом 2 часа, поэтому в обучение они не идут.</div>` : ""}
+        Сделки живут до SL или TP. В обучение идут все, кроме последних дней истории: там остались только быстрые исходы.</div>` : ""}
       <div style="display:flex;gap:14px;flex-wrap:wrap">
         ${vGroup("По режимам", vSum.by_mode, g => MODE_RU[g] || g)}
         ${vGroup("По причине выхода", vSum.by_reason, g => REASON_RU[g] || g || "—")}
@@ -4061,9 +4109,9 @@ function _buildLearningHtml(data) {
               Средний итог всех сделок теста: ${v2Num(v2.all_net)} чистыми (${v2Num(v2.all_gross)} до издержек).</div>
           </div>
           <div style="display:flex;gap:14px;flex-wrap:wrap">
-            <div style="flex:2;min-width:380px"><div style="font-size:12px;font-weight:700;color:#c4dcff;margin:6px 0 4px">Что даёт отбор лучших сделок по прогнозу (чистый итог на сделку после комиссии и спреда)</div>
+            <div style="flex:2;min-width:min(380px,100%)"><div style="font-size:12px;font-weight:700;color:#c4dcff;margin:6px 0 4px">Что даёт отбор лучших сделок по прогнозу (чистый итог на сделку после комиссии и спреда)</div>
               <div class="table-wrap"><table><thead><tr><th>Отбор</th><th>Сделок</th><th>Чистый итог</th><th>90%-интервал</th><th>До издержек</th><th>Побед</th><th>Фолдов &gt; 0</th></tr></thead><tbody>${pooledRows}</tbody></table></div></div>
-            <div style="flex:1;min-width:300px"><div style="font-size:12px;font-weight:700;color:#c4dcff;margin:6px 0 4px">Хронологические фолды</div>
+            <div style="flex:1;min-width:min(300px,100%)"><div style="font-size:12px;font-weight:700;color:#c4dcff;margin:6px 0 4px">Хронологические фолды</div>
               <div class="table-wrap"><table><thead><tr><th>Тест</th><th>Обучение</th><th>Тест, n</th><th>Корреляция</th><th>Все сделки</th></tr></thead><tbody>${foldRows}</tbody></table></div></div>
           </div>
           ${modeRows ? `<div style="font-size:12px;font-weight:700;color:#c4dcff;margin:10px 0 4px">Внутри режима (верхние 5% по прогнозу)</div>
@@ -4190,12 +4238,13 @@ function _buildLearningHtml(data) {
   return `
     ${statusBanner}
     ${_mlTrainingBlock(data)}
+    ${_mlJobsShell()}
     <div style="margin:14px 0 6px"><button class="btn btn-primary" onclick="mlRebalance()">⚡ Переобучить модель сейчас</button>
       <span class="muted" style="font-size:11px;margin-left:8px">обычно происходит автоматически в 00:00 МСК и каждые 10 новых сделок</span></div>
 
     ${sec(h2("🧪 Виртуальные сделки","Каждый новый сигнал отрабатывается без брокера, исход идёт в обучение. Одна серия подряд идущих сигналов считается одним эпизодом.") + virtualBlock)}
 
-    ${sec(h2("🔬 Честная проверка модели (тренер v2)","Отчёт от 30.10 на строках со старым лимитом 2 часа, эти строки удалены 04.11. Повторить его можно, когда накопятся сделки без срока. Метод: учится на прошлом, проверяется на более позднем периоде с зазором в сутки.") + v2Block)}
+    ${sec(h2("🔬 Честная проверка модели (тренер v2)","Отчёт от 30.10 на строках со старым лимитом 2 часа, эти строки удалены. Новый отчёт появится после задания «Обучить и проверить кандидата». Метод: учится на прошлом, проверяется на более позднем периоде с зазором в сутки.") + v2Block)}
 
     ${sec(h2("🔄 Как работает модель — полный цикл","Каждый этап с живыми данными вашей модели. Стрелки показывают поток данных.") + pipeline +
       edu("💡 <b>Принцип машинного обучения:</b> модель не знает торговых правил. Она смотрит на тысячи примеров «вот так выглядел рынок → вот что вышло» и сама находит закономерности. Чем больше размеченных сделок — тем умнее модель. Это тот же принцип, что и в нейросетях; здесь используется <b>GradientBoosting</b> — ансамбль из 150 решающих деревьев, который часто точнее нейросети на табличных данных."))}
@@ -5245,7 +5294,7 @@ function _stRules(o) {
 
 function _stControls(o) {
   const rows = (o.controls || []).map((c) => `<tr>
-    <td class="wrap"><b>${esc(c.label)}</b><br><span class="muted">${esc(c.hint)}</span></td>
+    <td class="wrap"><b>${esc(c.label)}</b><br><span class="muted">${esc(c.hint)}</span>${c.status ? `<br><span class="muted"><b>${esc(c.status)}</b></span>` : ""}</td>
     <td><b>${c.on ? "Включено" : "Выключено"}</b></td>
     <td><button class="btn st-pick ${!c.on && c.danger_on ? "btn-danger" : ""}" onclick="stToggleMode('${esc(c.key)}', ${c.on ? "false" : "true"})">${c.on ? "Выключить" : "Включить"}</button></td></tr>`).join("");
   return `<div class="table-wrap"><table class="st-table"><thead><tr><th>Режим</th><th>Сейчас</th><th></th></tr></thead><tbody>${rows}
@@ -5290,18 +5339,118 @@ function _mlTrainingBlock(data) {
   const t = data.training_data;
   if (!t) return "";
   const ready = t.next_ready ? `первые будут готовы ${esc(_stDate(t.next_ready))}` : "пока нет таких сделок";
-  return `<section class="block"><h2>Данные для обучения</h2>
+  return `<section class="block" id="mlTrainingBlock"><h2>Данные для обучения</h2>
     <div class="st-grid">
       ${_stTile("Идёт в обучение", _stNum(t.usable, 0), `минимум для обучения ${t.min_samples}`)}
       ${_stTile("Реальные сделки", _stNum(t.real, 0), "штатный выход по SL/TP")}
       ${_stTile("Виртуальные, вызрели", _stNum(t.virtual_ready, 0), `старше ${t.maturity_days} дней`)}
       ${_stTile("Виртуальные, ждут", _stNum(t.virtual_waiting, 0), ready)}
-      ${_stTile("Не используется", _stNum(t.backfill_excluded + t.virtual_excluded, 0), "старые правила с лимитом 2 часа")}
+      ${_stTile("История, старше " + t.maturity_days + " дней", _stNum(t.backfill_ready, 0), "пересчёт свечей до SL/TP")}
+      ${_stTile("Не используется", _stNum(t.backfill_excluded + t.virtual_excluded, 0), "конец истории и сделки старых правил")}
     </div>
-    <p class="note">Свежие виртуальные сделки ждут ${t.maturity_days} дней: пока долгие ещё открыты, закрытые дают перекос в сторону быстрых исходов.
+    <p class="note">Свежие виртуальные сделки ждут ${t.maturity_days} дней: пока долгие ещё открыты, закрытые дают перекос в сторону быстрых исходов. По той же причине не берутся последние ${t.maturity_days} дней истории. В обучение идёт не больше ${_stNum(t.max_rows, 0)} новейших строк.
       Модель включается, только если на отложенном периоде её отбор на ${t.min_lift_pct}% лучше доли прибыльных сделок без отбора и в плюсе в деньгах.</p>
     <p class="note">Проверка вперёд по времени на 10 739 минутных сделках: связь прогноза с исходом 0,003, при P≥0,6 итог −0,509% на сделку против −0,155% без отбора. Поэтому вето выключено.</p>
   </section>`;
+}
+
+const _JOB_STATES = {
+  idle: ["Не запускалось", ""], running: ["Идёт", "chip-warn"], done: ["Готово", "chip-good"], failed: ["Ошибка", "chip-bad"],
+  stopped: ["Остановлено", ""], interrupted: ["Прервано перезапуском дашборда", "chip-bad"],
+};
+let _mlJobsRunning = null;
+
+function _mlJobsShell() {
+  return `<section class="block" id="mlJobs"><h2>Загрузка истории и обучение кандидата</h2>
+    <p class="note">Порядок: загрузить свечи, пересчитать их в сделки, обучить кандидата. Задания идут по одному, с низким приоритетом, торговлю и бумажные счета не затрагивают. Кандидат в торговлю сам не попадает.</p>
+    <div id="mlJobsBody"><div class="note">Загрузка…</div></div></section>`;
+}
+
+function _mlJobCard(j) {
+  return `<div class="st-job" data-job="${esc(j.name)}">
+    <div class="st-job-head"><b>${esc(j.label)}</b><span class="chip" id="jobState-${esc(j.name)}"></span></div>
+    <p class="note">${esc(j.hint)}</p>
+    <div class="st-job-actions">
+      ${j.days ? `<label class="note">Дней истории <input class="field" type="number" min="1" max="${j.max_days}" value="${j.run_days || j.default_days}" id="jobDays-${esc(j.name)}"></label>` : ""}
+      <button class="btn btn-primary st-pick" id="jobStart-${esc(j.name)}" onclick="mlJobStart('${esc(j.name)}')">Запустить</button>
+      <button class="btn st-pick" id="jobStop-${esc(j.name)}" onclick="mlJobStop('${esc(j.name)}')">Остановить</button>
+    </div>
+    <div class="note" id="jobWhen-${esc(j.name)}"></div>
+    <pre class="st-job-log" id="jobLog-${esc(j.name)}" hidden></pre>
+  </div>`;
+}
+
+function _mlJobApply(j, busy) {
+  const [text, cls] = _JOB_STATES[j.status] || [j.status, ""];
+  const state = document.getElementById(`jobState-${j.name}`);
+  if (!state) return;
+  state.textContent = text;
+  state.className = `chip ${cls}`;
+  document.getElementById(`jobStart-${j.name}`).disabled = Boolean(busy);
+  document.getElementById(`jobStop-${j.name}`).disabled = j.status !== "running";
+  const when = [j.started ? `Запуск ${j.started}` : "", j.finished ? `конец ${j.finished}` : "", j.run_days ? `дней истории: ${j.run_days}` : "",
+                j.status === "failed" && j.exit_code != null ? `код выхода ${j.exit_code}` : ""].filter(Boolean).join(", ");
+  document.getElementById(`jobWhen-${j.name}`).textContent = when;
+  const log = document.getElementById(`jobLog-${j.name}`);
+  log.hidden = !j.log;
+  if (log.textContent !== (j.log || "")) {
+    log.textContent = j.log || "";
+    log.scrollTop = log.scrollHeight;
+  }
+}
+
+async function refreshMlJobs() {
+  const body = document.getElementById("mlJobsBody");
+  if (!body) return;
+  let data;
+  try {
+    data = await apiGet("/api/jobs");
+  } catch (e) {
+    if (!body.querySelector("[data-job]")) body.innerHTML = `<div class="banner-warning">Задания не загрузились: ${esc(e.message)}</div>`;
+    return;
+  }
+  // Карточки создаются один раз: при обновлении статуса поле дней не сбрасывается
+  if (!body.querySelector("[data-job]")) body.innerHTML = data.jobs.map(_mlJobCard).join("");
+  const running = data.jobs.find((j) => j.status === "running");
+  data.jobs.forEach((j) => _mlJobApply(j, running));
+  const finished = _mlJobsRunning && (!running || running.name !== _mlJobsRunning);
+  if (finished) {
+    const was = data.jobs.find((j) => j.name === _mlJobsRunning);
+    const [text] = _JOB_STATES[was?.status] || ["завершено"];
+    showToast(`${was?.label || "Задание"}: ${text}`, was?.status === "done" ? "success" : "error", 5000);
+    try {
+      const fresh = _mlTrainingBlock(await apiGet("/api/ml/summary"));
+      const block = document.getElementById("mlTrainingBlock");
+      if (block && fresh) block.outerHTML = fresh;
+    } catch {}
+  }
+  _mlJobsRunning = running ? running.name : null;
+}
+
+async function mlJobStart(name) {
+  const label = document.querySelector(`[data-job="${name}"] b`)?.textContent || name;
+  const input = document.getElementById(`jobDays-${name}`);
+  const days = input ? Number(input.value) : null;
+  const what = input ? `«${label}» за ${days} дн.` : `«${label}»`;
+  if (!window.confirm(`Запустить ${what}? Задание идёт в фоне и может занять от минут до нескольких часов.`)) return;
+  try {
+    await apiPostJson("/api/jobs/start", { name, days });
+    showToast(`Запущено: ${label}`, "success");
+  } catch (e) {
+    showToast(e.message, "error", 6000);
+  }
+  await refreshMlJobs();
+}
+
+async function mlJobStop(name) {
+  const label = document.querySelector(`[data-job="${name}"] b`)?.textContent || name;
+  if (!window.confirm(`Остановить «${label}»?`)) return;
+  try {
+    await apiPostJson("/api/jobs/stop", { name });
+  } catch (e) {
+    showToast(e.message, "error", 5000);
+  }
+  await refreshMlJobs();
 }
 
 function _stElsewhere(o) {
@@ -5446,6 +5595,11 @@ function startRefreshLoops() {
     try { if (getTabFromHash() === "стратегия") await renderStrategyTab(); } catch {}
   }, 30000);
 
+  // Задания на вкладке «Модель»: статус и журнал на ходу
+  setInterval(async () => {
+    try { if (getTabFromHash() === "обучение") await refreshMlJobs(); } catch {}
+  }, 5000);
+
   // Полоса режима на всех вкладках
   setInterval(async () => {
     try { if (getTabFromHash() !== "стратегия") await refreshModeStrip(); } catch {}
@@ -5517,6 +5671,9 @@ async function bootstrapDashboard() {
   window.mainChartsApplySettings = mainChartsApplySettings;
   window.histSetPeriod   = histSetPeriod;
   window.histShowTab     = histShowTab;
+  window._histLoadReconcile = _histLoadReconcile;
+  window.mlJobStart      = mlJobStart;
+  window.mlJobStop       = mlJobStop;
   window.histClearTrades = histClearTrades;
   window._histLoadBroker = _histLoadBroker;
   window.toggleParallel = toggleParallel;
