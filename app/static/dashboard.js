@@ -5409,6 +5409,7 @@ function _mlQualityHtml(q) {
       ${_stTile("Отобрал бы", num(sh.selected), `нужно для вывода: ${num(sh.min_selected)}`)}
       ${_stTile("Итог отобранных", net(sh.selected_net), sh.ci_lo == null ? "интервала пока нет" : `90%: ${net(sh.ci_lo)} … ${net(sh.ci_hi)}`)}
       ${_stTile("Итог всех сигналов", net(sh.all_net), "без отбора, для сравнения")}
+      ${sh.paper ? _stTile("Если бы модель торговала", _recRub(sh.paper.rub_total), `${num(sh.paper.trades)} сделок по ${num(sh.paper.stake)} ₽, ${_recRub(sh.paper.rub_per_day)} в день; одна позиция на бумагу, выход через 60 минут`) : ""}
     </div>
     ${shSessions ? `<h3 style="margin-top:12px">По времени суток</h3><div class="table-wrap"><table class="st-table"><thead><tr><th>Время</th><th class="num">Сигналов</th><th class="num">Отобрал бы</th><th class="num">Итог отобранных</th><th class="num">90%-интервал</th><th class="num">Спред при входе</th><th>Вывод</th></tr></thead><tbody>${shSessions}</tbody></table></div>
       <p class="note">На истории плюс кандидата сосредоточен на открытии вечерней сессии и в выходные, а в дневной сессии будней его нет. Поэтому вывод считается и по времени: нужно не меньше ${num(sh.min_selected_session)} отобранных сделок в этом времени.${shSkipped ? ` Не проверяется: в профиле включено «Торговать только в сессию», и бот в это время спит: ${esc(shSkipped)}.` : ""}</p>` : ""}

@@ -175,3 +175,20 @@ def test_off_hours_are_scanned_when_owner_allows_it(tmp_db):
         cur.execute("INSERT OR REPLACE INTO profile_settings(profile_id, key, value) VALUES (1, 'trade_only_session', '0')")
     by = {x["key"]: x for x in cs.evaluate()["sessions"]}
     assert by["weekend"]["scanned"] is True and by["weekend"]["status"] == "collecting"
+
+
+def test_paper_trading_one_position_per_ticker_and_rubles(tmp_db):
+    """Как если бы модель торговала сама: по бумаге одна позиция, следующий вход не раньше чем через 60 минут, 8 000 ₽ на сделку."""
+    save_candidate(tmp_db, threshold=0.5)
+    add_live(tmp_db, "2026-11-09 11:00:00", 90, 0.50, spread=0.0)
+    add_live(tmp_db, "2026-11-09 11:20:00", 90, 0.50, spread=0.0)     # та же бумага раньше чем через час: пропуск
+    add_live(tmp_db, "2026-11-09 12:05:00", 90, -0.10, spread=0.0)
+    add_live(tmp_db, "2026-11-09 11:10:00", 90, 0.30, ticker="GAZP", spread=0.0)
+    add_live(tmp_db, "2026-11-09 13:00:00", 10, 0.90, spread=0.0)     # не отобрана моделью
+    p = cs.evaluate()["paper"]
+    cost = 2 * t2.COMMISSION_SIDE_PCT
+    nets = [0.50 - cost, -0.10 - cost, 0.30 - cost]
+    assert p["trades"] == 3 and p["stake"] == 8000
+    assert p["rub_total"] == pytest.approx(sum(nets) / 100 * 8000, abs=0.01)
+    assert p["rub_per_day"] == pytest.approx(p["rub_total"], abs=0.01)                 # всё в один день
+    assert p["win_pct"] == pytest.approx(200 / 3, abs=0.01)

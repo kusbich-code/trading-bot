@@ -25,6 +25,7 @@ MIN_SELECTED = 200
 MIN_SELECTED_SESSION = 60
 BLANK_FEATURES = ("bid_pressure", "book_depth_ratio")
 MAIN_HYPOTHESIS = "evening_open"
+STAKE_RUB = 8000.0             # сумма сделки для итога в рублях
 
 # Время по МСК. scanned=False: при «Торговать только в сессию» бот в это время спит, живых сигналов не будет
 SESSIONS = (
@@ -98,6 +99,24 @@ def _summary(net: np.ndarray, sel: np.ndarray, block: np.ndarray, need: int) -> 
     return out
 
 
+def _paper(known: List[dict], sel: np.ndarray, net: np.ndarray, horizon_min: int) -> dict:
+    """Как если бы модель торговала сама: по бумаге одна позиция, следующий вход не раньше чем через горизонт, сумма STAKE_RUB."""
+    taken, last = [], {}
+    for i in sorted(np.where(sel)[0], key=lambda k: (known[k]["timestamp"], k)):
+        t = datetime.strptime(known[i]["timestamp"], "%Y-%m-%d %H:%M:%S")
+        prev = last.get(known[i]["ticker"])
+        if prev is None or (t - prev).total_seconds() >= horizon_min * 60:
+            taken.append(i)
+            last[known[i]["ticker"]] = t
+    days = len({r["timestamp"][:10] for r in known}) or 1
+    if not taken:
+        return {"trades": 0, "stake": int(STAKE_RUB), "rub_total": 0.0, "rub_per_day": 0.0, "net": None, "win_pct": None, "days": days}
+    nets = net[taken]
+    rub = float(nets.sum()) / 100 * STAKE_RUB
+    return {"trades": len(taken), "stake": int(STAKE_RUB), "rub_total": round(rub, 2), "rub_per_day": round(rub / days, 2),
+            "net": round(float(nets.mean()), 4), "win_pct": round(100.0 * float((nets > 0).mean()), 2), "days": days}
+
+
 def _empty_sessions(off_hours: bool) -> List[dict]:
     """off_hours: владелец выключил «Торговать только в сессию», сканер работает и вне сессии по торгуемым бумагам."""
     out = []
@@ -126,7 +145,8 @@ def evaluate() -> dict:
     out = {"candidate": {"id": cand["id"], "trained_at": cand["trained_at"], "threshold": round(float(bundle.thr_pred), 4), "q": bundle.q,
                          "horizon": bundle.horizon},
            "pending": len(rows) - len(known), "min_selected": MIN_SELECTED, "min_selected_session": MIN_SELECTED_SESSION,
-           "main_hypothesis": MAIN_HYPOTHESIS, "all_net": None, "by_day": [], "sessions": _empty_sessions(not session_only())}
+           "main_hypothesis": MAIN_HYPOTHESIS, "all_net": None, "by_day": [], "sessions": _empty_sessions(not session_only()),
+           "paper": {"trades": 0, "stake": int(STAKE_RUB), "rub_total": 0.0, "rub_per_day": 0.0, "net": None, "win_pct": None, "days": 0}}
     if not known:
         out.update(rows=0, selected=0, selected_net=None, ci_lo=None, ci_hi=None, selected_win_pct=None)
         out["status"], out["verdict"] = _verdict(0, None, None, MIN_SELECTED)
@@ -141,7 +161,7 @@ def evaluate() -> dict:
     # зависимые сигналы: бумага и 30-минутное окно считаются одним блоком, как в тренере
     stamps = [datetime.strptime(r["timestamp"], "%Y-%m-%d %H:%M:%S").timestamp() for r in known]
     block = np.array([f"{r['figi']}|{int(s // t2.BLOCK_SEC)}" for r, s in zip(known, stamps)])
-    out.update(_summary(net, sel, block, MIN_SELECTED), all_net=round(float(net.mean()), 4))
+    out.update(_summary(net, sel, block, MIN_SELECTED), all_net=round(float(net.mean()), 4), paper=_paper(known, sel, net, bundle.horizon))
     keys = np.array([session_of(r["timestamp"]) for r in known])
     for s in out["sessions"]:
         m = keys == s["key"]
