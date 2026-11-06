@@ -146,6 +146,17 @@ def test_reports_are_shown_newest_first_with_change(tmp_db):
     assert r[1]["delta_spearman"] is None
 
 
+def test_best_slice_is_shown_not_only_top5(tmp_db):
+    """Подтверждённым может оказаться не срез 5%, а 1%: таблица обязана показать лучший срез, иначе вывод читается наоборот."""
+    rep = json.dumps({"folds": [{"spearman": 0.1}], "all_net": -0.13, "pooled": [
+        {"q": 0.05, "n": 15000, "net": -0.026, "ci_lo": -0.037, "ci_hi": -0.015, "folds_positive": 0, "folds": 4},
+        {"q": 0.01, "n": 3000, "net": 0.071, "ci_lo": 0.039, "ci_hi": 0.106, "folds_positive": 4, "folds": 4},
+        {"q": 0.001, "n": 120, "net": 0.5, "ci_lo": -0.1, "ci_hi": 0.9, "folds_positive": 2, "folds": 4}]})
+    add_report(tmp_db, "2026-11-06 18:09:38", 460248, "подтверждено", rep)
+    best = dq.report(NOW)["reports"][0]["best"]
+    assert best == {"q": 0.01, "n": 3000, "net": 0.071, "ci_lo": 0.039, "folds_positive": 4, "folds": 4}
+
+
 def test_broken_report_does_not_break_the_block(tmp_db):
     add_report(tmp_db, "2026-11-05 22:00:00", 10, "сломан", "{не json")
     r = dq.report(NOW)["reports"]

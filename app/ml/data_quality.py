@@ -20,6 +20,7 @@ MIN_FORWARD_PCT = 85.0          # без доходности вперёд ос�
 MAX_FEATURE_GAP_PCT = 5.0
 MIN_LIVE_TO_COMPARE = 30
 MAX_LIVE_GAP_POINTS = 15.0      # расхождение доли прибыльных живых и исторических сделок, процентных пунктов
+MIN_SLICE_N = 300               # срез меньше этого тренер не считает доказательством, здесь так же
 
 
 def _pct(part, whole) -> Optional[float]:
@@ -131,7 +132,7 @@ def _by_month(cur) -> List[dict]:
 
 def _parse_report(row) -> dict:
     out = {"created_at": row["created_at"], "n_rows": row["n_rows"], "verdict": row["verdict"], "spearman": None, "net_top5": None,
-           "ci_lo_top5": None, "all_net": None, "folds_positive_top5": None, "folds": None}
+           "ci_lo_top5": None, "all_net": None, "folds_positive_top5": None, "folds": None, "best": None}
     try:
         rep = json.loads(row["report_json"])
     except (TypeError, ValueError):
@@ -143,6 +144,11 @@ def _parse_report(row) -> dict:
     top5 = next((p for p in rep.get("pooled", []) if p.get("q") == 0.05), None)
     if top5:
         out.update(net_top5=top5.get("net"), ci_lo_top5=top5.get("ci_lo"), folds_positive_top5=top5.get("folds_positive"), folds=top5.get("folds"))
+    # подтверждённым может оказаться не срез 5%, а 1%: без лучшего среза таблица читалась бы наоборот
+    slices = [p for p in rep.get("pooled", []) if (p.get("n") or 0) >= MIN_SLICE_N and p.get("net") is not None]
+    if slices:
+        b = max(slices, key=lambda p: p["net"])
+        out["best"] = {k: b.get(k) for k in ("q", "n", "net", "ci_lo", "folds_positive", "folds")}
     return out
 
 

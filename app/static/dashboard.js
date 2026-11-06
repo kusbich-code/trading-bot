@@ -5382,8 +5382,8 @@ function _mlQualityHtml(q) {
   const reports = (q.reports || []).map((r) => `<tr>
     <td>${esc(_stDate(r.created_at))}</td><td class="num">${num(r.n_rows)}</td>
     <td class="num">${r.spearman == null ? "—" : r.spearman.toFixed(4).replace(".", ",")}${delta(r.delta_spearman, 4)}</td>
-    <td class="num">${net(r.net_top5)}${delta(r.delta_net_top5, 3, " п.п.")}</td><td class="num">${net(r.ci_lo_top5)}</td>
-    <td class="num">${r.folds_positive_top5 == null ? "—" : r.folds_positive_top5 + " из " + r.folds}</td>
+    <td class="num">${r.best ? "верхние " + _stNum(r.best.q * 100, 1) + "%: " + net(r.best.net) : "—"}</td><td class="num">${r.best ? net(r.best.ci_lo) : "—"}</td>
+    <td class="num">${r.best ? r.best.folds_positive + " из " + r.best.folds : "—"}</td><td class="num">${net(r.net_top5)}${delta(r.delta_net_top5, 3, " п.п.")}</td>
     <td class="num">${net(r.all_net)}</td></tr>`).join("");
   const days = (q.by_day || []).map((d) => `<tr><td>${esc(_stDate(d.day))}</td><td class="num">${num(d.created)}</td><td class="num">${num(d.closed)}</td>
     <td class="num">${num(d.open)}</td><td class="num">${pct(d.win_pct)}</td><td>${d.mature ? "Вызрел" : "Ждёт"}</td></tr>`).join("");
@@ -5410,7 +5410,7 @@ function _mlQualityHtml(q) {
     <div class="table-wrap"><table class="st-table"><thead><tr><th>Проверка</th><th>Итог</th></tr></thead><tbody>${checks}</tbody></table></div>
     <h3 style="margin-top:16px">Стала ли модель лучше</h3>
     ${latest ? `<p class="note"><b>Последний вывод тренера:</b> ${esc(latest.verdict || "нет")}.</p>
-      <div class="table-wrap"><table class="st-table"><thead><tr><th>Отчёт</th><th class="num">Строк</th><th class="num">Связь прогноза с исходом</th><th class="num">Верхние 5%, чистый итог</th><th class="num">Нижняя граница</th><th class="num">Периодов в плюсе</th><th class="num">Все сделки</th></tr></thead><tbody>${reports}</tbody></table></div>
+      <div class="table-wrap"><table class="st-table"><thead><tr><th>Отчёт</th><th class="num">Строк</th><th class="num">Связь прогноза с исходом</th><th class="num">Лучший срез, чистый итог</th><th class="num">Его нижняя граница</th><th class="num">Его периодов в плюсе</th><th class="num">Верхние 5%</th><th class="num">Все сделки</th></tr></thead><tbody>${reports}</tbody></table></div>
       <p class="note">Проверка идёт на более позднем времени, чем обучение. Польза доказана, только если нижняя граница выше нуля. Связь 0 означает, что прогноз ничего не предсказывает.</p>`
     : `<p class="note">Отчётов пока нет: запустите задание «Обучить и проверить кандидата».</p>`}
     ${shadow}
