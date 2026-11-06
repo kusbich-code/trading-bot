@@ -248,7 +248,15 @@ def query_plan(db, sql):
     "SELECT COUNT(*) FROM ml_features WHERE figi='F1' AND strategy_id=1 AND label IS NOT NULL AND timestamp > '2026-01-01'",
     "SELECT COUNT(*) FROM ml_virtual_trades WHERE source = 'BACKFILL'",
     "SELECT id FROM ml_virtual_trades WHERE source = 'LIVE' ORDER BY id DESC LIMIT 20",
+    "SELECT 1 FROM ml_virtual_trades WHERE episode_id='x' AND source='BACKFILL' LIMIT 1",
 ])
 def test_frequent_queries_do_not_scan_the_whole_history(tmp_db, sql):
     plan = query_plan(tmp_db, sql)
     assert "USING" in plan and "INDEX" in plan and not plan.startswith("SCAN")
+
+
+def test_duplicate_check_of_history_finds_episode_directly(tmp_db):
+    """Проверка дублей при записи истории обязана идти по эпизоду. По одному источнику она просматривала бы все строки истории:
+    на 488 тысячах сделок это 167 мс на проверку, 10 часов пересчёта и блокировки базы для бота (v5.22.0)."""
+    plan = query_plan(tmp_db, "SELECT 1 FROM ml_virtual_trades WHERE episode_id='x' AND source='BACKFILL' LIMIT 1")
+    assert "episode_id=?" in plan

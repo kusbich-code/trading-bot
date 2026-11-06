@@ -511,7 +511,9 @@ def init_db():
                 pass
         cur.execute("CREATE INDEX IF NOT EXISTS idx_mlvt_episode ON ml_virtual_trades(episode_id)")
         # Пересчёт истории даёт сотни тысяч строк новее реальных сделок: без индексов каждый запрос по реальным строкам шёл бы через всю таблицу
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_mlvt_source ON ml_virtual_trades(source)")
+        # Источник вместе с эпизодом: одиночный индекс по источнику уводил проверку дублей истории в просмотр всех её строк (v5.22.0)
+        cur.execute("DROP INDEX IF EXISTS idx_mlvt_source")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_mlvt_source_episode ON ml_virtual_trades(source, episode_id)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_mlf_source ON ml_features(source)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_mlf_source_ts ON ml_features(source, timestamp)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_mlf_figi_ts ON ml_features(figi, strategy_id, timestamp)")
