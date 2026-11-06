@@ -93,7 +93,24 @@ def _checks(cur, now: datetime) -> List[dict]:
                    "value": listed or "пропусков нет"})
 
     checks.append(_live_vs_history(cur, now))
+    checks.append(_capacity())
     return checks
+
+
+def _capacity() -> dict:
+    """Не теряются ли живые сигналы. Предела по числу открытых виртуальных сделок нет, пропуск только при нехватке памяти."""
+    from app.db import get_runtime
+    key, label = "capacity", "Живые сигналы не теряются: сделки открываются все, пропуск только при нехватке памяти"
+    try:
+        st = json.loads(get_runtime("virtual_engine_stats", "") or "{}")
+    except ValueError:
+        st = {}
+    if not st:
+        return {"key": key, "label": label, "ok": None, "value": "бот ещё не сохранил счётчики"}
+    skipped = int(st.get("skipped_memory") or 0)
+    opened = f"{int(st.get('open') or 0):,}".replace(",", " ")
+    return {"key": key, "label": label, "ok": skipped == 0,
+            "value": f"открыто сейчас {opened}; с запуска бота {st.get('since', '—')} пропущено из-за нехватки памяти: {skipped}"}
 
 
 def _live_vs_history(cur, now: datetime) -> dict:

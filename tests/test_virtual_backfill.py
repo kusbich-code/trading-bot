@@ -260,3 +260,15 @@ def test_duplicate_check_of_history_finds_episode_directly(tmp_db):
     на 488 тысячах сделок это 167 мс на проверку, 10 часов пересчёта и блокировки базы для бота (v5.22.0)."""
     plan = query_plan(tmp_db, "SELECT 1 FROM ml_virtual_trades WHERE episode_id='x' AND source='BACKFILL' LIMIT 1")
     assert "episode_id=?" in plan
+
+
+def test_no_count_limit_only_memory_guard(monkeypatch):
+    """Сделки живут до SL/TP, поэтому предела по числу открытых нет: данные нужны все. Новые пропускаются только при нехватке памяти."""
+    from datetime import datetime, timezone
+    now = datetime(2026, 11, 9, 11, 0, tzinfo=timezone.utc)
+    eng = vt.VirtualEngine()
+    eng._open = {"X": [object()] * 5000}
+    monkeypatch.setattr(vt, "mem_available_mb", lambda: 1500)
+    assert eng.claim("F1", "trend", "BUY", now) is not None
+    monkeypatch.setattr(vt, "mem_available_mb", lambda: vt.MIN_FREE_MB_FOR_NEW - 1)
+    assert eng.claim("F2", "trend", "BUY", now) is None and eng.stats["skipped_memory"] == 1

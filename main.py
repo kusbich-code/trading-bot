@@ -2,6 +2,7 @@ import logging
 import os
 import queue as _queue
 import threading
+import json
 import time
 import uuid
 from datetime import datetime, timezone, timedelta, date
@@ -3636,8 +3637,15 @@ def _virtual_scanner_worker():
         _virtual_engine, universe=_vs_universe_gated, candles=_vs_candles, candles_to_dicts=_candles_to_dicts,
         quote=_vs_quote, indicators=_vs_indicators, timeframes=_vs_timeframes, build_features=build_features,
         save_features=_vs_save_features, predict=_vs_predict, has_real_position=_vs_has_real_position)
+    started = datetime.now(MSK_TZ).strftime("%Y-%m-%d %H:%M:%S")
+    saved_at = 0.0
     while True:
         try:
+            # счётчики сканера для дашборда: сколько открыто и не пропущены ли сигналы из-за памяти
+            if time.monotonic() - saved_at > 60:
+                set_runtime("virtual_engine_stats", json.dumps({**_virtual_engine.stats, "open": len(_virtual_engine.open_trades()),
+                                                                 "since": started, "min_free_mb": _vt.MIN_FREE_MB_FOR_NEW}))
+                saved_at = time.monotonic()
             enabled = str(get_setting("virtual_trades_enabled", "1")) != "0"
             # настройка владельца «Торговать только в сессию»: выключена — сканируем и вне сессии, но только торгуемые бумаги
             mode = _scan_gate.scan_mode(is_moex_session_open(), _scan_gate.session_only()) if enabled else "off"

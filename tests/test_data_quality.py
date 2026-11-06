@@ -176,3 +176,14 @@ def test_live_far_from_history_is_flagged(tmp_db):
     for _ in range(40):
         add(tmp_db, "VIRTUAL", ts="2026-10-20 11:00:00", label=0, net=-0.01, reason="STOP_LOSS")
     assert check(dq.report(NOW), "live_vs_history")["ok"] is False
+
+
+def test_lost_signals_are_flagged(tmp_db):
+    """Предела по числу открытых виртуальных сделок нет; новые пропускаются только при нехватке памяти, и это должно быть видно."""
+    assert check(dq.report(NOW), "capacity")["ok"] is None
+    tmp_db.set_runtime("virtual_engine_stats", json.dumps({"open": 1200, "skipped_memory": 0, "signals": 900, "since": "2026-11-06 19:52:00"}))
+    c = check(dq.report(NOW), "capacity")
+    assert c["ok"] is True and "1 200" in c["value"].replace(" ", " ")
+    tmp_db.set_runtime("virtual_engine_stats", json.dumps({"open": 9000, "skipped_memory": 45, "signals": 900, "since": "2026-11-06 19:52:00"}))
+    c = check(dq.report(NOW), "capacity")
+    assert c["ok"] is False and "45" in c["value"]

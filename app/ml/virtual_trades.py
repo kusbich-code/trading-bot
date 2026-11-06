@@ -20,6 +20,7 @@
 import json
 import logging
 import threading
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
@@ -35,12 +36,33 @@ FWD_TAIL_MAX_MIN = 65          # сколько минут после входа
 EPISODE_GAP_SEC = 150          # столько секунд без сигнала — и следующий сигнал считается новым эпизодом
 CHECKPOINTS_MIN = (5, 15, 30, 60)
 MAX_PATH_BARS = 240            # поминутный путь храним за первые 4 часа: сделка без срока иначе копит память бесконечно
-MAX_OPEN_TOTAL = 600           # защита памяти: больше открытых виртуальных сделок не держим
+MIN_FREE_MB_FOR_NEW = 300      # предела по числу открытых нет: данные нужны все; новые не открываются, только если на сервере мало памяти
 # конец торгового дня МСК, в который закрываются незакрытые шорты (в минутах от полуночи)
 END_OF_DAY_MIN = 23 * 60 + 50  # 23:50 МСК
 
 # только SL/TP — нет таймаута, нет конца сессии
 CLOSE_REASONS_POLICY = ("STOP_LOSS", "TAKE_PROFIT", "END_OF_DAY")
+
+
+_mem_cache = {"ts": 0.0, "mb": None}
+
+
+def mem_available_mb() -> float:
+    """Свободная память по /proc/meminfo, кеш 30 секунд. Где файла нет (локальный запуск), ограничения нет."""
+    now = time.monotonic()
+    if _mem_cache["mb"] is not None and now - _mem_cache["ts"] < 30:
+        return _mem_cache["mb"]
+    mb = float("inf")
+    try:
+        with open("/proc/meminfo", encoding="ascii") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    mb = int(line.split()[1]) / 1024
+                    break
+    except OSError:
+        pass
+    _mem_cache.update(ts=now, mb=mb)
+    return mb
 
 
 def msk_str(dt: datetime) -> str:
@@ -142,7 +164,7 @@ class VirtualEngine:
         self._closed: List[VTrade] = []
         self._tails: Dict[str, List[VTrade]] = {}      # закрытые сделки, у которых ещё досчитывается доходность вперёд
         self._tails_done: List[VTrade] = []
-        self.stats = {"signals": 0, "episodes": 0, "opened": 0, "closed": 0, "skipped_cap": 0,
+        self.stats = {"signals": 0, "episodes": 0, "opened": 0, "closed": 0, "skipped_memory": 0,
                       "skipped_session": 0, "skipped_short": 0}
 
     # ── открытие ──────────────────────────────────────────────────────────────
@@ -167,8 +189,8 @@ class VirtualEngine:
             ep["last"] = now
             if ep["opened"]:
                 return None
-            if sum(len(v) for v in self._open.values()) >= MAX_OPEN_TOTAL:
-                self.stats["skipped_cap"] += 1
+            if mem_available_mb() < MIN_FREE_MB_FOR_NEW:
+                self.stats["skipped_memory"] += 1
                 return None
             ep["opened"] = True
             return ep["id"]
