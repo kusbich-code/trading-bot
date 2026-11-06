@@ -166,3 +166,12 @@ def test_session_verdict_uses_its_own_minimum(tmp_db, monkeypatch):
         add_live(tmp_db, f"2026-11-{9 + i // 5:02d} 19:{5 + i % 5:02d}:00", 90, 0.6, ticker=f"T{i % 4}", spread=0.02)
     by = {x["key"]: x for x in cs.evaluate()["sessions"]}
     assert by["evening_open"]["status"] == "confirmed"
+
+
+def test_off_hours_are_scanned_when_owner_allows_it(tmp_db):
+    save_candidate(tmp_db)
+    tmp_db.set_setting("active_profile_id", "1")
+    with tmp_db.db_cursor() as cur:
+        cur.execute("INSERT OR REPLACE INTO profile_settings(profile_id, key, value) VALUES (1, 'trade_only_session', '0')")
+    by = {x["key"]: x for x in cs.evaluate()["sessions"]}
+    assert by["weekend"]["scanned"] is True and by["weekend"]["status"] == "collecting"

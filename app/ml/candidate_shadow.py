@@ -19,13 +19,14 @@ from typing import Dict, Iterable, List, Optional
 import numpy as np
 
 from app.ml import trainer_v2 as t2
+from app.ml.scan_gate import session_only
 
 MIN_SELECTED = 200
 MIN_SELECTED_SESSION = 60
 BLANK_FEATURES = ("bid_pressure", "book_depth_ratio")
 MAIN_HYPOTHESIS = "evening_open"
 
-# Время по МСК. scanned=False: бот в это время спит, живых сигналов не будет
+# Время по МСК. scanned=False: при «Торговать только в сессию» бот в это время спит, живых сигналов не будет
 SESSIONS = (
     {"key": "day", "label": "Будни 10:00–18:40", "scanned": True},
     {"key": "evening_open", "label": "Открытие вечерней 19:00–19:30", "scanned": True},
@@ -97,11 +98,13 @@ def _summary(net: np.ndarray, sel: np.ndarray, block: np.ndarray, need: int) -> 
     return out
 
 
-def _empty_sessions() -> List[dict]:
+def _empty_sessions(off_hours: bool) -> List[dict]:
+    """off_hours: владелец выключил «Торговать только в сессию», сканер работает и вне сессии по торгуемым бумагам."""
     out = []
     for s in SESSIONS:
-        status, verdict = ("collecting", _verdict(0, None, None, MIN_SELECTED_SESSION)[1]) if s["scanned"] else ("not_scanned", "бот в это время не сканирует, живых сигналов не будет")
-        out.append({**s, "hypothesis": s["key"] == MAIN_HYPOTHESIS, "rows": 0, "selected": 0, "selected_net": None, "ci_lo": None, "ci_hi": None,
+        scanned = s["scanned"] or off_hours
+        status, verdict = ("collecting", _verdict(0, None, None, MIN_SELECTED_SESSION)[1]) if scanned else ("not_scanned", "бот в это время не сканирует: в профиле включено «Торговать только в сессию»")
+        out.append({**s, "scanned": scanned, "hypothesis": s["key"] == MAIN_HYPOTHESIS, "rows": 0, "selected": 0, "selected_net": None, "ci_lo": None, "ci_hi": None,
                     "selected_win_pct": None, "avg_spread": None, "status": status, "verdict": verdict})
     return out
 
@@ -123,7 +126,7 @@ def evaluate() -> dict:
     out = {"candidate": {"id": cand["id"], "trained_at": cand["trained_at"], "threshold": round(float(bundle.thr_pred), 4), "q": bundle.q,
                          "horizon": bundle.horizon},
            "pending": len(rows) - len(known), "min_selected": MIN_SELECTED, "min_selected_session": MIN_SELECTED_SESSION,
-           "main_hypothesis": MAIN_HYPOTHESIS, "all_net": None, "by_day": [], "sessions": _empty_sessions()}
+           "main_hypothesis": MAIN_HYPOTHESIS, "all_net": None, "by_day": [], "sessions": _empty_sessions(not session_only())}
     if not known:
         out.update(rows=0, selected=0, selected_net=None, ci_lo=None, ci_hi=None, selected_win_pct=None)
         out["status"], out["verdict"] = _verdict(0, None, None, MIN_SELECTED)

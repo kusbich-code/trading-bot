@@ -52,6 +52,7 @@ from app.services.strategy_engine import evaluate_signal as _evaluate_signal
 from app.services.market_cache import ApiBudget, CandleCache, StreamSubscriptions
 from app.services.moex_calendar import generate_moex_holidays, get_moex_holidays_cached
 from app.ml import virtual_trades as _vt
+from app.ml import scan_gate as _scan_gate
 from app.ml.virtual_scanner import SkipInstrument, VirtualScanner
 from app.db import (
     init_db,
@@ -3602,6 +3603,24 @@ def _vs_has_real_position(figi: str) -> bool:
     return any(p["figi"] == figi for p in get_open_positions(source="BOT"))
 
 
+# Вне обычной сессии сканер берёт только бумаги, которые брокер сейчас даёт торговать (выходные, утро, дилерская торговля)
+_vs_gate = {"mode": "session"}
+
+
+def _vs_fetch_tradable(figi: str) -> bool:
+    client = _virtual_client["c"]
+    if client is None:
+        raise RuntimeError("нет клиента API")
+    return is_tradable(get_trading_status(client, figi))
+
+
+_vs_tradable = _scan_gate.TradableCache(_vs_fetch_tradable)
+
+
+def _vs_universe_gated() -> list:
+    return _scan_gate.filter_universe(_vs_universe(), _vs_gate["mode"], _vs_tradable, can_request=lambda: _virtual_api_ok(1))
+
+
 def _virtual_scanner_worker():
     """Фоновый поток виртуальных сделок: раз в ~5 с обходит инструменты и открывает сделки по новым сигналам,
     а также закрывает сделки по сроку и сохраняет итоги. Выключается настройкой virtual_trades_enabled=0."""
@@ -3614,13 +3633,19 @@ def _virtual_scanner_worker():
     except Exception as e:
         log.warning("Виртуальные сделки: подготовка при запуске: %s", e)
     scanner = VirtualScanner(
-        _virtual_engine, universe=_vs_universe, candles=_vs_candles, candles_to_dicts=_candles_to_dicts,
+        _virtual_engine, universe=_vs_universe_gated, candles=_vs_candles, candles_to_dicts=_candles_to_dicts,
         quote=_vs_quote, indicators=_vs_indicators, timeframes=_vs_timeframes, build_features=build_features,
         save_features=_vs_save_features, predict=_vs_predict, has_real_position=_vs_has_real_position)
     while True:
         try:
             enabled = str(get_setting("virtual_trades_enabled", "1")) != "0"
-            if enabled and _bot_client_cls is not None and is_moex_session_open():
+            # настройка владельца «Торговать только в сессию»: выключена — сканируем и вне сессии, но только торгуемые бумаги
+            mode = _scan_gate.scan_mode(is_moex_session_open(), _scan_gate.session_only()) if enabled else "off"
+            if mode != _vs_gate["mode"]:
+                names = {"session": "обычная сессия", "off_hours": "вне сессии, только торгуемые бумаги", "off": "ожидание"}
+                log.info("Виртуальный сканер: %s", names.get(mode, mode))
+            _vs_gate["mode"] = mode
+            if mode != "off" and _bot_client_cls is not None:
                 with _bot_client_cls(settings.TINVEST_TOKEN) as client:
                     _virtual_client["c"] = client
                     try:
