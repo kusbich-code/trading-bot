@@ -3886,7 +3886,7 @@ function renderHelpTab() {
 
     ${h3("Качество данных")}
     ${p("Вкладка «Модель», блок «Качество данных». Показывает объём по источникам, проверки достоверности (причины закрытия, дубли, пересечение с живым периодом, заполненность) и сравнение отчётов тренера. Рост числа строк ещё не значит, что модель стала лучше: это видно только в таблице «Стала ли модель лучше».")}
-    ${p("Там же «Проверка кандидата на живых сделках»: кандидат оценивается на сигналах, которых он не видел при обучении. Правило вывода задано заранее: не меньше 200 отобранных сделок и нижняя граница интервала выше нуля. До этого результат на истории считается непроверенным, и кандидат в торговлю не попадает.")}
+    ${p("Там же «Проверка кандидата на живых сделках»: кандидат оценивается на сигналах, которых он не видел при обучении. Правило вывода задано заранее: не меньше 200 отобранных сделок и нижняя граница интервала выше нуля. До этого результат на истории считается непроверенным, и кандидат в торговлю не попадает. Итог считается и по времени суток: на истории плюс был только на открытии вечерней сессии и в выходные, и открытие вечерней записано главной гипотезой заранее. Выходные живыми сделками не проверяются: бот в это время спит.")}
 
     ${h3("Сверка с брокером")}
     ${p("Вкладка «История сделок» → «Сверка с брокером». Показывает итог по операциям брокера и итог бота, а разницу раскладывает на комиссию, прочие списания и остальное. Если брокер не отвечает, вкладка так и скажет, остальная страница работает.")}
@@ -5393,6 +5393,14 @@ function _mlQualityHtml(q) {
   const shMark = { confirmed: ["Подтверждается", "chip-good"], rejected: ["Не подтверждается", "chip-bad"], unclear: ["Неясно", "chip-warn"],
                    collecting: ["Собираем данные", ""], none: ["Кандидата нет", ""], error: ["Ошибка", "chip-bad"] };
   const [shText, shCls] = sh ? (shMark[sh.status] || [sh.status, ""]) : ["", ""];
+  const shSessions = sh && sh.sessions ? sh.sessions.filter((s) => s.scanned || s.rows).map((s) => {
+    const [t, c] = s.status === "not_scanned" ? ["Не сканируется", ""] : (shMark[s.status] || [s.status, ""]);
+    return `<tr${s.hypothesis ? ' class="st-total"' : ""}><td class="wrap"><b>${esc(s.label)}</b>${s.hypothesis ? '<br><span class="muted">главная гипотеза, записана заранее</span>' : ""}</td>
+      <td class="num">${num(s.rows)}</td><td class="num">${num(s.selected)}</td><td class="num">${net(s.selected_net)}</td>
+      <td class="num">${s.ci_lo == null ? "—" : net(s.ci_lo) + " … " + net(s.ci_hi)}</td><td class="num">${s.avg_spread == null ? "—" : _stNum(s.avg_spread, 3) + "%"}</td>
+      <td><span class="chip ${c}">${t}</span></td></tr>`;
+  }).join("") : "";
+  const shSkipped = sh && sh.sessions ? sh.sessions.filter((s) => !s.scanned && !s.rows).map((s) => s.label.toLowerCase()).join(", ") : "";
   const shDays = sh && sh.by_day ? sh.by_day.slice(0, 10).map((d) => `<tr><td>${esc(_stDate(d.day))}</td><td class="num">${num(d.rows)}</td><td class="num">${num(d.selected)}</td><td class="num">${net(d.selected_net)}</td></tr>`).join("") : "";
   const shadow = !sh ? "" : `<h3 style="margin-top:16px">Проверка кандидата на живых сделках</h3>
     <p class="note"><span class="chip ${shCls}">${shText}</span> ${esc(sh.verdict)}.</p>
@@ -5402,8 +5410,10 @@ function _mlQualityHtml(q) {
       ${_stTile("Итог отобранных", net(sh.selected_net), sh.ci_lo == null ? "интервала пока нет" : `90%: ${net(sh.ci_lo)} … ${net(sh.ci_hi)}`)}
       ${_stTile("Итог всех сигналов", net(sh.all_net), "без отбора, для сравнения")}
     </div>
+    ${shSessions ? `<h3 style="margin-top:12px">По времени суток</h3><div class="table-wrap"><table class="st-table"><thead><tr><th>Время</th><th class="num">Сигналов</th><th class="num">Отобрал бы</th><th class="num">Итог отобранных</th><th class="num">90%-интервал</th><th class="num">Спред при входе</th><th>Вывод</th></tr></thead><tbody>${shSessions}</tbody></table></div>
+      <p class="note">На истории плюс кандидата сосредоточен на открытии вечерней сессии и в выходные, а в дневной сессии будней его нет. Поэтому вывод считается и по времени: нужно не меньше ${num(sh.min_selected_session)} отобранных сделок в этом времени.${shSkipped ? ` Не проверяется, потому что бот в это время спит: ${esc(shSkipped)}.` : ""}</p>` : ""}
     ${shDays ? `<div class="table-wrap"><table class="st-table"><thead><tr><th>День</th><th class="num">Сигналов</th><th class="num">Отобрал бы</th><th class="num">Итог отобранных</th></tr></thead><tbody>${shDays}</tbody></table></div>` : ""}
-    <p class="note">Кандидат от ${esc(_stDate(sh.candidate.trained_at))} ${esc(String(sh.candidate.trained_at).slice(11, 16))} МСК, отбирает сигналы с прогнозом от ${net(sh.candidate.threshold, 3)} (верхние ${Math.round(sh.candidate.q * 100)}% на истории). Считаются только сигналы после его обучения: их он не видел. Итог через 60 минут после комиссии и спреда, стакан пустой, как при проверке на истории. Правило задано заранее: подтверждение, когда отобрано не меньше ${num(sh.min_selected)} сделок и нижняя граница выше нуля. Новый кандидат начинает проверку заново. В торговлю кандидат сам не попадает.</p>` : ""}`;
+    <p class="note">Кандидат от ${esc(_stDate(sh.candidate.trained_at))} ${esc(String(sh.candidate.trained_at).slice(11, 16))} МСК, отбирает сигналы с прогнозом от ${net(sh.candidate.threshold, 3)} (верхние ${Math.round(sh.candidate.q * 100)}% на истории). Считаются только сигналы после его обучения: их он не видел. Итог через 60 минут после комиссии и настоящего спреда в момент входа, стакан в признаках пустой, как при проверке на истории. Правило задано заранее: подтверждение, когда отобрано не меньше ${num(sh.min_selected)} сделок и нижняя граница выше нуля. Новый кандидат начинает проверку заново. В торговлю кандидат сам не попадает.</p>` : ""}`;
   return `<h3>Сколько данных</h3>
     ${sources ? `<div class="table-wrap"><table class="st-table"><thead><tr><th>Источник</th><th class="num">Строк</th><th class="num">С исходом</th><th class="num">Прибыльных</th><th class="num">Средний итог</th><th>Период</th></tr></thead><tbody>${sources}</tbody></table></div>` : `<p class="note">Данных пока нет.</p>`}
     <h3 style="margin-top:16px">Можно ли им верить</h3>

@@ -23,13 +23,13 @@ def save_candidate(db, threshold=0.5, trained_at=TRAINED, cols=(RSI,)):
         return cur.lastrowid
 
 
-def add_live(db, ts, rsi, fwd, ticker="SBER", mode="trend", bid_pressure=0.9):
+def add_live(db, ts, rsi, fwd, ticker="SBER", mode="trend", bid_pressure=0.9, spread=None):
     with db.db_cursor() as cur:
         cur.execute("INSERT INTO ml_features(figi, ticker, strategy_id, timestamp, source, strategy_mode, rsi, bid_pressure, hour_sin, hour_cos) "
                     "VALUES (?,?,0,?,'VIRTUAL',?,?,?,0.5,-0.8)", ("F-" + ticker, ticker, ts, mode, rsi, bid_pressure))
         fid = cur.lastrowid
-        cur.execute("INSERT INTO ml_virtual_trades(created_at, figi, ticker, strategy_mode, direction, status, source, feature_id, fwd_ret_60m) "
-                    "VALUES (?,?,?,?,'BUY','CLOSED','LIVE',?,?)", (ts, "F-" + ticker, ticker, mode, fid, fwd))
+        cur.execute("INSERT INTO ml_virtual_trades(created_at, figi, ticker, strategy_mode, direction, status, source, feature_id, fwd_ret_60m, fill_src, spread_pct) "
+                    "VALUES (?,?,?,?,'BUY','CLOSED','LIVE',?,?,?,?)", (ts, "F-" + ticker, ticker, mode, fid, fwd, "book" if spread is not None else "synthetic", spread))
         cur.execute("UPDATE ml_features SET virtual_id=? WHERE id=?", (cur.lastrowid, fid))
 
 
@@ -125,3 +125,44 @@ def test_by_day_shows_progress(tmp_db):
     add_live(tmp_db, "2026-11-10 11:00:00", 95, -0.2)
     days = {d["day"]: d for d in cs.evaluate()["by_day"]}
     assert days["2026-11-09"]["rows"] == 2 and days["2026-11-09"]["selected"] == 1 and days["2026-11-10"]["selected"] == 1
+
+
+# ── разбивка по времени и настоящий спред ──
+
+@pytest.mark.parametrize("ts,key", [
+    ("2026-11-09 10:00:00", "day"), ("2026-11-09 18:39:00", "day"), ("2026-11-09 19:05:00", "evening_open"), ("2026-11-09 19:29:00", "evening_open"),
+    ("2026-11-09 19:30:00", "evening"), ("2026-11-09 23:40:00", "evening"), ("2026-11-09 08:00:00", "morning"), ("2026-11-07 12:00:00", "weekend"),
+    ("2026-11-08 02:30:00", "weekend"), ("2026-11-10 03:00:00", "night"), ("2026-11-09 18:45:00", "other"),
+])
+def test_session_of(ts, key):
+    assert cs.session_of(ts) == key
+
+
+def test_cost_uses_spread_at_entry_when_known(tmp_db):
+    save_candidate(tmp_db, threshold=0.5)
+    add_live(tmp_db, "2026-11-09 11:00:00", 90, 0.40, spread=0.10)          # широкий спред в момент входа
+    r = cs.evaluate()
+    assert r["selected_net"] == pytest.approx(0.40 - 2 * t2.COMMISSION_SIDE_PCT - 0.10, abs=1e-4)
+
+
+def test_sessions_are_reported_separately_with_main_hypothesis(tmp_db):
+    save_candidate(tmp_db, threshold=0.5)
+    add_live(tmp_db, "2026-11-09 11:00:00", 90, 0.10, spread=0.02)
+    add_live(tmp_db, "2026-11-09 19:10:00", 90, 0.50, spread=0.03)
+    add_live(tmp_db, "2026-11-09 19:20:00", 10, -0.20, spread=0.03)
+    by = {x["key"]: x for x in cs.evaluate()["sessions"]}
+    assert by["evening_open"]["hypothesis"] is True and by["day"]["hypothesis"] is False
+    assert by["evening_open"]["rows"] == 2 and by["evening_open"]["selected"] == 1
+    assert by["evening_open"]["selected_net"] == pytest.approx(0.50 - 2 * t2.COMMISSION_SIDE_PCT - 0.03, abs=1e-4)
+    assert by["evening_open"]["avg_spread"] == pytest.approx(0.03)
+    assert by["evening_open"]["status"] == "collecting" and str(cs.MIN_SELECTED_SESSION) in by["evening_open"]["verdict"]
+    assert by["weekend"]["scanned"] is False and by["weekend"]["rows"] == 0
+
+
+def test_session_verdict_uses_its_own_minimum(tmp_db, monkeypatch):
+    monkeypatch.setattr(cs, "MIN_SELECTED_SESSION", 10)
+    save_candidate(tmp_db, threshold=0.5)
+    for i in range(20):
+        add_live(tmp_db, f"2026-11-{9 + i // 5:02d} 19:{5 + i % 5:02d}:00", 90, 0.6, ticker=f"T{i % 4}", spread=0.02)
+    by = {x["key"]: x for x in cs.evaluate()["sessions"]}
+    assert by["evening_open"]["status"] == "confirmed"
