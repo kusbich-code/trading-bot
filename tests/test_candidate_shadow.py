@@ -1,0 +1,127 @@
+"""Проверка кандидата в тени: только сделки после его обучения, те же условия, что на истории, правило вывода задано заранее."""
+import pickle
+from datetime import datetime, timedelta
+
+import numpy as np
+import pytest
+
+from app.ml import candidate_shadow as cs
+from app.ml import trainer_v2 as t2
+
+TRAINED = "2026-11-06 18:09:38"
+RSI = t2.ALL_FEATURES.index("rsi")
+
+
+def save_candidate(db, threshold=0.5, trained_at=TRAINED, cols=(RSI,)):
+    """Кандидат-линейка: прогноз = rsi / 100. Настоящая модель sklearn, чтобы пакет распаковывался как на сервере."""
+    from sklearn.linear_model import LinearRegression
+    model = LinearRegression().fit(np.array([[0.0], [100.0]]), np.array([0.0, 1.0]))
+    bundle = t2.Bundle(model, list(cols), 60, threshold, 0.02)
+    with db.db_cursor() as cur:
+        cur.execute("INSERT INTO ml_models(figi, ticker, strategy_id, trained_at, model_data, accuracy, precision_, recall, n_training_samples, status) "
+                    "VALUES ('UNIVERSAL_V2','ALL',0,?,?,0,0,0,1000,'candidate')", (trained_at, pickle.dumps(bundle)))
+        return cur.lastrowid
+
+
+def add_live(db, ts, rsi, fwd, ticker="SBER", mode="trend", bid_pressure=0.9):
+    with db.db_cursor() as cur:
+        cur.execute("INSERT INTO ml_features(figi, ticker, strategy_id, timestamp, source, strategy_mode, rsi, bid_pressure, hour_sin, hour_cos) "
+                    "VALUES (?,?,0,?,'VIRTUAL',?,?,?,0.5,-0.8)", ("F-" + ticker, ticker, ts, mode, rsi, bid_pressure))
+        fid = cur.lastrowid
+        cur.execute("INSERT INTO ml_virtual_trades(created_at, figi, ticker, strategy_mode, direction, status, source, feature_id, fwd_ret_60m) "
+                    "VALUES (?,?,?,?,'BUY','CLOSED','LIVE',?,?)", (ts, "F-" + ticker, ticker, mode, fid, fwd))
+        cur.execute("UPDATE ml_features SET virtual_id=? WHERE id=?", (cur.lastrowid, fid))
+
+
+def ts(minutes):
+    return (datetime.strptime(TRAINED, "%Y-%m-%d %H:%M:%S") + timedelta(minutes=minutes)).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def test_no_candidate(tmp_db):
+    r = cs.evaluate()
+    assert r["candidate"] is None and r["verdict"]
+
+
+def test_only_signals_after_training_are_counted(tmp_db):
+    save_candidate(tmp_db)
+    add_live(tmp_db, "2026-11-05 12:00:00", 90, 0.5)                     # модель могла видеть эту строку
+    add_live(tmp_db, ts(5), 90, 0.5)
+    add_live(tmp_db, ts(6), 10, -0.5)
+    r = cs.evaluate()
+    assert r["rows"] == 2 and r["candidate"]["trained_at"] == TRAINED
+
+
+def test_selection_by_threshold_and_net_after_costs(tmp_db):
+    save_candidate(tmp_db, threshold=0.5)
+    add_live(tmp_db, ts(5), 90, 0.40)                                     # прогноз 0,9: отобрана
+    add_live(tmp_db, ts(40), 80, 0.20)                                    # 0,8: отобрана
+    add_live(tmp_db, ts(80), 10, -0.30)                                   # 0,1: нет
+    r = cs.evaluate()
+    cost = 2 * t2.COMMISSION_SIDE_PCT + t2.DEFAULT_SPREAD_PCT
+    assert r["selected"] == 2
+    assert r["selected_net"] == pytest.approx((0.40 + 0.20) / 2 - cost, abs=1e-4)
+    assert r["all_net"] == pytest.approx((0.40 + 0.20 - 0.30) / 3 - cost, abs=1e-4)
+    assert r["selected_win_pct"] == pytest.approx(100.0)
+
+
+def test_signals_waiting_for_forward_return_are_counted_separately(tmp_db):
+    save_candidate(tmp_db)
+    add_live(tmp_db, ts(5), 90, 0.4)
+    add_live(tmp_db, ts(6), 90, None)
+    r = cs.evaluate()
+    assert r["rows"] == 1 and r["pending"] == 1
+
+
+def test_order_book_is_blank_as_in_history_check():
+    rows = [{"rsi": 50.0, "bid_pressure": 0.9, "book_depth_ratio": 2.0, "hour_sin": 0.5, "hour_cos": -0.8, "strategy_mode": "trend"}]
+    X = cs.matrix(rows)
+    assert np.isnan(X[0, t2.ALL_FEATURES.index("bid_pressure")]) and np.isnan(X[0, t2.ALL_FEATURES.index("book_depth_ratio")])
+    assert X[0, RSI] == 50.0 and X[0, t2.ALL_FEATURES.index("mode_trend")] == 1.0
+
+
+def test_matrix_matches_training_layout(tmp_db):
+    """Колонки и производные признаки собираются так же, как в тренере."""
+    from tests.test_trainer_v2 import populate
+    populate(tmp_db, 0.3, days=1, per_day=50)
+    ds = t2.load_dataset(60)
+    with tmp_db.db_cursor() as cur:
+        cur.execute(f"SELECT f.strategy_mode, {', '.join('f.' + c for c in t2.FEATURES_V2)} FROM ml_features f JOIN ml_virtual_trades v ON v.id = f.virtual_id "
+                    "ORDER BY CAST(strftime('%s', f.timestamp) AS INTEGER), f.id")
+        rows = [dict(r) for r in cur.fetchall()]
+    X = cs.matrix(rows)
+    keep = [j for j, n in enumerate(t2.ALL_FEATURES) if n not in cs.BLANK_FEATURES]
+    assert np.allclose(X[:, keep], ds["X"][:, keep], equal_nan=True)
+
+
+def test_verdict_needs_enough_selected_trades(tmp_db):
+    save_candidate(tmp_db)
+    for i in range(10):
+        add_live(tmp_db, ts(5 + 40 * i), 90, 1.0)
+    r = cs.evaluate()
+    assert r["status"] == "collecting" and str(cs.MIN_SELECTED) in r["verdict"]
+
+
+def test_verdict_confirmed_and_rejected(tmp_db, monkeypatch):
+    monkeypatch.setattr(cs, "MIN_SELECTED", 20)
+    save_candidate(tmp_db)
+    rng = np.random.default_rng(1)
+    for i in range(40):
+        add_live(tmp_db, ts(5 + 40 * i), 90, float(0.6 + rng.normal(0, 0.05)), ticker=f"T{i % 4}")
+    assert cs.evaluate()["status"] == "confirmed"
+
+
+def test_verdict_rejected(tmp_db, monkeypatch):
+    monkeypatch.setattr(cs, "MIN_SELECTED", 20)
+    save_candidate(tmp_db)
+    for i in range(40):
+        add_live(tmp_db, ts(5 + 40 * i), 90, -0.5, ticker=f"T{i % 4}")
+    assert cs.evaluate()["status"] == "rejected"
+
+
+def test_by_day_shows_progress(tmp_db):
+    save_candidate(tmp_db)
+    add_live(tmp_db, "2026-11-09 11:00:00", 90, 0.4)
+    add_live(tmp_db, "2026-11-09 12:00:00", 10, 0.1)
+    add_live(tmp_db, "2026-11-10 11:00:00", 95, -0.2)
+    days = {d["day"]: d for d in cs.evaluate()["by_day"]}
+    assert days["2026-11-09"]["rows"] == 2 and days["2026-11-09"]["selected"] == 1 and days["2026-11-10"]["selected"] == 1

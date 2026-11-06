@@ -118,12 +118,8 @@ def load_dataset(horizon: int = 60, sources: Tuple[str, ...] = ("BACKFILL", "VIR
     if read < n:
         X, y, ts = X[:read], y[:read], ts[:read]
     n = read
-    base = len(FEATURES_V2)
-    hour = np.arctan2(X[:, FEATURES_V2.index("hour_sin")], X[:, FEATURES_V2.index("hour_cos")]) * 24 / (2 * math.pi) % 24
-    X[:, base] = (hour >= 19).astype(float)
     mode_arr = np.array(mode)
-    for k, m in enumerate(MODES):
-        X[:, base + 1 + k] = (mode_arr == m).astype(float)
+    add_derived(X, mode_arr)
     figi_arr, ticker_arr = np.array(figi), np.array(ticker)
     block_key = np.char.add(np.char.add(figi_arr.astype(str), "|"), (ts // BLOCK_SEC).astype(str))
     _, block, counts = np.unique(block_key, return_inverse=True, return_counts=True)
@@ -132,6 +128,15 @@ def load_dataset(horizon: int = 60, sources: Tuple[str, ...] = ("BACKFILL", "VIR
     cost = 2 * COMMISSION_SIDE_PCT + spread
     return dict(X=X, y=y, ts=ts, block=block, w=w, cost=cost, mode=mode_arr, ticker=ticker_arr, figi=figi_arr,
                 source=np.array(source), horizon=horizon, n_blocks=int(len(counts)), spreads=spreads_summary(spreads))
+
+
+def add_derived(X: np.ndarray, mode_arr: np.ndarray) -> None:
+    """Производные колонки: вечерняя сессия и режим стратегии. Одна функция для обучения и для проверки кандидата в тени."""
+    base = len(FEATURES_V2)
+    hour = np.arctan2(X[:, FEATURES_V2.index("hour_sin")], X[:, FEATURES_V2.index("hour_cos")]) * 24 / (2 * math.pi) % 24
+    X[:, base] = (hour >= 19).astype(float)
+    for k, m in enumerate(MODES):
+        X[:, base + 1 + k] = (mode_arr == m).astype(float)
 
 
 def spreads_summary(spreads: Dict[str, float]) -> dict:

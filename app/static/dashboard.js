@@ -3886,6 +3886,7 @@ function renderHelpTab() {
 
     ${h3("Качество данных")}
     ${p("Вкладка «Модель», блок «Качество данных». Показывает объём по источникам, проверки достоверности (причины закрытия, дубли, пересечение с живым периодом, заполненность) и сравнение отчётов тренера. Рост числа строк ещё не значит, что модель стала лучше: это видно только в таблице «Стала ли модель лучше».")}
+    ${p("Там же «Проверка кандидата на живых сделках»: кандидат оценивается на сигналах, которых он не видел при обучении. Правило вывода задано заранее: не меньше 200 отобранных сделок и нижняя граница интервала выше нуля. До этого результат на истории считается непроверенным, и кандидат в торговлю не попадает.")}
 
     ${h3("Сверка с брокером")}
     ${p("Вкладка «История сделок» → «Сверка с брокером». Показывает итог по операциям брокера и итог бота, а разницу раскладывает на комиссию, прочие списания и остальное. Если брокер не отвечает, вкладка так и скажет, остальная страница работает.")}
@@ -5388,6 +5389,21 @@ function _mlQualityHtml(q) {
     <td class="num">${num(d.open)}</td><td class="num">${pct(d.win_pct)}</td><td>${d.mature ? "Вызрел" : "Ждёт"}</td></tr>`).join("");
   const months = (q.by_month || []).map((m) => `<tr><td>${esc(m.month)}</td><td class="num">${num(m.rows)}</td><td class="num">${pct(m.win_pct)}</td><td class="num">${net(m.avg_net_pct)}</td></tr>`).join("");
   const latest = (q.reports || [])[0];
+  const sh = q.shadow;
+  const shMark = { confirmed: ["Подтверждается", "chip-good"], rejected: ["Не подтверждается", "chip-bad"], unclear: ["Неясно", "chip-warn"],
+                   collecting: ["Собираем данные", ""], none: ["Кандидата нет", ""], error: ["Ошибка", "chip-bad"] };
+  const [shText, shCls] = sh ? (shMark[sh.status] || [sh.status, ""]) : ["", ""];
+  const shDays = sh && sh.by_day ? sh.by_day.slice(0, 10).map((d) => `<tr><td>${esc(_stDate(d.day))}</td><td class="num">${num(d.rows)}</td><td class="num">${num(d.selected)}</td><td class="num">${net(d.selected_net)}</td></tr>`).join("") : "";
+  const shadow = !sh ? "" : `<h3 style="margin-top:16px">Проверка кандидата на живых сделках</h3>
+    <p class="note"><span class="chip ${shCls}">${shText}</span> ${esc(sh.verdict)}.</p>
+    ${sh.candidate ? `<div class="st-grid">
+      ${_stTile("Живых сигналов после обучения", num(sh.rows), `ещё ждут 60 минут: ${num(sh.pending)}`)}
+      ${_stTile("Отобрал бы", num(sh.selected), `нужно для вывода: ${num(sh.min_selected)}`)}
+      ${_stTile("Итог отобранных", net(sh.selected_net), sh.ci_lo == null ? "интервала пока нет" : `90%: ${net(sh.ci_lo)} … ${net(sh.ci_hi)}`)}
+      ${_stTile("Итог всех сигналов", net(sh.all_net), "без отбора, для сравнения")}
+    </div>
+    ${shDays ? `<div class="table-wrap"><table class="st-table"><thead><tr><th>День</th><th class="num">Сигналов</th><th class="num">Отобрал бы</th><th class="num">Итог отобранных</th></tr></thead><tbody>${shDays}</tbody></table></div>` : ""}
+    <p class="note">Кандидат от ${esc(_stDate(sh.candidate.trained_at))} ${esc(String(sh.candidate.trained_at).slice(11, 16))} МСК, отбирает сигналы с прогнозом от ${net(sh.candidate.threshold, 3)} (верхние ${Math.round(sh.candidate.q * 100)}% на истории). Считаются только сигналы после его обучения: их он не видел. Итог через 60 минут после комиссии и спреда, стакан пустой, как при проверке на истории. Правило задано заранее: подтверждение, когда отобрано не меньше ${num(sh.min_selected)} сделок и нижняя граница выше нуля. Новый кандидат начинает проверку заново. В торговлю кандидат сам не попадает.</p>` : ""}`;
   return `<h3>Сколько данных</h3>
     ${sources ? `<div class="table-wrap"><table class="st-table"><thead><tr><th>Источник</th><th class="num">Строк</th><th class="num">С исходом</th><th class="num">Прибыльных</th><th class="num">Средний итог</th><th>Период</th></tr></thead><tbody>${sources}</tbody></table></div>` : `<p class="note">Данных пока нет.</p>`}
     <h3 style="margin-top:16px">Можно ли им верить</h3>
@@ -5397,6 +5413,7 @@ function _mlQualityHtml(q) {
       <div class="table-wrap"><table class="st-table"><thead><tr><th>Отчёт</th><th class="num">Строк</th><th class="num">Связь прогноза с исходом</th><th class="num">Верхние 5%, чистый итог</th><th class="num">Нижняя граница</th><th class="num">Периодов в плюсе</th><th class="num">Все сделки</th></tr></thead><tbody>${reports}</tbody></table></div>
       <p class="note">Проверка идёт на более позднем времени, чем обучение. Польза доказана, только если нижняя граница выше нуля. Связь 0 означает, что прогноз ничего не предсказывает.</p>`
     : `<p class="note">Отчётов пока нет: запустите задание «Обучить и проверить кандидата».</p>`}
+    ${shadow}
     <div class="st-two" style="margin-top:16px">
       <div><h3>Живые сделки по дням</h3>${days ? `<div class="table-wrap"><table class="st-table"><thead><tr><th>День</th><th class="num">Новых</th><th class="num">Закрыто</th><th class="num">Открыто</th><th class="num">Прибыльных</th><th>В обучение</th></tr></thead><tbody>${days}</tbody></table></div>
         <p class="note">Доля прибыльных у свежих дней завышена или занижена: долгие сделки ещё открыты. День идёт в обучение через ${q.maturity_days} дней.</p>` : `<p class="note">Живых сделок пока нет.</p>`}</div>

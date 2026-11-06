@@ -927,8 +927,13 @@ def api_ml_quality(fresh: int = 0):
     """Качество данных обучения. Кеш 5 минут: отчёт просматривает всю таблицу признаков."""
     if not fresh and _quality_cache["data"] is not None and time.time() - _quality_cache["ts"] < 300:
         return JSONResponse(_quality_cache["data"])
-    from app.ml import data_quality
+    from app.ml import candidate_shadow, data_quality
     data = data_quality.report()
+    try:
+        data["shadow"] = candidate_shadow.evaluate()
+    except Exception as e:
+        logger.warning("проверка кандидата в тени: %s", e)
+        data["shadow"] = {"candidate": None, "status": "error", "verdict": f"проверка не посчиталась: {type(e).__name__}"}
     _quality_cache.update(ts=time.time(), data=data)
     return JSONResponse(data)
 

@@ -606,7 +606,8 @@ def test_api_quality_answers_and_caches(web, monkeypatch):
     real = data_quality.report
     monkeypatch.setattr(data_quality, "report", lambda: calls.append(1) or real())
     data = client.get("/api/ml/quality").json()
-    assert {"sources", "checks", "by_day", "by_month", "reports", "maturity_days"} <= set(data)
+    assert {"sources", "checks", "by_day", "by_month", "reports", "maturity_days", "shadow"} <= set(data)
+    assert data["shadow"]["status"] == "none"
     client.get("/api/ml/quality")
     assert len(calls) == 1
     client.get("/api/ml/quality?fresh=1")
