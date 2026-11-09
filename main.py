@@ -2514,6 +2514,10 @@ def process_instrument(client, item,
     # серии стопов, лимиты стратегии. Иначе подтверждение по API (3 запроса) гоняется каждые 5 секунд
     # по сигналу, который всё равно будет отсеян.
     if sig in ("BUY", "SELL") and ticker not in positions:
+        # входы закрыты: подтверждение по API ничего не решает, а тратит лимит (3 запроса на сигнал при круглосуточном сканировании)
+        if not new_entries_enabled():
+            _save_signal(skip_reason="Новые входы закрыты (new_entries_enabled=0)", skip_filter="entries_closed")
+            return
         min_score = int(_cfg("min_signal_score", "0"))
         if min_score > 0 and score < min_score:
             _log_skip("min_score", f"{ticker}: score={score} < порог={min_score} [{tradingmode}], пропуск", ticker)
