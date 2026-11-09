@@ -5398,7 +5398,13 @@ function _mlQualityHtml(q) {
     return `<tr${s.hypothesis ? ' class="st-total"' : ""}><td class="wrap"><b>${esc(s.label)}</b>${s.hypothesis ? '<br><span class="muted">главная гипотеза, записана заранее</span>' : ""}</td>
       <td class="num">${num(s.rows)}</td><td class="num">${num(s.selected)}</td><td class="num">${net(s.selected_net)}</td>
       <td class="num">${s.ci_lo == null ? "—" : net(s.ci_lo) + " … " + net(s.ci_hi)}</td><td class="num">${s.avg_spread == null ? "—" : _stNum(s.avg_spread, 3) + "%"}</td>
-      <td><span class="chip ${c}">${t}</span></td></tr>`;
+      <td><span class="chip ${c}">${t}</span></td></tr>${s.strict ? (() => {
+        const [t2, c2] = shMark[s.strict.status] || [s.strict.status, ""];
+        return `<tr><td class="wrap">${esc(s.label)}, верхние ${Math.round(s.strict.q * 100)}%<br><span class="muted">строгий порог, записан до живых данных</span></td>
+          <td class="num">${num(s.rows)}</td><td class="num">${num(s.strict.selected)}</td><td class="num">${net(s.strict.selected_net)}</td>
+          <td class="num">${s.strict.ci_lo == null ? "—" : net(s.strict.ci_lo) + " … " + net(s.strict.ci_hi)}</td><td class="num">${s.avg_spread == null ? "—" : _stNum(s.avg_spread, 3) + "%"}</td>
+          <td><span class="chip ${c2}">${t2}</span></td></tr>`;
+      })() : ""}`;
   }).join("") : "";
   const shSkipped = sh && sh.sessions ? sh.sessions.filter((s) => !s.scanned && !s.rows).map((s) => s.label.toLowerCase()).join(", ") : "";
   const shDays = sh && sh.by_day ? sh.by_day.slice(0, 10).map((d) => `<tr><td>${esc(_stDate(d.day))}</td><td class="num">${num(d.rows)}</td><td class="num">${num(d.selected)}</td><td class="num">${net(d.selected_net)}</td></tr>`).join("") : "";

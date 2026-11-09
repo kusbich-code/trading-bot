@@ -209,3 +209,40 @@ def test_load_dataset_reads_row_by_row_with_same_result(tmp_db):
     assert len(ds["y"]) == ds["X"].shape[0] == len(ds["figi"]) == 293 == len(rows)
     assert ds["y"].tolist() == [r["y"] for r in rows]
     assert isinstance(ds["figi"][0], str) and set(ds["source"].tolist()) <= {"BACKFILL", "VIRTUAL", "LIVE", "REAL"}
+
+
+def test_cost_by_time_of_day(tmp_db):
+    """Спред зависит от времени: вне биржи у брокера он в разы шире, и подставлять туда будничный нельзя."""
+    rows = [("2026-11-09 12:00:00", 0.02)] * 5 + [("2026-11-08 03:00:00", 0.20)] * 5 + [("2026-11-07 12:00:00", 0.04)] * 5
+    with tmp_db.db_cursor() as cur:
+        for ts, s in rows:
+            cur.execute("INSERT INTO ml_virtual_trades(created_at, figi, ticker, strategy_mode, direction, spread_pct, fill_src, source) "
+                        "VALUES (?, 'F0', 'T0', 'trend', 'BUY', ?, 'book', 'LIVE')", (ts, s))
+        table, avg = t2.session_spreads(cur)
+        assert t2.ticker_spreads(cur)["T0"] == pytest.approx(0.03)          # биржа без брокера
+    assert t2.spread_for(table, avg, "T0", "day") == pytest.approx(0.02)
+    assert t2.spread_for(table, avg, "T0", "dealer") == pytest.approx(0.20)
+    assert t2.spread_for(table, avg, "T0", "evening") == pytest.approx(0.03)   # нет замера в это время: средний биржевой бумаги
+    assert t2.spread_for(table, avg, "T9", "dealer") == pytest.approx(0.20)    # вне биржи без замера по бумаге: средний вне биржи
+    assert t2.spread_for({}, {}, "T9", "dealer") == t2.DEALER_SPREAD_PCT
+    assert t2.spread_for({}, {}, "T9", "day") == t2.DEFAULT_SPREAD_PCT
+
+
+def test_report_splits_by_time_of_day_and_uses_day_blocks(tmp_db):
+    from app.ml import sessions
+    populate(tmp_db, 0.5)
+    ds = t2.load_dataset(60)
+    assert set(ds["session"].tolist()) <= set(sessions.KEYS) and np.array_equal(ds["day"], ds["ts"] // 86400)
+    rep = t2.evaluate(ds, n_folds=4, min_train=2000, min_test=500)
+    assert rep["ci_unit"] == "день"
+    assert rep["per_session"] and {p["session"] for p in rep["per_session"]} <= set(sessions.KEYS)
+    assert {p["q"] for p in rep["per_session"]} <= {0.01, 0.02}
+    assert "По времени суток" in t2.format_report(rep)
+
+
+def test_candidate_keeps_thresholds_for_1_and_2_percent(tmp_db):
+    populate(tmp_db, 0.5)
+    ds = t2.load_dataset(60)
+    rep = t2.evaluate(ds, n_folds=4, min_train=2000, min_test=500)
+    b = t2.train_final(ds, rep)
+    assert {0.01, 0.02} <= set(b.thr_by_q) and b.thr_by_q[0.01] >= b.thr_by_q[0.02] and b.thr_pred == b.thr_by_q[0.02]

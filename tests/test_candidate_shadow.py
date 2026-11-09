@@ -12,11 +12,11 @@ TRAINED = "2026-11-06 18:09:38"
 RSI = t2.ALL_FEATURES.index("rsi")
 
 
-def save_candidate(db, threshold=0.5, trained_at=TRAINED, cols=(RSI,)):
+def save_candidate(db, threshold=0.5, trained_at=TRAINED, cols=(RSI,), thr_by_q=None):
     """Кандидат-линейка: прогноз = rsi / 100. Настоящая модель sklearn, чтобы пакет распаковывался как на сервере."""
     from sklearn.linear_model import LinearRegression
     model = LinearRegression().fit(np.array([[0.0], [100.0]]), np.array([0.0, 1.0]))
-    bundle = t2.Bundle(model, list(cols), 60, threshold, 0.02)
+    bundle = t2.Bundle(model, list(cols), 60, threshold, 0.02, thr_by_q=thr_by_q)
     with db.db_cursor() as cur:
         cur.execute("INSERT INTO ml_models(figi, ticker, strategy_id, trained_at, model_data, accuracy, precision_, recall, n_training_samples, status) "
                     "VALUES ('UNIVERSAL_V2','ALL',0,?,?,0,0,0,1000,'candidate')", (trained_at, pickle.dumps(bundle)))
@@ -131,8 +131,8 @@ def test_by_day_shows_progress(tmp_db):
 
 @pytest.mark.parametrize("ts,key", [
     ("2026-11-09 10:00:00", "day"), ("2026-11-09 18:39:00", "day"), ("2026-11-09 19:05:00", "evening_open"), ("2026-11-09 19:29:00", "evening_open"),
-    ("2026-11-09 19:30:00", "evening"), ("2026-11-09 23:40:00", "evening"), ("2026-11-09 08:00:00", "morning"), ("2026-11-07 12:00:00", "weekend"),
-    ("2026-11-08 02:30:00", "weekend"), ("2026-11-10 03:00:00", "night"), ("2026-11-09 18:45:00", "other"),
+    ("2026-11-09 19:30:00", "evening"), ("2026-11-09 23:40:00", "evening"), ("2026-11-09 08:00:00", "morning"), ("2026-11-07 12:00:00", "weekend_exchange"),
+    ("2026-11-08 02:30:00", "dealer"), ("2026-11-10 03:00:00", "dealer"), ("2026-11-09 18:45:00", "other"),
 ])
 def test_session_of(ts, key):
     assert cs.session_of(ts) == key
@@ -156,7 +156,7 @@ def test_sessions_are_reported_separately_with_main_hypothesis(tmp_db):
     assert by["evening_open"]["selected_net"] == pytest.approx(0.50 - 2 * t2.COMMISSION_SIDE_PCT - 0.03, abs=1e-4)
     assert by["evening_open"]["avg_spread"] == pytest.approx(0.03)
     assert by["evening_open"]["status"] == "collecting" and str(cs.MIN_SELECTED_SESSION) in by["evening_open"]["verdict"]
-    assert by["weekend"]["scanned"] is False and by["weekend"]["rows"] == 0
+    assert by["weekend_exchange"]["scanned"] is False and by["dealer"]["scanned"] is False and by["dealer"]["rows"] == 0
 
 
 def test_session_verdict_uses_its_own_minimum(tmp_db, monkeypatch):
@@ -174,7 +174,7 @@ def test_off_hours_are_scanned_when_owner_allows_it(tmp_db):
     with tmp_db.db_cursor() as cur:
         cur.execute("INSERT OR REPLACE INTO profile_settings(profile_id, key, value) VALUES (1, 'trade_only_session', '0')")
     by = {x["key"]: x for x in cs.evaluate()["sessions"]}
-    assert by["weekend"]["scanned"] is True and by["weekend"]["status"] == "collecting"
+    assert by["weekend_exchange"]["scanned"] is True and by["dealer"]["status"] == "collecting"
 
 
 def test_paper_trading_one_position_per_ticker_and_rubles(tmp_db):
@@ -192,3 +192,19 @@ def test_paper_trading_one_position_per_ticker_and_rubles(tmp_db):
     assert p["rub_total"] == pytest.approx(sum(nets) / 100 * 8000, abs=0.01)
     assert p["rub_per_day"] == pytest.approx(p["rub_total"], abs=0.01)                 # всё в один день
     assert p["win_pct"] == pytest.approx(200 / 3, abs=0.01)
+
+
+def test_main_hypothesis_also_tracked_at_top_1_percent(tmp_db):
+    save_candidate(tmp_db, threshold=0.5, thr_by_q={0.01: 0.8, 0.02: 0.5})
+    add_live(tmp_db, "2026-11-10 19:10:00", 90, 0.4, spread=0.02)          # прогноз 0,9: проходит оба порога
+    add_live(tmp_db, "2026-11-10 19:15:00", 60, 0.1, spread=0.02)          # 0,6: только основной
+    eo = {x["key"]: x for x in cs.evaluate()["sessions"]}["evening_open"]
+    assert eo["selected"] == 2 and eo["strict"]["q"] == 0.01 and eo["strict"]["selected"] == 1
+    assert eo["strict"]["selected_net"] == pytest.approx(0.4 - 2 * t2.COMMISSION_SIDE_PCT - 0.02, abs=1e-4)
+
+
+def test_old_candidate_without_extra_thresholds_still_works(tmp_db):
+    save_candidate(tmp_db, threshold=0.5)
+    add_live(tmp_db, "2026-11-10 19:10:00", 90, 0.4, spread=0.02)
+    eo = {x["key"]: x for x in cs.evaluate()["sessions"]}["evening_open"]
+    assert eo["selected"] == 1 and eo.get("strict") is None

@@ -20,6 +20,7 @@ import numpy as np
 
 from app.ml import trainer_v2 as t2
 from app.ml.scan_gate import session_only
+from app.ml.sessions import key_of_str
 
 MIN_SELECTED = 200
 MIN_SELECTED_SESSION = 60
@@ -27,34 +28,21 @@ BLANK_FEATURES = ("bid_pressure", "book_depth_ratio")
 MAIN_HYPOTHESIS = "evening_open"
 STAKE_RUB = 8000.0             # сумма сделки для итога в рублях
 
-# Время по МСК. scanned=False: при «Торговать только в сессию» бот в это время спит, живых сигналов не будет
+# Время по МСК (app/ml/sessions.py). scanned=False: при «Торговать только в сессию» бот в это время спит, живых сигналов не будет
 SESSIONS = (
     {"key": "day", "label": "Будни 10:00–18:40", "scanned": True},
     {"key": "evening_open", "label": "Открытие вечерней 19:00–19:30", "scanned": True},
     {"key": "evening", "label": "Будни 19:30–23:50", "scanned": True},
     {"key": "morning", "label": "Будни утром до 10:00", "scanned": False},
-    {"key": "weekend", "label": "Выходные", "scanned": False},
-    {"key": "night", "label": "Будни ночью", "scanned": False},
+    {"key": "weekend_exchange", "label": "Выходные, биржа 10:00–19:00", "scanned": False},
+    {"key": "dealer", "label": "Вне биржи: ночь и выходные, торгует брокер", "scanned": False},
     {"key": "other", "label": "Конец дня 18:40–19:00", "scanned": True},
 )
+STRICT_Q = 0.01               # второй порог для главной гипотезы, записан 09.11 до живых данных по этому времени
 
 
 def session_of(ts: str) -> str:
-    t = datetime.strptime(ts[:19], "%Y-%m-%d %H:%M:%S")
-    if t.weekday() >= 5:
-        return "weekend"
-    m = t.hour * 60 + t.minute
-    if 600 <= m < 1120:
-        return "day"
-    if 1140 <= m < 1170:
-        return "evening_open"
-    if 1170 <= m < 1430:
-        return "evening"
-    if 390 <= m < 600:
-        return "morning"
-    if m < 390:
-        return "night"
-    return "other"
+    return key_of_str(ts)
 
 
 def matrix(rows: Iterable[dict]) -> np.ndarray:
@@ -124,7 +112,7 @@ def _empty_sessions(off_hours: bool) -> List[dict]:
         scanned = s["scanned"] or off_hours
         status, verdict = ("collecting", _verdict(0, None, None, MIN_SELECTED_SESSION)[1]) if scanned else ("not_scanned", "бот в это время не сканирует: в профиле включено «Торговать только в сессию»")
         out.append({**s, "scanned": scanned, "hypothesis": s["key"] == MAIN_HYPOTHESIS, "rows": 0, "selected": 0, "selected_net": None, "ci_lo": None, "ci_hi": None,
-                    "selected_win_pct": None, "avg_spread": None, "status": status, "verdict": verdict})
+                    "selected_win_pct": None, "avg_spread": None, "status": status, "verdict": verdict, "strict": None})
     return out
 
 
@@ -134,7 +122,7 @@ def evaluate() -> dict:
         cand = _candidate(cur)
         if cand is None:
             return {"candidate": None, "status": "none", "verdict": "кандидата нет: запустите задание «Обучить и проверить кандидата»", "sessions": []}
-        spreads = t2.ticker_spreads(cur)
+        spread_table, spreads = t2.session_spreads(cur)
         cur.execute(f"""SELECT f.figi, f.ticker, f.timestamp, f.strategy_mode, v.fwd_ret_60m AS y, v.fill_src, v.spread_pct AS entry_spread,
                                {', '.join('f.' + c for c in t2.FEATURES_V2)}
                         FROM ml_features f JOIN ml_virtual_trades v ON v.id = f.virtual_id
@@ -142,8 +130,9 @@ def evaluate() -> dict:
         rows = [dict(r) for r in cur.fetchall()]
     bundle = cand["bundle"]
     known = [r for r in rows if r["y"] is not None]
+    thr_by_q = getattr(bundle, "thr_by_q", None) or {bundle.q: bundle.thr_pred}
     out = {"candidate": {"id": cand["id"], "trained_at": cand["trained_at"], "threshold": round(float(bundle.thr_pred), 4), "q": bundle.q,
-                         "horizon": bundle.horizon},
+                         "horizon": bundle.horizon, "thresholds": {str(k): round(float(v), 4) for k, v in sorted(thr_by_q.items())}},
            "pending": len(rows) - len(known), "min_selected": MIN_SELECTED, "min_selected_session": MIN_SELECTED_SESSION,
            "main_hypothesis": MAIN_HYPOTHESIS, "all_net": None, "by_day": [], "sessions": _empty_sessions(not session_only()),
            "paper": {"trades": 0, "stake": int(STAKE_RUB), "rub_total": 0.0, "rub_per_day": 0.0, "net": None, "win_pct": None, "days": 0}}
@@ -153,21 +142,23 @@ def evaluate() -> dict:
         return out
     pred = bundle.model.predict(matrix(known)[:, bundle.cols])
     y = np.array([r["y"] for r in known], dtype=float)
-    # настоящий спред в момент входа; средний по бумаге там, где стакана не было
-    spread = np.array([r["entry_spread"] if r["fill_src"] == "book" and r["entry_spread"] is not None else spreads.get(r["ticker"], t2.DEFAULT_SPREAD_PCT)
-                       for r in known], dtype=float)
+    keys = np.array([session_of(r["timestamp"]) for r in known])
+    # настоящий спред в момент входа; где стакана не было — средний по бумаге в это время суток
+    spread = np.array([r["entry_spread"] if r["fill_src"] == "book" and r["entry_spread"] is not None
+                       else t2.spread_for(spread_table, spreads, r["ticker"], k) for r, k in zip(known, keys)], dtype=float)
     net = y - (2 * t2.COMMISSION_SIDE_PCT + spread)
     sel = pred >= bundle.thr_pred
-    # зависимые сигналы: бумага и 30-минутное окно считаются одним блоком, как в тренере
-    stamps = [datetime.strptime(r["timestamp"], "%Y-%m-%d %H:%M:%S").timestamp() for r in known]
-    block = np.array([f"{r['figi']}|{int(s // t2.BLOCK_SEC)}" for r, s in zip(known, stamps)])
+    # интервал по дням: сигналы разных бумаг в один день зависимы, как и в тренере
+    block = np.array([r["timestamp"][:10] for r in known])
     out.update(_summary(net, sel, block, MIN_SELECTED), all_net=round(float(net.mean()), 4), paper=_paper(known, sel, net, bundle.horizon))
-    keys = np.array([session_of(r["timestamp"]) for r in known])
     for s in out["sessions"]:
         m = keys == s["key"]
         if not m.any():
             continue
         s.update(_summary(net[m], sel[m], block[m], MIN_SELECTED_SESSION), avg_spread=round(float(spread[m].mean()), 4))
+        if s["key"] == MAIN_HYPOTHESIS and STRICT_Q in thr_by_q and STRICT_Q != bundle.q:
+            s["strict"] = {"q": STRICT_Q, "threshold": round(float(thr_by_q[STRICT_Q]), 4),
+                           **_summary(net[m], pred[m] >= thr_by_q[STRICT_Q], block[m], MIN_SELECTED_SESSION)}
     days: Dict[str, dict] = {}
     for r, s, n in zip(known, sel, net):
         d = days.setdefault(r["timestamp"][:10], {"day": r["timestamp"][:10], "rows": 0, "selected": 0, "net_sum": 0.0})

@@ -73,12 +73,48 @@ def hgb_params() -> dict:
 
 # ── данные ───────────────────────────────────────────────────────────────────
 
+DEALER_SPREAD_PCT = 0.15      # вне биржевых часов без замеров по бумаге: живой спред у брокера 0,10–0,30%
+MIN_SPREAD_OBS = 5
+
+
+def _spread_rows(cur) -> Dict[Tuple[str, str], List[float]]:
+    from app.ml.sessions import key_of_str
+    cur.execute("""SELECT ticker, created_at, spread_pct FROM ml_virtual_trades
+                   WHERE source='LIVE' AND fill_src='book' AND spread_pct IS NOT NULL""")
+    acc: Dict[Tuple[str, str], List[float]] = {}
+    for ticker, ts, s in cur.fetchall():
+        acc.setdefault((ticker, key_of_str(ts)), []).append(float(s))
+    return acc
+
+
 def ticker_spreads(cur) -> Dict[str, float]:
-    """Средний спред по бумагам (в % от цены) по живым виртуальным сделкам со входом по стакану."""
-    cur.execute("""SELECT ticker, AVG(spread_pct) s FROM ml_virtual_trades
-                   WHERE source='LIVE' AND fill_src='book' AND spread_pct IS NOT NULL
-                   GROUP BY ticker HAVING COUNT(*) >= 5""")
-    return {r[0]: float(r[1]) for r in cur.fetchall()}
+    """Средний биржевой спред бумаги (в % от цены) по живым виртуальным сделкам со входом по стакану. Часы брокера не смешиваются."""
+    by_ticker: Dict[str, List[float]] = {}
+    for (ticker, key), vals in _spread_rows(cur).items():
+        if key != "dealer":
+            by_ticker.setdefault(ticker, []).extend(vals)
+    return {t: sum(v) / len(v) for t, v in by_ticker.items() if len(v) >= MIN_SPREAD_OBS}
+
+
+def session_spreads(cur) -> Tuple[Dict[Tuple[str, str], float], Dict[str, float]]:
+    """Средний живой спред по бумаге и времени суток и средний биржевой спред бумаги (запасной вариант)."""
+    rows = _spread_rows(cur)
+    table = {k: sum(v) / len(v) for k, v in rows.items() if len(v) >= MIN_SPREAD_OBS}
+    by_ticker: Dict[str, List[float]] = {}
+    for (ticker, key), vals in rows.items():
+        if key != "dealer":
+            by_ticker.setdefault(ticker, []).extend(vals)
+    return table, {t: sum(v) / len(v) for t, v in by_ticker.items() if len(v) >= MIN_SPREAD_OBS}
+
+
+def spread_for(table: Dict[Tuple[str, str], float], ticker_avg: Dict[str, float], ticker: str, key: str) -> float:
+    """Спред бумаги в это время суток. Вне биржи будничный спред не подставляется никогда: он в разы уже."""
+    if (ticker, key) in table:
+        return table[(ticker, key)]
+    if key == "dealer":
+        vals = [v for (t, k), v in table.items() if k == "dealer"]
+        return sum(vals) / len(vals) if vals else DEALER_SPREAD_PCT
+    return ticker_avg.get(ticker, DEFAULT_SPREAD_PCT)
 
 
 def load_dataset(horizon: int = 60, sources: Tuple[str, ...] = ("BACKFILL", "VIRTUAL", "LIVE", "REAL")) -> dict:
@@ -90,7 +126,7 @@ def load_dataset(horizon: int = 60, sources: Tuple[str, ...] = ("BACKFILL", "VIR
     marks = ",".join("?" * len(sources))
     where = f"FROM ml_features f JOIN ml_virtual_trades v ON v.id = f.virtual_id WHERE f.source IN ({marks}) AND v.{col} IS NOT NULL"
     with db_cursor() as cur:
-        spreads = ticker_spreads(cur)
+        spread_table, spreads = session_spreads(cur)
         cur.execute(f"SELECT COUNT(*) {where}", sources)
         n = cur.fetchone()[0]
         X = np.full((n, len(ALL_FEATURES)), np.nan)
@@ -124,10 +160,13 @@ def load_dataset(horizon: int = 60, sources: Tuple[str, ...] = ("BACKFILL", "VIR
     block_key = np.char.add(np.char.add(figi_arr.astype(str), "|"), (ts // BLOCK_SEC).astype(str))
     _, block, counts = np.unique(block_key, return_inverse=True, return_counts=True)
     w = 1.0 / counts[block]
-    spread = np.array([spreads.get(t, DEFAULT_SPREAD_PCT) for t in ticker_arr]) if n else np.empty(0)
+    # издержки по бумаге и времени суток: вне биржевых часов спред у брокера в 5–10 раз шире будничного
+    from app.ml.sessions import key_of_epoch
+    session = np.array([key_of_epoch(t) for t in ts]) if n else np.empty(0, dtype=str)
+    spread = np.array([spread_for(spread_table, spreads, t, k) for t, k in zip(ticker_arr, session)]) if n else np.empty(0)
     cost = 2 * COMMISSION_SIDE_PCT + spread
-    return dict(X=X, y=y, ts=ts, block=block, w=w, cost=cost, mode=mode_arr, ticker=ticker_arr, figi=figi_arr,
-                source=np.array(source), horizon=horizon, n_blocks=int(len(counts)), spreads=spreads_summary(spreads))
+    return dict(X=X, y=y, ts=ts, block=block, w=w, cost=cost, mode=mode_arr, ticker=ticker_arr, figi=figi_arr, session=session,
+                day=ts // 86400, source=np.array(source), horizon=horizon, n_blocks=int(len(counts)), spreads=spreads_summary(spreads))
 
 
 def add_derived(X: np.ndarray, mode_arr: np.ndarray) -> None:
@@ -204,11 +243,14 @@ def evaluate(ds: dict, n_folds: int = 4, embargo_days: int = 1, min_train: int =
              exclude: frozenset = frozenset()) -> dict:
     """Хронологическая проверка. Все числа — проценты от цены сделки. exclude — признаки, которые не берутся в модель."""
     from scipy.stats import spearmanr
-    X, y, ts, w, cost, block, mode = ds["X"], ds["y"], ds["ts"], ds["w"], ds["cost"], ds["block"], ds["mode"]
+    X, y, ts, w, cost, mode = ds["X"], ds["y"], ds["ts"], ds["w"], ds["cost"], ds["mode"]
+    # интервал по дням: сигналы разных бумаг в один день зависимы (рынок идёт вместе), блоки «бумага + 30 минут» его сужали
+    day = ds.get("day", ts // 86400)
+    session = ds.get("session")
     folds = make_folds(ts, n_folds, embargo_days, min_train, min_test)
     report = dict(horizon=ds["horizon"], n_rows=int(len(y)), n_blocks=ds["n_blocks"], folds=[], pooled=[], per_mode=[],
-                  importance=[], excluded=sorted(exclude),
-                  cost_note="комиссия 2×%.2f%% + спред бумаги (среднее %.3f%%)" % (
+                  per_session=[], ci_unit="день", importance=[], excluded=sorted(exclude),
+                  cost_note="комиссия 2×%.2f%% + спред бумаги в это время суток по живым замерам (в среднем %.3f%%)" % (
                       COMMISSION_SIDE_PCT, float(cost.mean() - 2 * COMMISSION_SIDE_PCT) if len(cost) else 0.0))
     if not folds:
         report["verdict"] = "мало данных для хронологической проверки"
@@ -247,7 +289,7 @@ def evaluate(ds: dict, n_folds: int = 4, embargo_days: int = 1, min_train: int =
     report["all_gross"] = round(float(y[allm].mean()), 4)
     for q in TOP_QUANTILES:
         sel = np.concatenate(sel_by_q[q])
-        lo, hi = block_bootstrap_mean(block[sel], net[sel])
+        lo, hi = block_bootstrap_mean(day[sel], net[sel])
         report["pooled"].append(dict(
             q=q, n=int(len(sel)), net=round(float(net[sel].mean()), 4), gross=round(float(y[sel].mean()), 4),
             ci_lo=round(lo, 4), ci_hi=round(hi, 4), win=round(float((net[sel] > 0).mean()), 4),
@@ -256,9 +298,20 @@ def evaluate(ds: dict, n_folds: int = 4, embargo_days: int = 1, min_train: int =
     for m in MODES:
         if sel_mode[m]:
             sel = np.concatenate(sel_mode[m])
-            lo, hi = block_bootstrap_mean(block[sel], net[sel])
+            lo, hi = block_bootstrap_mean(day[sel], net[sel])
             report["per_mode"].append(dict(mode=m, q=0.05, n=int(len(sel)), net=round(float(net[sel].mean()), 4),
                                            ci_lo=round(lo, 4), ci_hi=round(hi, 4)))
+    # по времени суток: где отбор даёт плюс, а где его съедают издержки
+    if session is not None:
+        from app.ml.sessions import KEYS
+        for q in (0.01, 0.02):
+            sel = np.concatenate(sel_by_q[q])
+            for key in KEYS:
+                part = sel[session[sel] == key]
+                if len(part) >= 30:
+                    lo, hi = block_bootstrap_mean(day[part], net[part])
+                    report["per_session"].append(dict(q=q, session=key, n=int(len(part)), net=round(float(net[part].mean()), 4),
+                                                      ci_lo=round(lo, 4), ci_hi=round(hi, 4)))
     # важность: падение корреляции при перемешивании признака на последнем фолде
     te_idx = np.where(last_fold["test"])[0]
     base_rho = spearmanr(last_model.predict(X[te_idx][:, last_cols]), y[te_idx]).statistic
@@ -293,8 +346,10 @@ def verdict(report: dict, min_n: int = 300) -> str:
 class Bundle:
     """Что хранится в ml_models: модель, набор признаков и порог отбора; сам пакет pickle-ится целиком."""
 
-    def __init__(self, model, cols: List[int], horizon: int, thr_pred: float, q: float, version: int = FEATURE_SET_VERSION):
+    def __init__(self, model, cols: List[int], horizon: int, thr_pred: float, q: float, version: int = FEATURE_SET_VERSION,
+                 thr_by_q: Optional[Dict[float, float]] = None):
         self.model, self.cols, self.horizon, self.thr_pred, self.q, self.version = model, cols, horizon, thr_pred, q, version
+        self.thr_by_q = dict(thr_by_q) if thr_by_q else {q: thr_pred}
 
     def predict_features(self, features: dict, mode: str) -> float:
         """Предсказанная доходность вперёд (%, в сторону сделки) по словарю признаков build_features."""
@@ -316,7 +371,8 @@ def train_final(ds: dict, report: dict, q: float = 0.02, exclude: frozenset = fr
     model = fit_regressor(ds["X"], ds["y"], ds["w"], cols)
     oof = report.get("oof_pred")
     pool = oof[np.isfinite(oof)] if oof is not None else model.predict(ds["X"][:, cols])
-    return Bundle(model, cols, ds["horizon"], float(np.quantile(pool, 1 - q)), q)
+    thr_by_q = {k: float(np.quantile(pool, 1 - k)) for k in sorted({0.01, 0.02, 0.05, q})}
+    return Bundle(model, cols, ds["horizon"], thr_by_q[q], q, thr_by_q=thr_by_q)
 
 
 def save_candidate(bundle: Bundle, report: dict, n_rows: int) -> int:
@@ -350,12 +406,16 @@ def format_report(rep: dict) -> str:
     L.append("Фолды (тест, обучение, корреляция Спирмена прогноза с фактом, итог всех сделок):")
     for f in rep["folds"]:
         L.append(f"  {f['test_from']}..{f['test_to']}  обучение {f['n_train']:6d}  тест {f['n_test']:6d}  rho {f['spearman']:+.3f}  все {f['all_net']:+.3f}%")
-    L.append("Отбор лучших сделок по прогнозу (чистый итог на сделку, 90%-интервал блочного бутстрапа):")
+    L.append(f"Отбор лучших сделок по прогнозу (чистый итог на сделку, 90%-интервал бутстрапа по блоку «{rep.get('ci_unit', 'бумага + 30 мин')}»):")
     for p in rep["pooled"]:
         L.append(f"  верхние {p['q']:>4.0%}: n={p['n']:6d}  чистый {p['net']:+.3f}% [{p['ci_lo']:+.3f}…{p['ci_hi']:+.3f}]  "
                  f"валовый {p['gross']:+.3f}%  побед {p['win']:.1%}  фолдов>0: {p['folds_positive']}/{p['folds']}")
     for m in rep["per_mode"]:
         L.append(f"  внутри режима {m['mode']:15s} верхние 5%: n={m['n']:5d}  чистый {m['net']:+.3f}% [{m['ci_lo']:+.3f}…{m['ci_hi']:+.3f}]")
+    if rep.get("per_session"):
+        L.append("По времени суток (издержки этого времени):")
+        for p in rep["per_session"]:
+            L.append(f"  верхние {p['q']:.0%} {p['session']:16s} n={p['n']:5d}  чистый {p['net']:+.3f}% [{p['ci_lo']:+.3f}…{p['ci_hi']:+.3f}]")
     L.append("Главные признаки (падение корреляции при перемешивании): " + ", ".join(f"{i['feature']} {i['drop']:+.3f}" for i in rep["importance"][:6]))
     L.append("ВЕРДИКТ: " + rep["verdict"])
     return "\n".join(L)
