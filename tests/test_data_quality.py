@@ -187,3 +187,13 @@ def test_lost_signals_are_flagged(tmp_db):
     tmp_db.set_runtime("virtual_engine_stats", json.dumps({"open": 9000, "skipped_memory": 45, "signals": 900, "since": "2026-11-06 19:52:00"}))
     c = check(dq.report(NOW), "capacity")
     assert c["ok"] is False and "45" in c["value"]
+
+
+def test_old_method_reports_are_marked(tmp_db):
+    """Отчёты до 09.11 считались по среднему спреду и 30-минутным блокам и завышали итог: рядом с новыми они читались бы как ухудшение."""
+    add_report(tmp_db, "2026-11-06 18:09:38", 460248, "старый", report_json(0.07, 0.04))
+    rep_new = json.loads(report_json(0.03, -0.01))
+    rep_new["ci_unit"] = "день"
+    add_report(tmp_db, "2026-11-09 14:44:04", 463107, "новый", json.dumps(rep_new))
+    r = dq.report(NOW)["reports"]
+    assert [x["method"] for x in r] == ["day", "old"]

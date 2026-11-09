@@ -5380,7 +5380,7 @@ function _mlQualityHtml(q) {
     return `<tr><td class="wrap">${esc(c.label)}<br><span class="muted">${esc(c.value)}</span></td><td><span class="chip ${cls}">${text}</span></td></tr>`;
   }).join("");
   const reports = (q.reports || []).map((r) => `<tr>
-    <td>${esc(_stDate(r.created_at))}</td><td class="num">${num(r.n_rows)}</td>
+    <td class="wrap">${esc(_stDate(r.created_at))}${r.method === "old" ? '<br><span class="muted">старая методика: средний спред и узкий интервал, итог завышен</span>' : ""}</td><td class="num">${num(r.n_rows)}</td>
     <td class="num">${r.spearman == null ? "—" : r.spearman.toFixed(4).replace(".", ",")}${delta(r.delta_spearman, 4)}</td>
     <td class="num">${r.best ? "верхние " + _stNum(r.best.q * 100, 1) + "%: " + net(r.best.net) : "—"}</td><td class="num">${r.best ? net(r.best.ci_lo) : "—"}</td>
     <td class="num">${r.best ? r.best.folds_positive + " из " + r.best.folds : "—"}</td><td class="num">${net(r.net_top5)}${delta(r.delta_net_top5, 3, " п.п.")}</td>

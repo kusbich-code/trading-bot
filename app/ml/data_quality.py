@@ -149,11 +149,13 @@ def _by_month(cur) -> List[dict]:
 
 def _parse_report(row) -> dict:
     out = {"created_at": row["created_at"], "n_rows": row["n_rows"], "verdict": row["verdict"], "spearman": None, "net_top5": None,
-           "ci_lo_top5": None, "all_net": None, "folds_positive_top5": None, "folds": None, "best": None}
+           "ci_lo_top5": None, "all_net": None, "folds_positive_top5": None, "folds": None, "best": None, "method": "old"}
     try:
         rep = json.loads(row["report_json"])
     except (TypeError, ValueError):
         return out
+    # до 09.11 отчёты считались по среднему будничному спреду и 30-минутным блокам и завышали итог
+    out["method"] = "day" if rep.get("ci_unit") == "день" else "old"
     rhos = [f["spearman"] for f in rep.get("folds", []) if f.get("spearman") is not None]
     if rhos:
         out["spearman"] = round(sum(rhos) / len(rhos), 4)
