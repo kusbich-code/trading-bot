@@ -32,4 +32,11 @@ def prune(keep: int = KEEP) -> dict:
     for p in extra:
         freed += p.stat().st_size
         p.unlink()
+    # служебные файлы SQLite (-wal, -shm), чей бэкап удалён или давно отсутствует
+    d = Path(BACKUP_DIR)
+    if d.is_dir():
+        for side in list(d.glob("*.sqlite3-wal")) + list(d.glob("*.sqlite3-shm")):
+            if not side.with_name(side.name.rsplit("-", 1)[0]).exists():
+                freed += side.stat().st_size
+                side.unlink()
     return {"deleted": len(extra), "freed_mb": round(freed / 1048576, 2), "kept": len(files) - len(extra)}

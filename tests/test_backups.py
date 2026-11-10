@@ -53,3 +53,15 @@ def test_scripts_prune_after_new_backup(tmp_db, tmp_path, monkeypatch):
     make(tmp_path, 12)
     cleanup_virtual.backup_db(tmp_db.settings.DB_PATH)
     assert len(list((tmp_path / "backups").glob("*.sqlite3"))) == bk.KEEP
+
+
+def test_prune_removes_companion_and_orphan_wal_files(tmp_path, monkeypatch):
+    """У бэкапа, открытого в режиме WAL, остаются файлы -wal и -shm: без бэкапа они бесхозные."""
+    monkeypatch.chdir(tmp_path)
+    d = make(tmp_path, 12)
+    for name in ("trading_bot_before_x_00.sqlite3", "trading_bot_before_x_11.sqlite3", "deleted_long_ago.sqlite3"):
+        (d / (name + "-wal")).write_bytes(b"w")
+        (d / (name + "-shm")).write_bytes(b"s")
+    bk.prune()
+    assert not (d / "trading_bot_before_x_00.sqlite3-wal").exists() and not (d / "deleted_long_ago.sqlite3-shm").exists()
+    assert (d / "trading_bot_before_x_11.sqlite3-wal").exists()                # у живого бэкапа служебные файлы остаются
