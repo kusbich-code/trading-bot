@@ -556,6 +556,23 @@ def init_db():
             cur.execute("ALTER TABLE paper_daily_log ADD COLUMN account TEXT DEFAULT 'A'")
         except Exception:
             pass
+        # заявки счёта C в песочнице брокера; order_id детерминирован (неделя, тикер, попытка)
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS sandbox_c_orders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            week TEXT NOT NULL,
+            ticker TEXT NOT NULL,
+            qty INTEGER NOT NULL,
+            direction TEXT NOT NULL,
+            order_id TEXT NOT NULL UNIQUE,
+            attempt INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            price REAL,
+            error TEXT,
+            created_at TEXT NOT NULL
+        )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_sco_week_ticker ON sandbox_c_orders(week, ticker)")
         cur.execute("""
         CREATE TABLE IF NOT EXISTS ml_virtual_paths (
             virtual_id INTEGER PRIMARY KEY,
