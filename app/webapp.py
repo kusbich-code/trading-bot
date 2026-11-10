@@ -78,7 +78,7 @@ from app.db import (
 from app.config import settings
 from app.version import __version__ as BOT_VERSION
 from app.ml import paper_view
-from app.services import jobs, reconcile as _reconcile
+from app.services import backups as _backups, jobs, reconcile as _reconcile
 from app.services.tbank_client import (
     get_candles,
     get_candles_range,
@@ -905,8 +905,17 @@ def api_strategy_overview(quotes: int = 1):
             logger.warning("цены бумажных счетов: %s", e)
     from datetime import datetime as _dt, timezone as _tz
     data = paper_view.overview(_dt.now(_tz.utc), prices)
+    data["backups"] = _backups.summary()
     data["quotes_error"] = error
     return JSONResponse(data)
+
+
+@app.post("/api/backups/prune")
+def api_backups_prune():
+    """Оставить 10 последних бэкапов базы. Удаляются только файлы бэкапов в backups/."""
+    res = _backups.prune()
+    log_event("MODE", f"Бэкапы базы: удалено {res['deleted']}, освобождено {res['freed_mb']} МБ (из дашборда)", level="WARNING")
+    return JSONResponse(res)
 
 
 @app.post("/api/mode/set")

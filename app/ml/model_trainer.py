@@ -33,6 +33,9 @@ BACKFILL_TAIL_SQL = f"datetime((SELECT MAX(timestamp) FROM ml_features WHERE sou
 MAX_TRAIN_ROWS = 30000
 # В истории нет стакана. Ноль означал бы «стакан пуст с одной стороны», поэтому пропуск заменяется равновесием.
 NEUTRAL_WHEN_EMPTY = {"bid_pressure": 0.5, "book_depth_ratio": 1.0}
+# Аудит 10.11: модели v1 сами не включаются. Их проверка без зазора между обучением и тестом, а соседние сигналы почти одинаковы;
+# честная проверка тренером v2 плюса не нашла. Ночное обучение только записывает результат со статусом «учится».
+V1_AUTO_ACTIVATE = False
 
 
 def _maturity_cutoff() -> str:
@@ -213,6 +216,7 @@ def train_universal_model() -> Optional[Dict]:
     # (soft-режим: логирует, но не блокирует входы и не закрывает позиции).
     prec = metrics.get("precision", 0)
     is_ready = len(X_train) >= MIN_SAMPLES and passes_activation(y_test, y_pred, returns_test, MIN_PRECISION_ACTIVATE)
+    is_ready = is_ready and V1_AUTO_ACTIVATE
     univ_status = "active" if is_ready else "learning"
     model_bytes = pickle.dumps(model)
     now = datetime.now(tz=_MSK).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
@@ -332,6 +336,7 @@ def train_model(figi: str, ticker: str, strategy_id: int) -> Optional[Dict]:
     prec = metrics.get("precision", 0)
     n = len(X_train)
     is_ready = n >= MIN_SAMPLES and passes_activation(y_test, y_pred, returns_test, 0.58)
+    is_ready = is_ready and V1_AUTO_ACTIVATE
     instr_status = "active" if is_ready else "learning"
 
     # Сохранение в БД с корректным статусом сразу (без race condition)

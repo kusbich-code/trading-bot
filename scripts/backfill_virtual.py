@@ -126,6 +126,8 @@ def backup_db(db_path: str) -> str:
         src.backup(out)
     out.close()
     src.close()
+    from app.services.backups import prune
+    prune()                      # хранятся 10 последних бэкапов (решение владельца 10.11)
     return str(dst)
 
 

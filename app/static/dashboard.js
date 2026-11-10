@@ -3888,6 +3888,9 @@ function renderHelpTab() {
     ${p("Вкладка «Модель», блок «Качество данных». Показывает объём по источникам, проверки достоверности (причины закрытия, дубли, пересечение с живым периодом, заполненность) и сравнение отчётов тренера. Рост числа строк ещё не значит, что модель стала лучше: это видно только в таблице «Стала ли модель лучше».")}
     ${p("Там же «Проверка кандидата на живых сделках»: кандидат оценивается на сигналах, которых он не видел при обучении. Правило вывода задано заранее: не меньше 200 отобранных сделок и нижняя граница интервала выше нуля. До этого результат на истории считается непроверенным, и кандидат в торговлю не попадает. Итог считается и по времени суток: издержки и поведение цены в разное время разные. Открытие вечерней сессии записано главной гипотезой 06.11, но расчёт, на котором она основана, содержал ошибку (сдвиг дня недели); с правильным расчётом и настоящими издержками плюса на истории нет ни в одном времени суток. Выходные и утро проверяются живыми сделками, только если в профиле выключено «Торговать только в сессию»: тогда сканер работает и вне сессии, но лишь по бумагам, которые брокер в этот момент даёт торговать.")}
 
+    ${h3("Бэкапы базы")}
+    ${p("Перед пересчётом истории и чисткой данных снимается бэкап рабочей базы (около 130 МБ). Хранятся 10 последних, старые удаляются сами после каждого нового. Число и размер видны на вкладке «Стратегия» в «Режимах бота», там же кнопка «Оставить 10 последних».")}
+
     ${h3("Сверка с брокером")}
     ${p("Вкладка «История сделок» → «Сверка с брокером». Показывает итог по операциям брокера и итог бота, а разницу раскладывает на комиссию, прочие списания и остальное. Если брокер не отвечает, вкладка так и скажет, остальная страница работает.")}
 
@@ -5307,6 +5310,9 @@ function _stControls(o) {
   return `<div class="table-wrap"><table class="st-table"><thead><tr><th>Режим</th><th>Сейчас</th><th></th></tr></thead><tbody>${rows}
     <tr><td class="wrap"><b>Дашборд</b><br><span class="muted">Перезапуск нужен после обновления бота, чтобы показать новую версию. Торговля не затрагивается.</span></td><td>Работает</td>
       <td><button class="btn st-pick" onclick="stRestartDashboard()">Перезапустить</button></td></tr>
+    ${o.backups ? `<tr><td class="wrap"><b>Бэкапы базы</b><br><span class="muted">Снимаются перед пересчётом истории и чисткой данных. Хранятся ${o.backups.keep} последних, старые удаляются сами после нового бэкапа.</span></td>
+      <td><b>${_stNum(o.backups.count, 0)} шт., ${_stNum(o.backups.total_mb / 1024, 2)} ГБ</b></td>
+      <td><button class="btn st-pick" onclick="stPruneBackups()" ${o.backups.count > o.backups.keep ? "" : "disabled"}>Оставить ${o.backups.keep} последних</button></td></tr>` : ""}
     </tbody></table></div><p class="note">Перед каждым переключением страница спросит подтверждение. Запуск и остановка самого бота на вкладке «Счёт и сервис».</p>`;
 }
 
@@ -5316,6 +5322,18 @@ async function stToggleMode(key, on) {
   try {
     await apiPostJson("/api/mode/set", { key, enabled: on });
     showToast(`${c.label}: ${on ? "включено" : "выключено"}`, "success");
+    await renderStrategyTab();
+  } catch (e) {
+    showToast(e.message, "error", 5000);
+  }
+}
+
+async function stPruneBackups() {
+  const b = _stData?.backups;
+  if (!b || !window.confirm(`Удалить ${b.count - b.keep} старых бэкапов базы и оставить ${b.keep} последних? Рабочая база не затрагивается.`)) return;
+  try {
+    const r = await apiPostJson("/api/backups/prune", {});
+    showToast(`Удалено бэкапов: ${r.deleted}, освобождено ${_stNum(r.freed_mb / 1024, 2)} ГБ`, "success");
     await renderStrategyTab();
   } catch (e) {
     showToast(e.message, "error", 5000);
@@ -5758,6 +5776,7 @@ async function bootstrapDashboard() {
   window.stSelectAccount  = stSelectAccount;
   window.stToggleMode     = stToggleMode;
   window.stRestartDashboard = stRestartDashboard;
+  window.stPruneBackups = stPruneBackups;
   window.serviceAction    = serviceAction;
   window.closeOnePosition = closeOnePosition;
   window.closeAllPositionsConfirm = closeAllPositionsConfirm;

@@ -612,3 +612,13 @@ def test_api_quality_answers_and_caches(web, monkeypatch):
     assert len(calls) == 1
     client.get("/api/ml/quality?fresh=1")
     assert len(calls) == 2
+
+
+def test_api_shows_and_prunes(web, tmp_path):
+    webapp, client = web
+    from tests.test_backups import make
+    make(tmp_path, 12)
+    o = client.get("/api/strategy/overview?quotes=0").json()
+    assert o["backups"]["count"] == 12
+    r = client.post("/api/backups/prune").json()
+    assert r["deleted"] == 2 and r["kept"] == 10

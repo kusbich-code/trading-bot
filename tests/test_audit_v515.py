@@ -261,3 +261,30 @@ def test_drift_ignores_virtual_win_rate(tmp_db, monkeypatch):
 
 def test_default_commission_matches_broker(tmp_db):
     assert tmp_db.get_setting("estimated_commission_pct") == "0.0005"
+
+
+# ── аудит 10.11: модель v1 не включается сама ────────────────────────────────
+
+def test_v1_never_activates_itself_even_when_its_check_passes(tmp_db, monkeypatch):
+    """Проверка v1 слабая (без зазора, соседние сигналы почти одинаковы), а честная проверка v2 плюса не нашла: v1 только записывает результат."""
+    monkeypatch.setattr(mt, "passes_activation", lambda *a, **k: True)
+    rng = random.Random(2)
+    for i in range(400):
+        lab = 1 if rng.random() < 0.5 else 0
+        add_row(tmp_db, "REAL", (datetime(2026, 10, 1) + timedelta(minutes=i)).strftime("%Y-%m-%d %H:%M:%S"),
+                label=lab, ret=(0.01 if lab else -0.01), z=rng.random())
+    mt.train_universal_model()
+    with tmp_db.db_cursor() as cur:
+        cur.execute("SELECT status FROM ml_models WHERE figi='UNIVERSAL' ORDER BY id DESC LIMIT 1")
+        assert cur.fetchone()[0] == "learning"
+
+
+def test_start_archives_active_v1_models_and_keeps_v2_candidate(tmp_db):
+    with tmp_db.db_cursor() as cur:
+        for figi, status in (("UNIVERSAL", "active"), ("BBG004730N88", "active"), ("UNIVERSAL_V2", "candidate"), ("UNIVERSAL", "learning")):
+            cur.execute("INSERT INTO ml_models(figi, ticker, strategy_id, trained_at, status) VALUES (?, 'X', 0, '2026-11-07 00:00:00', ?)", (figi, status))
+    tmp_db.init_db()
+    with tmp_db.db_cursor() as cur:
+        cur.execute("SELECT figi, status FROM ml_models ORDER BY id")
+        assert [tuple(r) for r in cur.fetchall()] == [("UNIVERSAL", "archived"), ("BBG004730N88", "archived"),
+                                                      ("UNIVERSAL_V2", "candidate"), ("UNIVERSAL", "learning")]

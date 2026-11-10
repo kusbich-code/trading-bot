@@ -579,6 +579,8 @@ def init_db():
             status TEXT DEFAULT 'active'
         )
         """)
+        # аудит 10.11: модели v1 не бывают активными (решение владельца); кандидаты v2 живут в статусе candidate
+        cur.execute("UPDATE ml_models SET status='archived' WHERE status='active' AND figi <> 'UNIVERSAL_V2'")
 
         cur.execute("""
         CREATE TABLE IF NOT EXISTS ml_decisions (
