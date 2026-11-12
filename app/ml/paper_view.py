@@ -89,6 +89,10 @@ MODE_CONTROLS = (
      "hint": "По субботам в 18:00 МСК: недельный отчёт в Telegram и подбор настроек стратегий акций. Настройки меняются, только если принять предложение кнопкой в Telegram.",
      "confirm_on": "По субботам снова будут приходить отчёт и предложения по настройкам. Включить?",
      "confirm_off": "Субботний отчёт и подбор настроек перестанут запускаться. Выключить?"},
+    {"key": "sandbox_c_enabled", "default": "0", "label": "Счёт C в песочнице брокера", "danger_on": False,
+     "hint": "Раз в неделю, после ребаланса бумажного счёта C, бот повторяет его настоящими рыночными заявками по фьючерсам на отдельном счёте песочницы. Деньги ненастоящие: проверяются исполнение, комиссии и обеспечение.",
+     "confirm_on": "Бот начнёт выставлять заявки по фьючерсам на счёте C в песочнице брокера (деньги ненастоящие). Заявки уходят в ребаланс: в первый торговый день недели после 10:05 МСК. Включить?",
+     "confirm_off": "Новые заявки на счёте C в песочнице прекратятся, открытые позиции останутся. Закрыть их можно кнопкой в разделе счёта C. Выключить?"},
 )
 
 
@@ -242,12 +246,23 @@ def _weekly_status(now: datetime, on: bool) -> str:
     return f"{done} Следующий {next_weekly_run(now, last).strftime('%d.%m.%Y в %H:%M')} МСК."
 
 
+def _sandbox_c_status() -> str:
+    from app.ml import sandbox_c_runner
+    st = sandbox_c_runner.status()
+    if not st["account_id"]:
+        return "Счёта в песочнице нет: создайте его кнопкой в разделе счёта C выше."
+    last = f"Последний шаг {st['last_at']}: {st['last_result_text']}." if st["last_at"] else "Шагов ещё не было."
+    return f"Счёт …{st['account_id'][-6:]}. {last}"
+
+
 def controls(now: Optional[datetime] = None) -> list:
     """Переключатели режимов с текущим состоянием."""
     out = [{**c, "on": _flag(c["key"], c["default"])} for c in MODE_CONTROLS]
     for c in out:
         if c["key"] == "weekly_cycle_enabled":
             c["status"] = _weekly_status(now or datetime.now(MSK), c["on"])
+        elif c["key"] == "sandbox_c_enabled":
+            c["status"] = _sandbox_c_status()
     return out
 
 

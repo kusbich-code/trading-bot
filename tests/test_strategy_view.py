@@ -296,8 +296,10 @@ def test_explain_starts_with_closed_entries(web, monkeypatch):
 def test_overview_lists_controls_with_state(tmp_db):
     o = pv.overview(NOW)
     c = {x["key"]: x for x in o["controls"]}
-    assert set(c) == {"new_entries_enabled", "ml_enforce", "ml_auto_tune", "virtual_trades_enabled", "md_stream_workers", "weekly_cycle_enabled"}
+    assert set(c) == {"new_entries_enabled", "ml_enforce", "ml_auto_tune", "virtual_trades_enabled", "md_stream_workers", "weekly_cycle_enabled",
+                      "sandbox_c_enabled"}
     assert c["new_entries_enabled"]["on"] is False and c["virtual_trades_enabled"]["on"] is True
+    assert c["sandbox_c_enabled"]["on"] is False and "нет" in c["sandbox_c_enabled"]["status"]
     assert all(x["label"] and x["hint"] and x["confirm_on"] and x["confirm_off"] for x in o["controls"])
 
 
@@ -505,6 +507,42 @@ def test_every_api_route_is_used_by_the_interface(web):
         if base not in js:
             missing.append(path)
     assert missing == []
+
+
+# ── счёт C в песочнице брокера ──
+
+def test_api_sandbox_c_status(web):
+    _, client = web
+    data = client.get("/api/sandbox-c/status").json()
+    assert {"enabled", "account_id", "equity", "positions", "orders", "last_result", "loss_limit_hit"} <= set(data)
+    assert data["enabled"] is False and data["account_id"] == ""
+
+
+def test_api_sandbox_c_close_all_without_account(web):
+    _, client = web
+    r = client.post("/api/sandbox-c/close-all", json={})
+    assert r.status_code == 400 and "нет" in r.json()["detail"]
+
+
+def test_api_sandbox_c_create_account_only_in_sandbox(web, monkeypatch):
+    _, client = web
+    from app.config import settings
+    monkeypatch.setattr(settings, "TINVEST_USE_SANDBOX", False)
+    r = client.post("/api/sandbox-c/create-account", json={})
+    assert r.status_code == 400 and "песочниц" in r.json()["detail"]
+
+
+def test_api_sandbox_c_create_account_stores_id(web, monkeypatch, tmp_db):
+    import contextlib
+    webapp, client = web
+    from app.config import settings
+    monkeypatch.setattr(settings, "TINVEST_USE_SANDBOX", True)
+    monkeypatch.setattr(webapp, "_sandbox_c_client", lambda: contextlib.nullcontext(object()))
+    monkeypatch.setattr(webapp._sc_broker, "create_account", lambda c: "new-account-123456")
+    r = client.post("/api/sandbox-c/create-account", json={})
+    assert r.status_code == 200 and r.json()["account_id"] == "new-account-123456"
+    assert tmp_db.get_runtime("sandbox_c_account_id") == "new-account-123456"
+    assert client.get("/api/sandbox-c/status").json()["equity"] == 1_000_000
 
 
 # ── API заданий и сверки ──

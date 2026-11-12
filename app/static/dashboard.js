@@ -3891,6 +3891,17 @@ function renderHelpTab() {
     ${h3("Бэкапы базы")}
     ${p("Перед пересчётом истории и чисткой данных снимается бэкап рабочей базы (около 130 МБ). Хранятся 10 последних, старые удаляются сами после каждого нового. Число и размер видны на вкладке «Стратегия» в «Режимах бота», там же кнопка «Оставить 10 последних».")}
 
+    ${h3("Счёт C в песочнице брокера")}
+    ${p("Отдельный счёт в песочнице брокера, деньги ненастоящие. Каждую неделю, после ребаланса бумажного счёта C, бот берёт его веса по фьючерсам, пересчитывает на деньги этого счёта и выставляет рыночные заявки на разницу с текущими позициями. Так проверяются исполнение, комиссии и гарантийное обеспечение, которых на бумаге нет.")}
+    ${li([
+      "<b>Создать счёт</b> — вкладка «Стратегия», счёт C, блок «Песочница брокера». Открывает счёт и кладёт 1 000 000 ₽. Сам бот счёт не создаёт: если брокер счёт сбросил, блок покажет «счёта нет» и кнопка станет доступна",
+      "<b>Включить</b> — «Режимы бота» → «Счёт C в песочнице брокера». По умолчанию выключено. Заявки уходят только в режиме песочницы",
+      "<b>Пределы</b> — обеспечение всех позиций не больше половины денег счёта (иначе цели уменьшаются), убыток за день 5% и больше останавливает новые заявки до завтра с сообщением в Telegram",
+      "<b>Повторы</b> — отклонённая заявка повторяется не чаще раза в 30 минут и не больше 3 раз за неделю; повтор после перезапуска бота не задваивает заявку",
+      "<b>Закрыть все позиции</b> — рыночные заявки на закрытие и выключение исполнителя; до следующей недели позиции не откроются",
+      "Деньги у брокера считаются как рубли плюс переоценка позиций: итог портфеля брокера включает полный объём фьючерса и здесь не подходит"
+    ])}
+
     ${h3("Сверка с брокером")}
     ${p("Вкладка «История сделок» → «Сверка с брокером». Показывает итог по операциям брокера и итог бота, а разницу раскладывает на комиссию, прочие списания и остальное. Если брокер не отвечает, вкладка так и скажет, остальная страница работает.")}
 
@@ -5627,6 +5638,7 @@ async function renderStrategyTab() {
     </section>
     <div class="row st-pickers" role="group" aria-label="Выбор счёта">${pick}</div>
     ${body}
+    ${a.name === "C" ? `<section class="block"><h2>Песочница брокера</h2><div id="stSandboxC"><p class="note">Загрузка…</p></div></section>` : ""}
     <section class="block"><h2>Все счета на проверке</h2>${_stAccounts(o)}</section>
     <section class="block"><h2>Режимы бота</h2>${_stControls(o)}</section>
     <div class="two-cols st-two">
@@ -5638,6 +5650,81 @@ async function renderStrategyTab() {
     <section class="block"><h2>Что с остальным</h2>${_stElsewhere(o)}</section>
   `;
   if (a.opened) _stDrawChart(a);
+  if (a.name === "C") _stLoadSandboxC(a.opened ? a.equity : null);
+}
+
+// ── Счёт C в песочнице брокера: те же цели, что у бумажного счёта C, но настоящими заявками ──
+let _scData = null;
+const _SC_ORDER_STATUS = { filled: "исполнена", rejected: "отклонена", sent: "отправлена, ответа нет" };
+
+async function _stLoadSandboxC(paperEquity) {
+  const host = document.getElementById("stSandboxC");
+  if (!host) return;
+  try {
+    _scData = await apiGet("/api/sandbox-c/status");
+  } catch (e) {
+    host.innerHTML = `<p class="note">⚠ Состояние песочницы не загрузилось: ${esc(e.message)}</p>`;
+    return;
+  }
+  host.innerHTML = _stSandboxC(_scData, paperEquity);
+}
+
+function _stSandboxC(s, paperEquity) {
+  const acc = s.account_id;
+  const state = !s.sandbox ? "Бот не в режиме песочницы: заявки не отправляются"
+    : !acc ? "Счёта нет. Создайте его кнопкой ниже, затем включите «Счёт C в песочнице брокера» в «Режимах бота»"
+    : s.enabled ? "Включено: заявки уходят в недельный ребаланс" : "Выключено: заявки не отправляются";
+  const items = [
+    ["Состояние", esc(state)],
+    ["Счёт", acc ? `…${esc(acc.slice(-6))}` : "нет"],
+    ["Деньги у брокера", s.equity == null ? "—" : `${_stRub(s.equity)}${s.last_at ? ` <span class="muted">на ${esc(s.last_at)} МСК</span>` : ""}`],
+    ["Бумажный счёт C", _stRub(paperEquity)],
+    ["Последний шаг", s.last_at ? `${esc(s.last_at)} МСК: ${esc(s.last_result_text || s.last_result)}` : "шагов ещё не было"],
+    ["Неделя", s.week ? `${esc(s.week)}, ${s.week_finished ? "ребаланс закрыт" : "ребаланс идёт"}` : "—"],
+  ];
+  const pos = Object.entries(s.positions || {});
+  const posTable = pos.length ? `<div class="table-wrap"><table class="st-table"><thead><tr><th>Контракт</th><th class="num">У брокера</th><th class="num">Цель недели</th></tr></thead><tbody>
+    ${pos.map(([t, v]) => `<tr><td>${esc(t)}</td><td class="num">${v.held}</td><td class="num">${v.target}${v.held === v.target ? "" : " ⚠"}</td></tr>`).join("")}</tbody></table></div>`
+    : `<p class="note">Позиций и целей пока нет.</p>`;
+  const orders = s.orders || [];
+  const ordTable = orders.length ? `<div class="table-wrap"><table class="st-table"><thead><tr><th>Время, МСК</th><th>Контракт</th><th>Заявка</th><th class="num">Попытка</th><th>Итог</th><th class="num">Цена, ₽</th><th>Ошибка</th></tr></thead><tbody>
+    ${orders.map((x) => `<tr><td>${esc(x.created_at)}</td><td>${esc(x.ticker)}</td><td>${x.direction === "BUY" ? "Покупка" : "Продажа"} ${x.qty}</td>
+      <td class="num">${x.attempt ? x.attempt : "кнопка"}</td><td>${esc(_SC_ORDER_STATUS[x.status] || x.status)}</td>
+      <td class="num">${x.price == null ? "—" : _stNum(x.price, 2)}</td><td class="wrap">${esc(x.error || "")}</td></tr>`).join("")}</tbody></table></div>`
+    : `<p class="note">Заявок ещё не было.</p>`;
+  const canCreate = s.sandbox && (!acc || s.last_result === "no_account");
+  return `<dl class="st-dl">${items.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join("")}</dl>
+    ${s.loss_limit_hit ? `<p class="note">⛔ Убыток за день 5% и больше: новые заявки до завтра не отправляются.</p>` : ""}
+    <h3 class="st-h3">Позиции у брокера и цели недели</h3>${posTable}
+    <h3 class="st-h3">Последние заявки</h3>${ordTable}
+    <div class="row" style="margin-top:12px;gap:8px">
+      <button class="btn st-pick" onclick="stSandboxCCreate()" ${canCreate ? "" : "disabled"}>Создать счёт</button>
+      <button class="btn btn-danger st-pick" onclick="stSandboxCCloseAll()" ${acc && s.sandbox ? "" : "disabled"}>Закрыть все позиции</button>
+    </div>
+    <p class="note">Деньги ненастоящие: это отдельный счёт песочницы брокера. Цели те же, что у бумажного счёта C, но пересчитаны на деньги этого счёта; обеспечение всех позиций не больше половины денег. Заявка по контракту повторяется не чаще раза в 30 минут и не больше 3 раз за неделю.</p>`;
+}
+
+async function stSandboxCCreate() {
+  if (!window.confirm("Открыть отдельный счёт в песочнице брокера и пополнить его на 1 000 000 ₽? Деньги ненастоящие, счёт минутных стратегий не затрагивается.")) return;
+  try {
+    const r = await apiPostJson("/api/sandbox-c/create-account", {});
+    showToast(`Счёт создан: …${String(r.account_id).slice(-6)}. Включите «Счёт C в песочнице брокера» в «Режимах бота»`, "success", 7000);
+    await renderStrategyTab();
+  } catch (e) {
+    showToast(e.message, "error", 6000);
+  }
+}
+
+async function stSandboxCCloseAll() {
+  if (!window.confirm("Закрыть все позиции счёта C в песочнице рыночными заявками? Исполнитель выключится, до следующей недели позиции не откроются.")) return;
+  try {
+    const r = await apiPostJson("/api/sandbox-c/close-all", {});
+    const msg = r.rejected.length ? `Не закрыты: ${r.rejected.join(", ")}` : `Закрыто позиций: ${r.closed.length}`;
+    showToast(msg, r.rejected.length ? "error" : "success", 7000);
+    await renderStrategyTab();
+  } catch (e) {
+    showToast(e.message, "error", 6000);
+  }
 }
 
 function stSelectAccount(name) {

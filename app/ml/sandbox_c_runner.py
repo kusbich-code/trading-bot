@@ -5,6 +5,7 @@
 не чаще раза в 30 минут и не больше 3 раз за неделю. Номер заявки детерминирован: повтор после перезапуска не задвоит её.
 """
 import json
+import uuid
 from datetime import datetime, timedelta
 from typing import Callable, Optional
 
@@ -32,7 +33,13 @@ RESULT_TEXT = {
     "loss_limit": "убыток за день 5% и больше, новые заявки до завтра не отправляются",
     "done": "позиции совпадают с целями недели",
     "partial": "часть заявок не исполнена",
+    "created": "счёт создан и пополнен на 1 000 000 ₽",
+    "closed": "позиции закрыты кнопкой, исполнитель выключен до включения переключателем",
 }
+
+
+def account_id() -> str:
+    return (db.get_runtime(K_ACCOUNT, "") or "").strip()
 
 
 def enabled() -> bool:
@@ -89,13 +96,14 @@ def _loss_limit_hit(now: datetime, equity: float) -> bool:
 
 def _attempts(week: str, ticker: str) -> list:
     with db.db_cursor() as cur:
-        cur.execute("SELECT attempt, created_at FROM sandbox_c_orders WHERE week = ? AND ticker = ? ORDER BY attempt",
+        cur.execute("SELECT attempt, created_at FROM sandbox_c_orders WHERE week = ? AND ticker = ? AND attempt > 0 ORDER BY attempt",
                     (week, ticker))
         return [tuple(r) for r in cur.fetchall()]
 
 
-def _send(now: datetime, week: str, broker, order: dict, attempt: int) -> None:
-    oid = sandbox_c.order_id(week, order["ticker"], attempt)
+def _send(now: datetime, week: str, broker, order: dict, attempt: int, oid: Optional[str] = None) -> dict:
+    """Записывает заявку, отправляет её брокеру и записывает итог. attempt 0 — закрытие кнопкой, вне счёта попыток."""
+    oid = oid or sandbox_c.order_id(week, order["ticker"], attempt)
     with db.db_cursor() as cur:                                     # запись до отправки: номер попытки занят
         cur.execute("INSERT INTO sandbox_c_orders(week, ticker, qty, direction, order_id, attempt, status, created_at) "
                     "VALUES (?, ?, ?, ?, ?, ?, 'sent', ?)",
@@ -107,6 +115,7 @@ def _send(now: datetime, week: str, broker, order: dict, attempt: int) -> None:
     with db.db_cursor() as cur:
         cur.execute("UPDATE sandbox_c_orders SET status = ?, price = ?, error = ? WHERE order_id = ?",
                     (res.get("status") or "rejected", res.get("price"), res.get("error"), oid))
+    return res
 
 
 def _week_targets(paper: dict, broker, equity: float) -> Optional[dict]:
@@ -129,7 +138,7 @@ def run_step(now: datetime, broker_factory: Callable[[str], object]) -> Optional
         return _remember(now, "disabled")
     if not _is_sandbox():
         return _remember(now, "not_sandbox")
-    account = (db.get_runtime(K_ACCOUNT, "") or "").strip()
+    account = account_id()
     if not account:
         return _remember(now, "no_account")
     week = paper_daily.week_key(now)
@@ -176,7 +185,46 @@ def run_step(now: datetime, broker_factory: Callable[[str], object]) -> Optional
             return _remember(now, result, equity, held)
     plan.update(finished=True, result=result)                       # попытки исчерпаны или всё исполнено
     _set_json(K_WEEK, plan)
+    _report_week(week, result, equity, targets, held)
     return _remember(now, result, equity, held)
+
+
+def _report_week(week: str, result: str, equity: float, targets: dict, held: dict) -> None:
+    rows = ", ".join(f"{t} {held.get(t, 0):+d}" + ("" if held.get(t, 0) == targets.get(t, 0) else f" (цель {targets.get(t, 0):+d})")
+                     for t in sorted(set(targets) | set(held))) or "без позиций"
+    notify(f"🧪 Счёт C в песочнице, неделя {week}: {RESULT_TEXT[result]}.\n{rows}\nДеньги у брокера {equity:,.0f} ₽",
+           is_error=(result != "done"))
+
+
+def account_created(now: datetime, account: str) -> None:
+    """Новый счёт кнопкой: прежние цели недели и дневной предел к нему не относятся."""
+    db.set_runtime(K_ACCOUNT, account)
+    db.set_runtime(K_WEEK, "")
+    db.set_runtime(K_DAY, "")
+    _set_json(K_LAST, {"result": "created", "at": _stamp(now), "equity": float(sandbox_c_start()), "held": {}})
+
+
+def sandbox_c_start() -> int:
+    from app.services.sandbox_c_broker import START_RUB
+    return START_RUB
+
+
+def close_all(now: datetime, broker) -> dict:
+    """Кнопка «Закрыть все позиции»: выключает исполнитель, закрывает позиции рыночными заявками, закрывает неделю."""
+    db.set_setting("sandbox_c_enabled", "0")
+    week = paper_daily.week_key(now)
+    closed, rejected = [], []
+    for t, q in sorted(broker.positions().items()):
+        order = {"ticker": t, "qty": abs(q), "direction": "SELL" if q > 0 else "BUY"}
+        oid = str(uuid.uuid5(uuid.NAMESPACE_URL, f"C|close|{_stamp(now)}|{t}"))
+        res = _send(now, week, broker, order, 0, oid)
+        (closed if res.get("status") == "filled" else rejected).append(t)
+    plan = _get_json(K_WEEK) or {"week": week, "targets": {}}
+    plan.update(week=week, finished=True, result="closed")
+    _set_json(K_WEEK, plan)
+    held = broker.positions()
+    _remember(now, "closed", broker.equity(), held)
+    return {"closed": closed, "rejected": rejected, "held": held}
 
 
 def status(now: Optional[datetime] = None) -> dict:
@@ -193,7 +241,7 @@ def status(now: Optional[datetime] = None) -> dict:
     return {
         "enabled": enabled(),
         "sandbox": _is_sandbox(),
-        "account_id": (db.get_runtime(K_ACCOUNT, "") or "").strip(),
+        "account_id": account_id(),
         "week": plan.get("week"),
         "week_finished": bool(plan.get("finished")),
         "equity": last.get("equity"),

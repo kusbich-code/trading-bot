@@ -164,6 +164,33 @@ def test_status_shows_targets_positions_and_orders(env):
     assert [o["ticker"] for o in st["orders"]] == ["SiZ6", "GDZ6"]       # новые сверху
 
 
+def test_week_finish_sends_one_message(env, monkeypatch):
+    sent = []
+    monkeypatch.setattr(runner, "notify", lambda text, is_error=False: sent.append(text))
+    b = FakeBroker()
+    runner.run_step(NOW, lambda acc: b)
+    runner.run_step(NOW + timedelta(minutes=30), lambda acc: b)
+    assert len(sent) == 1 and "SiZ6" in sent[0]
+
+
+def test_close_all_closes_positions_and_switches_off(env):
+    db, _ = env
+    b = FakeBroker()
+    runner.run_step(NOW, lambda acc: b)
+    res = runner.close_all(NOW + timedelta(hours=1), b)
+    assert b.held == {} and sorted(res["closed"]) == ["GDZ6", "SiZ6"] and res["rejected"] == []
+    assert runner.enabled() is False
+    assert runner.status(NOW)["last_result"] == "closed"
+    db.set_setting("sandbox_c_enabled", "1")                              # включили снова в ту же неделю: не открывает заново
+    assert runner.run_step(NOW + timedelta(hours=2), lambda acc: b) is None and b.held == {}
+
+
+def test_account_created_starts_fresh(env):
+    runner.account_created(NOW, "new-acc")
+    st = runner.status(NOW)
+    assert st["account_id"] == "new-acc" and st["equity"] == 1_000_000 and st["last_result"] == "created"
+
+
 def test_equity_is_cash_plus_variation_not_portfolio_total():
     """Брокер в итоге портфеля считает полный объём фьючерса; деньги счёта — рубли плюс переоценка позиций."""
     from app.services.sandbox_c_broker import SandboxCBroker

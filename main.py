@@ -3756,9 +3756,15 @@ def _paper_dividends(client, instruments: dict, holdings: dict, since: str) -> f
 
 
 def _paper_daily_worker():
-    """Фоновый поток бумажных счетов: раз в минуту проверяет, не пора ли недельный ребаланс. Ордеров не отправляет."""
-    from app.ml import paper_daily, paper_futures, paper_futures_feed
+    """Фоновый поток бумажных счетов: раз в минуту проверяет, не пора ли недельный ребаланс.
+
+    Бумажные счета ордеров не отправляют. Заявки отправляет только исполнитель счёта C в песочнице брокера,
+    когда владелец включил его переключателем и бот работает в режиме песочницы.
+    """
+    from contextlib import ExitStack
+    from app.ml import paper_daily, paper_futures, paper_futures_feed, sandbox_c_runner
     from app.notify import notify as _notify
+    from app.services.sandbox_c_broker import SandboxCBroker
     last = {}
 
     def report(name, result):
@@ -3787,6 +3793,17 @@ def _paper_daily_worker():
                         report("C", paper_futures.run_step(now, lambda held: paper_futures_feed.load_market(client, held, _rate.record)))
         except Exception as e:
             log.warning("Бумажный счёт: %s", e)
+        try:
+            # Счёт C в песочнице брокера: после ребаланса бумажного C те же цели настоящими заявками (выключено по умолчанию)
+            if _bot_client_cls is not None and is_moex_session_open() and paper_daily.in_window(now):
+                with ExitStack() as stack:
+                    open_broker = lambda acc: SandboxCBroker(stack.enter_context(_bot_client_cls(settings.TINVEST_TOKEN)), acc)
+                    result = sandbox_c_runner.run_step(now, open_broker)
+                if result and result != last.get("sandbox_c"):
+                    log.info("Счёт C в песочнице: %s (%s)", result, sandbox_c_runner.RESULT_TEXT.get(result, ""))
+                last["sandbox_c"] = result
+        except Exception as e:
+            log.warning("Счёт C в песочнице: %s", e)
         time.sleep(60)
 
 

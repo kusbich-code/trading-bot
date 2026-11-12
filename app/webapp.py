@@ -79,6 +79,8 @@ from app.config import settings
 from app.version import __version__ as BOT_VERSION
 from app.ml import paper_view
 from app.services import backups as _backups, jobs, reconcile as _reconcile
+from app.services import sandbox_c_broker as _sc_broker
+from app.ml import sandbox_c_runner as _sc_runner
 from app.services.tbank_client import (
     get_candles,
     get_candles_range,
@@ -915,6 +917,50 @@ def api_backups_prune():
     """Оставить 10 последних бэкапов базы. Удаляются только файлы бэкапов в backups/."""
     res = _backups.prune()
     log_event("MODE", f"Бэкапы базы: удалено {res['deleted']}, освобождено {res['freed_mb']} МБ (из дашборда)", level="WARNING")
+    return JSONResponse(res)
+
+
+def _sandbox_c_client():
+    """Клиент брокера для кнопок счёта C (в режиме песочницы это клиент песочницы)."""
+    from app.services.tbank_client import with_client
+    return with_client()
+
+
+@app.get("/api/sandbox-c/status")
+def api_sandbox_c_status():
+    """Счёт C в песочнице брокера: переключатель, счёт, цели недели и позиции, последние заявки. Брокеру не обращается."""
+    return JSONResponse(_sc_runner.status())
+
+
+@app.post("/api/sandbox-c/create-account")
+def api_sandbox_c_create_account():
+    """Кнопка «Создать счёт»: отдельный счёт песочницы на 1 000 000 ₽. Сам исполнитель счёт не создаёт."""
+    if not settings.TINVEST_USE_SANDBOX:
+        raise HTTPException(status_code=400, detail="Бот не в режиме песочницы: счёт C создаётся только в песочнице брокера")
+    from datetime import datetime as _dt, timezone as _tz
+    old = _sc_runner.account_id()
+    with _sandbox_c_client() as client:
+        if old and _sc_broker.SandboxCBroker(client, old).exists():
+            raise HTTPException(status_code=400, detail=f"Счёт C в песочнице уже есть: …{old[-6:]}")
+        new = _sc_broker.create_account(client)
+    _sc_runner.account_created(_dt.now(_tz.utc), new)
+    log_event("MODE", f"Счёт C в песочнице создан: …{new[-6:]}, 1 000 000 ₽ (из дашборда)", level="WARNING")
+    return JSONResponse({"ok": True, "account_id": new})
+
+
+@app.post("/api/sandbox-c/close-all")
+def api_sandbox_c_close_all():
+    """Кнопка «Закрыть все позиции»: рыночные заявки на закрытие, исполнитель выключается."""
+    account = _sc_runner.account_id()
+    if not account:
+        raise HTTPException(status_code=400, detail="Счёта C в песочнице нет: закрывать нечего")
+    if not settings.TINVEST_USE_SANDBOX:
+        raise HTTPException(status_code=400, detail="Бот не в режиме песочницы: заявки по счёту C не отправляются")
+    from datetime import datetime as _dt, timezone as _tz
+    with _sandbox_c_client() as client:
+        res = _sc_runner.close_all(_dt.now(_tz.utc), _sc_broker.SandboxCBroker(client, account))
+    log_event("MODE", f"Счёт C в песочнице: закрыты {', '.join(res['closed']) or 'нет позиций'}"
+              + (f", не закрыты {', '.join(res['rejected'])}" if res["rejected"] else "") + " (из дашборда)", level="WARNING")
     return JSONResponse(res)
 
 
